@@ -345,7 +345,7 @@ def _argon_combo_and_judgment(ctx) -> None:
     # Judgement text near mid-playfield (lazer's Argon mania judgement floats
     # around the centre, well below the combo line — ~56% from the top). lazer
     # spaces the letters out, so render per-character with letter tracking.
-    if s.active_judgments:
+    if s.active_judgments and ctx.options.show_judgment:
         j = s.active_judgments[-1]
         info = _ARGON_JUDGE_TEXT.get(j.judgment)
         if info is not None:
@@ -364,7 +364,7 @@ def _argon_combo_and_judgment(ctx) -> None:
                                           alpha=alpha)
                 gx += gw + tracking
 
-    if s.combo <= 0:
+    if s.combo <= 0 or not ctx.options.show_combo:
         return
     pop = 1.0
     if s.combo_age_ms < 180:
@@ -390,7 +390,8 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
         _argon_combo_and_judgment(ctx)
         return
     if not ctx.has_score_font():
-        fr._draw_combo_and_judgment(s)
+        if ctx.options.show_combo or ctx.options.show_judgment:
+            fr._draw_combo_and_judgment(s)
         return
 
     atlas = ctx.atlas
@@ -421,7 +422,7 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
     # ── Judgement burst — drawn just BELOW the combo (lazer mania stacks the
     # combo above the hit-result). Native sprite px × texture scale, fading
     # out over 500ms; animation frames at 60fps.
-    if s.active_judgments:
+    if s.active_judgments and ctx.options.show_judgment:
         j = s.active_judgments[-1]
         name = f"judgment_{j.judgment}"
         if atlas.global_source(name) in ("user", "beatmap", "bundle"):
@@ -443,7 +444,7 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
                     int(jw), int(jh), (1, 1, 1, alpha),
                 )
 
-    if s.combo <= 0:
+    if s.combo <= 0 or not ctx.options.show_combo:
         return
     # Pop animation: digits scale up briefly on each increment, settle back.
     pop = 1.0

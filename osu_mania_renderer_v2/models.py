@@ -161,6 +161,8 @@ class RenderOptions:
     show_grade: bool = True
     show_key_overlay: bool = True       # the receptor key-press flash
     show_key_counter: bool = True       # bottom-right per-column press counter
+    show_combo: bool = True             # the centred combo counter
+    show_judgment: bool = True          # the hit-judgement text/sprite burst
     show_pp_counter: bool = False       # off by default; needs rosu-pp live
     show_result_screen: bool = True
     hide_judgement_line: bool = False   # the horizontal line at the receptor

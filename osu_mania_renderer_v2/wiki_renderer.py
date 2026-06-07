@@ -440,6 +440,11 @@ def _cli() -> None:
     p.add_argument("--timeout", type=int, default=0)
     p.add_argument("--allow-converted", action="store_true")
     p.add_argument("--convert-to-keys", type=int, default=4)
+    p.add_argument("--no-combo", action="store_true", help="hide combo counter")
+    p.add_argument("--no-judgment", action="store_true",
+                   help="hide hit-judgement text/sprite")
+    p.add_argument("--no-key-counter", action="store_true",
+                   help="hide bottom-right key counter")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -456,6 +461,9 @@ def _cli() -> None:
     options = RenderOptions(
         resolution=(w, h), fps=args.fps, encoder=args.encoder,
         timeout_seconds=(args.timeout or 600),
+        show_combo=not args.no_combo,
+        show_judgment=not args.no_judgment,
+        show_key_counter=not args.no_key_counter,
     )
     asyncio.run(render(
         osr_path=args.osr, beatmap_dir=args.beatmap_dir,
