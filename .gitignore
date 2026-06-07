@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Renderer scratch / outputs
+*.mp4
+!tests/fixtures/*.mp4
+*.log
+render-cache/
+
+# Bundled-asset build artifacts (kept out of git; built from .osk at install time)
+osu_renderer/assets/skin/
+
+# Secrets — never commit
+.env
+*.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# wiki_renderer bootstrap assets (regenerate via scripts/wiki_renderer_bootstrap.sh)
+/assets/
+
+# extras
+*.bak*
+*.orig

@@ -1,0 +1,48 @@
+[project]
+name = "osu-mania-renderer-v2"
+version = "0.1.0"
+description = "Render osu! replays to MP4 (GPU + ffmpeg)"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "moderngl>=5.10",
+    "osrparse>=7.0",
+    "Pillow>=10.0",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24,<2",
+    "pytest-mock>=3.14",
+    "ruff>=0.7",
+]
+
+[project.scripts]
+osu-renderer = "osu_mania_renderer_v2.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "slow: tests that open a GL context or invoke ffmpeg. Skipped unless RUN_SLOW=1.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["osu_mania_renderer_v2", "osu_mania_renderer_v2.gpu"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+osu_mania_renderer_v2 = ["assets/**/*"]
