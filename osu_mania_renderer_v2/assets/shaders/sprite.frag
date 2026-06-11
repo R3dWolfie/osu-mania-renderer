@@ -1,10 +1,12 @@
 #version 330
 
 uniform sampler2DArray u_atlas;
-uniform float u_hd;     // 0 = off, 1 = on
-uniform float u_fi;     // 0 = off, 1 = on
-uniform float u_hd_top; // playfield-top in NDC for fade math
-uniform float u_hd_bot; // playfield-bot in NDC
+uniform float u_hd;        // 0 = off, 1 = on (Hidden)
+uniform float u_fi;        // 0 = off, 1 = on (Fade In)
+uniform float u_hd_recep;  // receptor Y (px, bottom-origin) — Hidden anchor
+uniform float u_pf_top;    // playfield top Y (px) — Fade In anchor
+uniform float u_cov_fill;  // fully-hidden fill height (px)
+uniform float u_cov_grad;  // gradient fade height (px)
 
 in vec2 v_uv;
 flat in int v_atlas_index;
@@ -16,20 +18,20 @@ void main() {
     vec4 sample_color = texture(u_atlas, vec3(v_uv, float(v_atlas_index)));
     vec4 result = sample_color * v_color;
 
-    // Hidden / Fade In alpha shaping based on screen Y.
-    float y_frac = clamp(
-        (gl_FragCoord.y - u_hd_bot) / max(u_hd_top - u_hd_bot, 1e-3),
-        0.0, 1.0
-    );
+    // osu!lazer mania Hidden / Fade In: a cover anchored at one end of the
+    // playfield. `u_cov_fill` px are fully hidden; the next `u_cov_grad` px
+    // fade hidden->visible (the gradient leading edge). Coverage scales with
+    // combo (computed per-frame on the CPU side).
     if (u_hd > 0.5) {
-        // Fade out near the receptor (low y).
-        float a = smoothstep(0.0, 0.4, y_frac);
-        result.a *= a;
+        // Hidden: cover grows up from the receptor — notes vanish before
+        // you hit them.
+        float d = gl_FragCoord.y - u_hd_recep;
+        result.a *= smoothstep(u_cov_fill, u_cov_fill + u_cov_grad, d);
     }
     if (u_fi > 0.5) {
-        // Fade in from the top.
-        float a = smoothstep(1.0, 0.6, y_frac);
-        result.a *= a;
+        // Fade In: cover grows down from the top — notes appear late.
+        float d = u_pf_top - gl_FragCoord.y;
+        result.a *= smoothstep(u_cov_fill, u_cov_fill + u_cov_grad, d);
     }
 
     frag_color = result;

@@ -137,6 +137,11 @@ class FrameRenderer:
         self._instance_count: int = 0
         self._hd_active: bool = False
         self._fi_active: bool = False
+        # osu!lazer Hidden/FadeIn cover geometry (px), recomputed per frame
+        # from the combo when HD/FI is active. See _flush_sprite_batch.
+        self._cov_fill_px: float = 0.0
+        self._cov_grad_px: float = 0.0
+        self._cov_recep: float = 0.0
         # Cached single-layer texture arrays for full-res direct-draw sprites
         # (scorebar / stage panels) — built once, reused every frame.
         self._direct_arr_cache: dict = {}
@@ -594,6 +599,17 @@ class FrameRenderer:
         self._flush_sprite_batch()
         self._hd_active = scene.visual_mods.hidden
         self._fi_active = scene.visual_mods.fade_in
+        if self._hd_active or self._fi_active:
+            # osu!lazer ManiaModHidden: coverage scales with combo —
+            #   min(MAX, MIN + combo*rate) / reference_playfield_height
+            # with MIN=160, MAX=400, rate=0.5, ref=768. FadeIn shares the
+            # same coverage (it only flips the anchored side). The fade
+            # gradient is a further 0.25 of the playfield height. The 768
+            # reference maps to the full frame (skin Y coords are 0..768).
+            cov = min(400.0, 160.0 + max(0, scene.combo) * 0.5) / 768.0
+            self._cov_fill_px = cov * self.rc.height
+            self._cov_grad_px = 0.25 * self.rc.height
+            self._cov_recep = float(self.receptor_centre_y_gl)
         self._draw_notes(scene)
         self._flush_sprite_batch()
         self._hd_active = False
@@ -1135,8 +1151,10 @@ class FrameRenderer:
         prog["u_projection"].value = (1, 0, 0, 0, 1, 0, 0, 0, 1)
         prog["u_hd"].value = 0.0
         prog["u_fi"].value = 0.0
-        prog["u_hd_top"].value = float(screen_h)
-        prog["u_hd_bot"].value = 0.0
+        prog["u_hd_recep"].value = 0.0
+        prog["u_pf_top"].value = float(screen_h)
+        prog["u_cov_fill"].value = 0.0
+        prog["u_cov_grad"].value = 0.0
 
         verts = np.array([
             [x0, y0, 0, 1, 0, 1, 1, 1, alpha],
@@ -1192,8 +1210,10 @@ class FrameRenderer:
         prog["u_projection"].value = (1, 0, 0, 0, 1, 0, 0, 0, 1)
         prog["u_hd"].value = 0.0
         prog["u_fi"].value = 0.0
-        prog["u_hd_top"].value = float(sh)
-        prog["u_hd_bot"].value = 0.0
+        prog["u_hd_recep"].value = 0.0
+        prog["u_pf_top"].value = float(sh)
+        prog["u_cov_fill"].value = 0.0
+        prog["u_cov_grad"].value = 0.0
         verts = np.array([
             [x0, y0, 0, 1, 0, r, g, b, a],
             [x1, y0, 1, 1, 0, r, g, b, a],
@@ -1968,8 +1988,10 @@ class FrameRenderer:
         prog["u_atlas"] = 0
         prog["u_hd"].value = 1.0 if self._hd_active else 0.0
         prog["u_fi"].value = 1.0 if self._fi_active else 0.0
-        prog["u_hd_top"].value = float(self.rc.height)
-        prog["u_hd_bot"].value = 0.0
+        prog["u_hd_recep"].value = self._cov_recep
+        prog["u_pf_top"].value = float(self.rc.height)
+        prog["u_cov_fill"].value = self._cov_fill_px
+        prog["u_cov_grad"].value = self._cov_grad_px
         self._instance_vao.render(
             moderngl.TRIANGLE_STRIP, vertices=4, instances=n,
         )
