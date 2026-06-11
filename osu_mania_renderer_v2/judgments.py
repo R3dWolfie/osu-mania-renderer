@@ -10,7 +10,7 @@ Mania timing windows (osu!stable, OD = 8 default):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from osu_mania_renderer_v2.models import KeyEvent
 
@@ -33,27 +33,34 @@ WINDOW_TAIL_100 = WINDOW_100 * _TAIL_MULTIPLIER
 WINDOW_TAIL_50  = WINDOW_50  * _TAIL_MULTIPLIER
 
 
+def _difficulty_range(od: float, od0: float, od5: float, od10: float) -> float:
+    """osu!framework IBeatmapDifficultyInfo.DifficultyRange: piecewise-linear
+    interpolation of a value across OD 0 / 5 / 10."""
+    if od > 5:
+        return od5 + (od10 - od5) * (od - 5.0) / 5.0
+    if od < 5:
+        return od0 + (od5 - od0) * od / 5.0
+    return od5
+
+
 def windows_for_od(overall_difficulty: float) -> tuple[float, float, float, float, float]:
-    """Lazer-style OD-scaled mania hit windows (in ms).
+    """osu!mania hit windows (ms), ported from lazer ManiaHitWindows.
 
-    Returns `(w_320, w_300, w_200, w_100, w_50)`. osu!web displays
-    lazer-recomputed values for mania plays, so we use these windows
-    to match the website's tier counts more closely than stable's
-    fixed windows would.
-
-    Formula (lazer source):
-      320 = 16ms (constant; the 320 / "PERFECT" window doesn't scale)
-      300 =  64 - 3 * OD
-      200 =  97 - 3 * OD
-      100 = 127 - 3 * OD
-       50 = 151 - 3 * OD
+    DifficultyRange (OD0, OD5, OD10), interpolated by OD:
+      PERFECT(320): 22.4, 19.4, 13.9
+      GREAT(300)  : 64,   49,   34
+      GOOD(200)   : 97,   82,   67
+      OK(100)     : 127,  112,  97
+      MEH(50)     : 151,  136,  121
+    (The old code hard-coded the 320 window at a flat 16ms — ~0.5ms too wide at
+    OD8.5 (true 15.55), which over-counted PERFECTs vs what osu recorded.)
     """
     return (
-        16.0,
-        max(1.0, 64.0  - 3.0 * overall_difficulty),
-        max(1.0, 97.0  - 3.0 * overall_difficulty),
-        max(1.0, 127.0 - 3.0 * overall_difficulty),
-        max(1.0, 151.0 - 3.0 * overall_difficulty),
+        _difficulty_range(overall_difficulty, 22.4, 19.4, 13.9),
+        _difficulty_range(overall_difficulty, 64.0, 49.0, 34.0),
+        _difficulty_range(overall_difficulty, 97.0, 82.0, 67.0),
+        _difficulty_range(overall_difficulty, 127.0, 112.0, 97.0),
+        _difficulty_range(overall_difficulty, 151.0, 136.0, 121.0),
     )
 
 
@@ -77,6 +84,60 @@ class JudgmentTimeline:
     count_50: int
     count_miss: int
     max_combo: int
+
+
+def reconcile_to_counts(
+    timeline: "JudgmentTimeline",
+    geki: int, c300: int, katu: int, c100: int, c50: int, miss: int,
+) -> "JudgmentTimeline":
+    """Re-label the simulated per-note judgments so the totals EXACTLY match the
+    .osr's recorded counts, ordered by the simulated timing quality.
+
+    Our window/pairing sim isn't byte-identical to osu!'s engine, so its tier
+    split drifts a little (e.g. a few extra 320s) — which made the live accuracy
+    read ~1% high and then snap to the true value at the end. osu! already tells
+    us the authoritative final tally, so we trust it: sort every note by how
+    cleanly it was hit (smallest |offset| first; unmatched/true-miss last) and
+    hand out the recorded number of each tier in order. The running accuracy and
+    counts then track correctly the whole way and land exactly on what osu shows
+    — no end-of-song patching.
+
+    Only applies when the event count maps 1:1 to the target total (e.g. no
+    hold-note counting ambiguity); otherwise the timeline is returned unchanged.
+    """
+    events = timeline.events
+    targets = [("geki", geki), ("300", c300), ("katu", katu),
+               ("100", c100), ("50", c50), ("miss", miss)]
+    if sum(c for _, c in targets) != len(events) or not events:
+        return timeline
+
+    inf = float("inf")
+    order = sorted(
+        range(len(events)),
+        key=lambda i: (abs(events[i].hit_offset_ms)
+                       if events[i].hit_offset_ms is not None else inf),
+    )
+    new = list(events)
+    pos = 0
+    for tier, count in targets:
+        for _ in range(count):
+            i = order[pos]
+            pos += 1
+            e = events[i]
+            if tier == "miss":
+                new[i] = replace(e, judgment="miss", hit_offset_ms=None)
+            else:
+                # phantom hits (a sim-miss promoted to a hit tier to match the
+                # recorded tally) get a 0ms offset so downstream press lookups
+                # still resolve.
+                off = e.hit_offset_ms if e.hit_offset_ms is not None else 0.0
+                new[i] = replace(e, judgment=tier, hit_offset_ms=off)
+
+    return JudgmentTimeline(
+        events=tuple(new), count_geki=geki, count_300=c300, count_katu=katu,
+        count_100=c100, count_50=c50, count_miss=miss,
+        max_combo=timeline.max_combo,
+    )
 
 
 def compute_judgments(

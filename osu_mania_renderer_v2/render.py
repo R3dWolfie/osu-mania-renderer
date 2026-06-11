@@ -30,7 +30,7 @@ from osu_mania_renderer_v2.errors import (
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.readback import FrameReader
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-from osu_mania_renderer_v2.judgments import compute_judgments
+from osu_mania_renderer_v2.judgments import compute_judgments, reconcile_to_counts
 from osu_mania_renderer_v2.models import HoldNote, RenderOptions
 from osu_mania_renderer_v2.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.hitsounds import build_hitsound_track
@@ -175,6 +175,13 @@ async def build_render_plan(
     judgments = compute_judgments(
         modded.notes, replay.key_events, modded.key_count,
         overall_difficulty=getattr(modded, "overall_difficulty", None),
+    )
+    # Re-label the simulated judgments to the .osr's authoritative tallies so the
+    # live accuracy/counts are correct frame-by-frame and need no end-of-song
+    # patch (see reconcile_to_counts).
+    judgments = reconcile_to_counts(
+        judgments, replay.count_geki, replay.count_300, replay.count_katu,
+        replay.count_100, replay.count_50, replay.count_miss,
     )
     total_quality = max(
         1, sum(_HIT_SCORE_WEIGHT[j.judgment] for j in judgments.events),
@@ -488,9 +495,9 @@ def build_frame_state(
         score_so_far = int(
             score_so_far + (replay.score - score_so_far) * b
         )
-        acc_so_far = (
-            acc_so_far + (replay.accuracy - acc_so_far) * b
-        )
+        # accuracy is NOT blended any more: judgments are reconciled to the .osr
+        # tallies up front, so acc_so_far already lands exactly on replay.accuracy
+        # — blending it caused the visible end-of-song "patch".
         pp_live = pp_live + (plan.player_pp - pp_live) * b
 
     # Score / accuracy tween — single-pole low-pass per frame.

@@ -59,12 +59,30 @@ def parse_replay(path: Path) -> ReplayInfo:
     )
 
 
+_SEED_DELTA = -12345  # final frame carries the RNG seed in X, time_delta -12345
+
+
 def _decode_key_events(r: Replay) -> list[KeyEvent]:
-    """Convert osrparse ReplayEventMania entries to absolute-time KeyEvents."""
+    """Convert osrparse ReplayEventMania entries to absolute-time KeyEvents.
+
+    Two .osr quirks must be handled or the whole press timeline desyncs:
+      * the last frame is an RNG-seed sentinel (time_delta -12345) and must be
+        skipped, never accumulated;
+      * the first frame is often a placeholder with a large negative delta
+        (e.g. -8470). Accumulating it shifts EVERY press by that amount — which
+        is exactly how a clean 94% play renders as combo-67 / 584-miss garbage.
+        Zero it out (matches the taiko parser)."""
     out: list[KeyEvent] = []
     t = 0
+    first = True
     for ev in r.replay_data or []:
         delta = int(getattr(ev, "time_delta", 0))
+        if delta == _SEED_DELTA:
+            continue
+        if first:
+            first = False
+            if delta < -5000:        # garbage placeholder first frame
+                delta = 0
         t += delta
         # osrparse 7.x: ReplayEventMania.keys is the bitmask of held columns.
         keys = int(getattr(ev, "keys", 0))
