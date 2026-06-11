@@ -128,12 +128,12 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
             # receptor side, gradient bright(accent.Opacity 0.6) → dim(0).
             ctx.draw_sprite("column_bg", ctx.col_x[c], 0, ctx.col_w[c], h,
                             (r * 0.25, g * 0.25, b * 0.25, 0.8))
-            # lazer shows a LIGHTER region just above the hit line — but it's
-            # not a saturated accent glow: sampling the reference, it's a flat,
-            # DESATURATED block (mostly grey with ~25-30% accent tint,
-            # brightness ~115). Reproduce it with a solid block right above the
-            # receptor plus a soft gradient fade upward (normal alpha blend, not
-            # additive — additive over-saturates it back to pure accent).
+            # lazer shows a LIGHTER region just above the hit line — a SMOOTH
+            # gradient brightening (ArgonColumnBackground glow), bright at the
+            # receptor fading up. The desaturated tint (mostly grey with ~28%
+            # accent) is right, but it must be a gradient, not a flat solid
+            # block — the hard top edge of the old block read as an ugly "chin",
+            # especially under HD where the notes that hid it are gone.
             cw = ctx.col_w[c]
             x0 = ctx.col_x[c]
             rec_y = ctx.receptor_centre_y_gl
@@ -142,11 +142,10 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
                   0.28 * g + 0.72 * grey,
                   0.28 * b + 0.72 * grey)
             a0 = 0.82
-            block_h = int(cw * 0.5)
-            ctx.draw_sprite("column_bg", x0, rec_y, cw, block_h, (*br, a0))
-            fade_h = int(cw * 0.7)
-            ctx.draw_sprite("argon_col_glow", x0, rec_y + block_h, cw, fade_h,
-                            (*br, 0.8))
+            # Single gradient glow from the hit line up — bright at rec_y,
+            # fading to nothing (argon_col_glow is a bottom-bright gradient).
+            glow_h = int(cw * 1.25)
+            ctx.draw_sprite("argon_col_glow", x0, rec_y, cw, glow_h, (*br, a0))
             continue
 
         skin_colour = None
