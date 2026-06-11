@@ -465,12 +465,19 @@ def _cli() -> None:
         show_judgment=not args.no_judgment,
         show_key_counter=not args.no_key_counter,
     )
+    async def _print_progress(fraction: float) -> None:
+        # Same line shape the bot's _PROGRESS_RE parses from the subprocess
+        # stdout (mania_ordr/renderer.py). Without this the wiki path emitted
+        # no progress and the UI sat at 0% for the entire render.
+        print(f"\rrendering… {fraction:.0%}", end="", flush=True)
+
     asyncio.run(render(
         osr_path=args.osr, beatmap_dir=args.beatmap_dir,
         output_path=args.output, options=options,
         skin_dir=args.skin_dir, default_skin_dir=default_skin,
         allow_converted=args.allow_converted,
         convert_to_keys=args.convert_to_keys,
+        progress_callback=_print_progress,
     ))
 
 
