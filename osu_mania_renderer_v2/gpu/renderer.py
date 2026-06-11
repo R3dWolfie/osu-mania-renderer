@@ -597,19 +597,8 @@ class FrameRenderer:
         # batch before changing those uniforms, otherwise any queued sprite
         # would be drawn with the wrong HD state.
         self._flush_sprite_batch()
-        self._hd_active = scene.visual_mods.hidden
-        self._fi_active = scene.visual_mods.fade_in
-        if self._hd_active or self._fi_active:
-            # osu!lazer ManiaModHidden: coverage scales with combo —
-            #   min(MAX, MIN + combo*rate) / reference_playfield_height
-            # with MIN=160, MAX=400, rate=0.5, ref=768. FadeIn shares the
-            # same coverage (it only flips the anchored side). The fade
-            # gradient is a further 0.25 of the playfield height. The 768
-            # reference maps to the full frame (skin Y coords are 0..768).
-            cov = min(400.0, 160.0 + max(0, scene.combo) * 0.5) / 768.0
-            self._cov_fill_px = cov * self.rc.height
-            self._cov_grad_px = 0.25 * self.rc.height
-            self._cov_recep = float(self.receptor_centre_y_gl)
+        self.apply_note_cover(
+            scene.visual_mods.hidden, scene.visual_mods.fade_in, scene.combo)
         self._draw_notes(scene)
         self._flush_sprite_batch()
         self._hd_active = False
@@ -1972,6 +1961,25 @@ class FrameRenderer:
             x_clip, y_clip, w_clip, h_clip, atlas_idx, r, g, b, a,
         )
         self._instance_count += 1
+
+    def apply_note_cover(self, hidden: bool, fade_in: bool, combo: int) -> None:
+        """Toggle Hidden/FadeIn and recompute the lazer combo-scaling cover.
+        Called by BOTH the monolithic draw() and the wiki notes element so
+        the effect is identical regardless of draw path.
+
+        osu!lazer ManiaModHidden: coverage scales with combo —
+          min(MAX, MIN + combo*rate) / reference_playfield_height
+        with MIN=160, MAX=400, rate=0.5, ref=768. FadeIn shares the same
+        coverage (it only flips the anchored side). The fade gradient is a
+        further 0.25 of the playfield height. The 768 reference maps to the
+        full frame (skin Y coords are 0..768)."""
+        self._hd_active = hidden
+        self._fi_active = fade_in
+        if hidden or fade_in:
+            cov = min(400.0, 160.0 + max(0, combo) * 0.5) / 768.0
+            self._cov_fill_px = cov * self.rc.height
+            self._cov_grad_px = 0.25 * self.rc.height
+            self._cov_recep = float(self.receptor_centre_y_gl)
 
     def _flush_sprite_batch(self) -> None:
         """Upload the queued instances to the GPU and fire one

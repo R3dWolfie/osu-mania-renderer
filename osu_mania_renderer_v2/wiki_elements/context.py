@@ -127,9 +127,10 @@ class FrameContext:
         stays a FrameRenderer primitive; elements own layout."""
         return self.fr._cached_text(s, size, color)
 
-    def set_note_fx(self, hidden: bool, fade_in: bool) -> None:
-        self.fr._hd_active = hidden
-        self.fr._fi_active = fade_in
+    def set_note_fx(self, hidden: bool, fade_in: bool, combo: int = 0) -> None:
+        # Delegate to the shared cover computation so Hidden/FadeIn scale
+        # with combo here exactly as in the monolithic draw path.
+        self.fr.apply_note_cover(hidden, fade_in, combo)
 
     def flush(self) -> None:
         self.fr._flush_sprite_batch()

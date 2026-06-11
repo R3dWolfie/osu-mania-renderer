@@ -306,10 +306,10 @@ def notes(*, element, skin, assets, variables, ctx) -> None:
     # queued sprites aren't drawn with the wrong HD state (mirrors draw()).
     scene = ctx.scene
     ctx.flush()
-    ctx.set_note_fx(scene.visual_mods.hidden, scene.visual_mods.fade_in)
+    ctx.set_note_fx(scene.visual_mods.hidden, scene.visual_mods.fade_in, scene.combo)
     _draw_notes_body(ctx)
     ctx.flush()
-    ctx.set_note_fx(False, False)
+    ctx.set_note_fx(False, False, 0)
 
 
 # Argon judgement text + colour by judged value (lazer ArgonJudgementPiece).
