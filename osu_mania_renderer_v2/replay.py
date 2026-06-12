@@ -27,17 +27,21 @@ def parse_replay(path: Path) -> ReplayInfo:
         r.count_300 + r.count_100 + r.count_50 + r.count_miss
         + r.count_katu + r.count_geki
     )
+    # Mania accuracy weighting must match what osu! / the website card shows:
+    # stable replays weight the rainbow-300 (geki) at 320, lazer (and stable +
+    # Score V2) at 305. Detect via game_version (lazer writes 9-digit
+    # ≥30000000) and the Score V2 mod (1<<29) — identical to the bot's
+    # osr_parser so the in-render accuracy lands on the same number.
+    mw = 305 if (int(getattr(r, "game_version", 0) or 0) >= 30000000
+                 or (int(r.mods) & (1 << 29))) else 320
     if total == 0:
         accuracy = 0.0
     else:
-        # Match osu!'s displayed mania accuracy (305 weight for geki/320,
-        # 305 denominator). The older 300/300 formula reads ~0.7 % high
-        # vs what the score page actually shows.
         weighted = (
             50 * r.count_50 + 100 * r.count_100 + 200 * r.count_katu
-            + 300 * r.count_300 + 305 * r.count_geki
+            + 300 * r.count_300 + mw * r.count_geki
         )
-        accuracy = round((weighted / (305 * total)) * 100, 4)
+        accuracy = round((weighted / (mw * total)) * 100, 4)
 
     return ReplayInfo(
         mode=mode,
@@ -56,6 +60,7 @@ def parse_replay(path: Path) -> ReplayInfo:
         count_50=int(r.count_50),
         count_miss=int(r.count_miss),
         grade=_grade(accuracy, r),
+        mania_max_weight=mw,
     )
 
 

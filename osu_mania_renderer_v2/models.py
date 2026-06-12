@@ -121,6 +121,10 @@ class ReplayInfo:
     count_50: int
     count_miss: int
     grade: str
+    # Mania accuracy denominator weight for the rainbow-300 (geki): 320 for
+    # stable replays, 305 for lazer / Score V2 — matches what osu! displays
+    # and the bot's website card (osr_parser). Default 305 = lazer.
+    mania_max_weight: int = 305
 
 
 @dataclass(frozen=True)
