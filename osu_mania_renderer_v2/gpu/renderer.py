@@ -40,7 +40,7 @@ PLAYFIELD_W_FRAC = 0.28
 LAZER_DEFAULT_COLUMN_SIZE_REF = 42      # widened to match Argon's playfield proportions
                                         # (lazer centres columns in 16:9; our 4:3 letterbox
                                         # made the field read too narrow at the 30-ref value)
-LAZER_DEFAULT_COLUMN_SPACING_REF = 5    # gap between columns (lazer Argon spaces them)
+LAZER_DEFAULT_COLUMN_SPACING_REF = 0    # legacy default (Argon spacing set in argon branch)
 LAZER_DEFAULT_COLUMN_LINE_WIDTH_REF = 2 # Hairline divider
 # Notes fill the column width — height ≈ column width, like in-game mania.
 NOTE_HEIGHT_REL_COL = 0.95
@@ -256,7 +256,10 @@ class FrameRenderer:
                     * rc.height / 768.0)))
                 for c in range(K)
             ]
-            col_spacing_list = [0] * (K - 1)
+            # lazer Argon spaces columns (LeftColumnSpacing+RightColumnSpacing
+            # = 2 stage units; measured ~4px @1080p with the rounded column bg).
+            # 3 units * height/768 matches that visible gap. (Was 0 = flush bug.)
+            col_spacing_list = [max(1, int(round(3.0 * rc.height / 768.0)))] * (K - 1)
 
         # Total playfield width.
         pf_w_unaligned = sum(col_w_list) + sum(col_spacing_list)
