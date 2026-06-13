@@ -69,16 +69,18 @@ def _receptors(ctx) -> None:
                 ov = (ap / 50.0) if ap < 50 else (0.5 + 0.5 * max(0.0, 1.0 - (ap - 50) / 250.0))
                 grad_h = int((ctx.height - centre_y) * 0.5)
                 _fx_draw(ctx.fr, "vgrad", x0, centre_y, cw, grad_h, (r, g, b), 0.6 * ov)
-            # lazer ArgonHitTarget: a faint white box per column at the hit
-            # position (height NOTE_HEIGHT*NOTE_ACCENT_RATIO), behind the line.
-            ht_h = max(4, int(round(42.0 * 0.82 * u)))
-            ctx.draw_sprite("column_bg", x0, int(centre_y - ht_h / 2), cw, ht_h,
+            # lazer ArgonHitTarget: a faint ROUNDED white box per column at the
+            # hit position (notes are judged INSIDE it, above the line). Rounded
+            # via the note-body shape; gapped via the per-column bounds.
+            ht_h = max(6, int(round(cw * 0.57)))     # NOTE_HEIGHT * NOTE_ACCENT_RATIO
+            ht_bottom = int(centre_y - ht_h / 2)
+            ctx.draw_sprite("argon_note_body", x0, ht_bottom, cw, ht_h,
                             (1.0, 1.0, 1.0, 0.30))
-            # Hit-target line (Circle, height CORNER_RADIUS*2): Gray(196) at
-            # rest, white when held.
+            # Hit-target line at the BOTTOM edge of the box, so notes land above
+            # the line (inside the box) like lazer.
             hl_h = max(3, int(round(6.8 * u)))
             hl_tint = (1.0, 1.0, 1.0, 1.0) if held else (0.77, 0.77, 0.77, 0.95)
-            ctx.draw_sprite("column_bg", x0, int(centre_y - hl_h / 2), cw, hl_h,
+            ctx.draw_sprite("column_bg", x0, int(ht_bottom - hl_h / 2), cw, hl_h,
                             hl_tint)
             # Top icon: hollow white pill 22u×14u, 30u below the hit line;
             # shrinks to 0.9 on press.
