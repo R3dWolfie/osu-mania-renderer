@@ -69,6 +69,11 @@ def _receptors(ctx) -> None:
                 ov = (ap / 50.0) if ap < 50 else (0.5 + 0.5 * max(0.0, 1.0 - (ap - 50) / 250.0))
                 grad_h = int((ctx.height - centre_y) * 0.5)
                 _fx_draw(ctx.fr, "vgrad", x0, centre_y, cw, grad_h, (r, g, b), 0.6 * ov)
+            # lazer ArgonHitTarget: a faint white box per column at the hit
+            # position (height NOTE_HEIGHT*NOTE_ACCENT_RATIO), behind the line.
+            ht_h = max(4, int(round(42.0 * 0.82 * u)))
+            ctx.draw_sprite("column_bg", x0, int(centre_y - ht_h / 2), cw, ht_h,
+                            (1.0, 1.0, 1.0, 0.30))
             # Hit-target line (Circle, height CORNER_RADIUS*2): Gray(196) at
             # rest, white when held.
             hl_h = max(3, int(round(6.8 * u)))
