@@ -246,8 +246,12 @@ def _draw_notes_body(ctx) -> None:
                 body_top = min(y_head, y_tail)
                 body_h = abs(y_head - y_tail)
                 inset = cw // 8
-                ctx.draw_sprite("column_bg", x0 + inset, body_top,
-                                cw - 2 * inset, body_h, (arr[0], arr[1], arr[2], 0.45))
+                # body: SOLID darkened accent (lazer ArgonHoldBodyPiece =
+                # accent.Darken(0.6) = accent/1.6), full column width. Measured
+                # in-game = (157,68,1) for orange (252,109,1)/1.6. Was a dark
+                # translucent accent*0.45 -> too dark / see-through.
+                ctx.draw_sprite("column_bg", x0, body_top, cw, body_h,
+                                (arr[0] / 1.6, arr[1] / 1.6, arr[2] / 1.6, 1.0))
                 # tail: plain rounded cap, NO chevron (only the head is a head)
                 ctx.draw_sprite("argon_note_body", x0, y_tail - nh // 2, cw, nh, arr)
                 # head: body + LINE icon + bar (lazer ArgonHoldNoteHeadPiece uses
