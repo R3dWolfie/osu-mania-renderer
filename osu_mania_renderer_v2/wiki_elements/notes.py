@@ -323,6 +323,100 @@ _ARGON_JUDGE_TEXT = {
 }
 
 
+# osu!lazer Argon RingExplosion (mania ArgonJudgementPiece). White hollow
+# rings burst outward from the judgement centre, tinted by the result colour,
+# additive blend. Ported 1:1 from osu.Game.Rulesets.Mania/Skinning/Argon.
+# (n_small, n_large, travel_multiplier) per judgement; miss = no explosion.
+_ARGON_RING_SPEC = {
+    "geki": (4, 4, 1.0),   # PERFECT (Great/Perfect: 4 small + 4 large, travel x1)
+    "300":  (4, 4, 1.0),   # GREAT
+    "katu": (4, 0, 0.6),   # GOOD  (Ok/Good: 4 small, travel x0.6)
+    "100":  (4, 0, 0.6),   # OK
+    "50":   (3, 0, 0.3),   # MEH   (Meh: 3 small, travel x0.3)
+}
+
+
+def _cached_ring_tex(fr, color, outer, thickness):
+    """A white-bordered hollow circle (lazer RingPiece: CircularContainer with
+    BorderThickness, transparent fill), baked in `color`. Cached on fr."""
+    cache = getattr(fr, "_argon_ring_cache", None)
+    if cache is None:
+        cache = fr._argon_ring_cache = {}
+    outer = max(4, int(round(outer)))
+    thickness = max(1, int(round(thickness)))
+    key = (color, outer, thickness)
+    e = cache.get(key)
+    if e is None:
+        import moderngl
+        from PIL import Image, ImageDraw
+        ss = 4                       # supersample for smooth edges
+        m = ss * 2                   # margin
+        D = outer * ss
+        T = max(ss, thickness * ss)
+        img = Image.new("RGBA", (D + 2 * m, D + 2 * m), (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse([m, m, m + D, m + D],
+                                    outline=(color[0], color[1], color[2], 255),
+                                    width=T)
+        side = outer + 4
+        img = img.resize((side, side), Image.LANCZOS)
+        tex = fr.rc.ctx.texture(img.size, 4, img.tobytes())
+        tex.build_mipmaps()
+        tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+        e = (tex, img.size[0], img.size[1])
+        cache[key] = e
+    return e
+
+
+def _argon_ring_explosion(ctx, j, cx, cy, col):
+    """Draw the Argon ring explosion for judgement popup `j` centred at
+    (cx, cy) in GL (Y-up) render px, tinted `col`. Stateless: every ring's
+    direction/distance is seeded from the judgement's absolute press time so
+    it is identical across all frames of the popup's life."""
+    spec = _ARGON_RING_SPEC.get(j.judgment)
+    if spec is None:                 # miss / unknown -> no explosion (hits only)
+        return
+    n_small, n_large, tmult = spec
+    age = j.age_ms
+    # lazer: ringExplosion.FadeOutFromOne(1000, Easing.OutQuint).
+    group_alpha = (max(0.0, 1.0 - age / 1000.0)) ** 5
+    if group_alpha <= 0.003:
+        return
+    import math, random, moderngl
+    fr = ctx.fr
+    h = fr.rc.height
+    tf = 40.0 * h / 1080.0           # judgement text font in render px (base)
+    # lazer constants relative to font 28: small 9, large 14, thickness 4,
+    # travel 52 (then x the per-result multiplier).
+    small_px = 9.0 / 28.0 * tf
+    large_px = 14.0 / 28.0 * tf
+    thick_px = 4.0 / 28.0 * tf
+    travel = 52.0 / 28.0 * tf * tmult
+    # lazer: MoveTo(dist*0.3) then MoveTo(dist) over 600ms OutQuint.
+    p = min(age, 600) / 600.0
+    radius_frac = 0.3 + 0.7 * (1.0 - (1.0 - p) ** 5)
+    seed_base = int(ctx.scene.t_ms - age)        # = event press time (stable)
+    pieces = [small_px] * n_small + [large_px] * n_large
+    gl = fr.rc.ctx
+    fr._flush_sprite_batch()
+    gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)        # additive
+    try:
+        for i, size_px in enumerate(pieces):
+            rng = random.Random((seed_base * 1000003) ^ (i * 2654435761)
+                                ^ (hash(j.judgment) & 0xFFFF))
+            direction = rng.uniform(0.0, 360.0)  # lazer feeds this to cos/sin
+            distance = rng.uniform(travel / 2.0, travel)
+            cur = distance * radius_frac
+            dx = math.cos(direction) * cur
+            dy = math.sin(direction) * cur
+            tex, tw, th = _cached_ring_tex(fr, col, size_px, thick_px)
+            fr._draw_external_texture(
+                tex, x=int(cx + dx - tw / 2.0), y=int(cy + dy - th / 2.0),
+                w=tw, h=th, alpha=group_alpha,
+            )
+    finally:
+        gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+
+
 def _argon_combo_and_judgment(ctx) -> None:
     """Argon default combo + judgement over the playfield. Combo in the
     argon-counter font (with wireframe backing), the judgement as Argon
@@ -363,6 +457,7 @@ def _argon_combo_and_judgment(ctx) -> None:
                                           y=int(jcy_gl - ghh / 2), w=gw, h=ghh,
                                           alpha=alpha)
                 gx += gw + tracking
+            _argon_ring_explosion(ctx, j, center_x, jcy_gl, col)
 
     if s.combo <= 0 or not ctx.options.show_combo:
         return
