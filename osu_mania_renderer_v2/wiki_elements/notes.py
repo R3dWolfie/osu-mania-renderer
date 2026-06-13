@@ -238,14 +238,21 @@ def _draw_notes_body(ctx) -> None:
             if n.is_hold:
                 y_head = to_screen_y(n.head_y_fraction)
                 y_tail = to_screen_y(n.tail_y_fraction)
+                # Once the head reaches the hit line it STAYS there while held
+                # (lazer holds the head at the receptor); don't let it pass below
+                # and read as a phantom second head.
+                if n.head_y_fraction >= 1.0:
+                    y_head = receptor_y
                 body_top = min(y_head, y_tail)
                 body_h = abs(y_head - y_tail)
                 inset = cw // 8
                 ctx.draw_sprite("column_bg", x0 + inset, body_top,
                                 cw - 2 * inset, body_h, (arr[0], arr[1], arr[2], 0.45))
-                for yy in (y_tail, y_head):  # tail under head
-                    ctx.draw_sprite("argon_note_body", x0, yy - nh // 2, cw, nh, arr)
-                    ctx.draw_sprite("argon_note_glyph", x0, yy - nh // 2, cw, nh, (1, 1, 1, 1))
+                # tail: plain rounded cap, NO chevron (only the head is a head)
+                ctx.draw_sprite("argon_note_body", x0, y_tail - nh // 2, cw, nh, arr)
+                # head: full note body + chevron + bar, at the hit line when held
+                ctx.draw_sprite("argon_note_body", x0, y_head - nh // 2, cw, nh, arr)
+                ctx.draw_sprite("argon_note_glyph", x0, y_head - nh // 2, cw, nh, (1, 1, 1, 1))
                 # hold "hitting" pulse (lazer ArgonHoldNoteHittingLayer): while
                 # the LN is held, an additive lightened-accent overlay pulses
                 # (~80ms half-cycle) over the still-held body above the line.
