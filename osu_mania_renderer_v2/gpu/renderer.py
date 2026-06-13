@@ -40,7 +40,7 @@ PLAYFIELD_W_FRAC = 0.28
 LAZER_DEFAULT_COLUMN_SIZE_REF = 42      # widened to match Argon's playfield proportions
                                         # (lazer centres columns in 16:9; our 4:3 letterbox
                                         # made the field read too narrow at the 30-ref value)
-LAZER_DEFAULT_COLUMN_SPACING_REF = 0    # No spacing between columns
+LAZER_DEFAULT_COLUMN_SPACING_REF = 3    # gap between columns (lazer Argon spaces them)
 LAZER_DEFAULT_COLUMN_LINE_WIDTH_REF = 2 # Hairline divider
 # Notes fill the column width — height ≈ column width, like in-game mania.
 NOTE_HEIGHT_REL_COL = 0.95
