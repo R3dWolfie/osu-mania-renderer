@@ -250,9 +250,10 @@ def _draw_notes_body(ctx) -> None:
                                 cw - 2 * inset, body_h, (arr[0], arr[1], arr[2], 0.45))
                 # tail: plain rounded cap, NO chevron (only the head is a head)
                 ctx.draw_sprite("argon_note_body", x0, y_tail - nh // 2, cw, nh, arr)
-                # head: full note body + chevron + bar, at the hit line when held
+                # head: body + LINE icon + bar (lazer ArgonHoldNoteHeadPiece uses
+                # a horizontal line, not the tap chevron), at the hit line when held
                 ctx.draw_sprite("argon_note_body", x0, y_head - nh // 2, cw, nh, arr)
-                ctx.draw_sprite("argon_note_glyph", x0, y_head - nh // 2, cw, nh, (1, 1, 1, 1))
+                ctx.draw_sprite("argon_hold_head", x0, y_head - nh // 2, cw, nh, (1, 1, 1, 1))
                 # hold "hitting" pulse (lazer ArgonHoldNoteHittingLayer): while
                 # the LN is held, an additive lightened-accent overlay pulses
                 # (~80ms half-cycle) over the still-held body above the line.

@@ -205,6 +205,7 @@ GLOBAL_SPRITE_NAMES: tuple[str, ...] = (
     # No user-skin filename map → always resolve to the bundle PNG.
     "argon_note_body",
     "argon_note_glyph",
+    "argon_hold_head",
     "argon_col_glow",
     "argon_key_pill",
     "argon_key_dots",
@@ -473,7 +474,7 @@ class SpriteAtlas:
                                  # Argon note body/glyph: non-square (1.43:1);
                                  # stretch so the note renders at lazer's
                                  # 60:42 aspect, not letterboxed-squished.
-                                 "argon_note_body", "argon_note_glyph",
+                                 "argon_note_body", "argon_note_glyph", "argon_hold_head",
                                  # Argon key pill (22:14) + dots (22:17) are
                                  # baked to fill their canvas at the lazer
                                  # aspect — stretch so they render full-size.
