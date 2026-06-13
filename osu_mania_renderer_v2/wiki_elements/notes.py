@@ -61,6 +61,14 @@ def _receptors(ctx) -> None:
                 lb = b + (1.0 - b) * 0.8
                 ctx.draw_sprite("column_bg", x0, 0, cw, int(centre_y),
                                 (lr, lg, lb, 0.5))
+                # column press gradient (lazer ArgonColumnBackground): additive
+                # accent gradient above the hit line, bright at the line, fading
+                # up; fades in to full over 50ms then settles to 0.5.
+                ap = (scene.key_press_age_ms[c]
+                      if c < len(scene.key_press_age_ms) else 9999)
+                ov = (ap / 50.0) if ap < 50 else (0.5 + 0.5 * max(0.0, 1.0 - (ap - 50) / 250.0))
+                grad_h = int((ctx.height - centre_y) * 0.5)
+                _fx_draw(ctx.fr, "vgrad", x0, centre_y, cw, grad_h, (r, g, b), 0.6 * ov)
             # Hit-target line (Circle, height CORNER_RADIUS*2): Gray(196) at
             # rest, white when held.
             hl_h = max(3, int(round(6.8 * u)))
@@ -81,15 +89,24 @@ def _receptors(ctx) -> None:
             dtint = (1.0, 1.0, 1.0, 1.0) if held else (r, g, b, 1.0)
             ctx.draw_sprite("argon_key_dots", x0 + (cw - dw) // 2,
                             dcy - dh // 2, dw, dh, dtint)
-            # hit-light flash on the line.
+            # hit explosion (lazer ArgonHitExplosion): white-cored additive
+            # flash at the hit line + accent glow halo, fading from 1 over 200ms
+            # (Easing.Out -> (1-p)^2). Tinted by the COLUMN accent, like lazer.
             if c < len(scene.hit_light_age_ms):
                 age = scene.hit_light_age_ms[c]
                 jud = scene.hit_light_judgment[c] if c < len(scene.hit_light_judgment) else ""
-                if 0 <= age < HIT_LIGHT_DURATION_MS and jud in JUDGMENT_LIGHT:
-                    fade = 1.0 - (age / HIT_LIGHT_DURATION_MS)
-                    glow_h = int(cw * 0.9)
-                    ctx.draw_sprite("argon_col_glow", x0, centre_y - glow_h, cw, glow_h,
-                                    (r, g, b, 0.6 * fade))
+                if 0 <= age < 200 and jud in JUDGMENT_LIGHT:
+                    fade = (1.0 - age / 200.0) ** 2
+                    accH = 42.0 * 0.82 * u    # NOTE_HEIGHT * NOTE_ACCENT_RATIO
+                    halo_w = int(cw * 2.0); halo_h = int(accH * 4.0)
+                    _fx_draw(ctx.fr, "radial", x0 + cw / 2 - halo_w / 2,
+                             centre_y - halo_h / 2, halo_w, halo_h, (r, g, b),
+                             0.5 * fade)
+                    core_h = int(accH * 1.4)
+                    lr = r + (1.0 - r) * 0.8; lg = g + (1.0 - g) * 0.8
+                    lb = b + (1.0 - b) * 0.8
+                    _fx_draw(ctx.fr, "solid", x0, centre_y - core_h / 2, cw, core_h,
+                             (lr, lg, lb), 0.9 * fade)
             continue
 
         # Legacy key area (lazer LegacyKeyArea): the KeyImage is stretched in
@@ -221,6 +238,18 @@ def _draw_notes_body(ctx) -> None:
                 for yy in (y_tail, y_head):  # tail under head
                     ctx.draw_sprite("argon_note_body", x0, yy - nh // 2, cw, nh, arr)
                     ctx.draw_sprite("argon_note_glyph", x0, yy - nh // 2, cw, nh, (1, 1, 1, 1))
+                # hold "hitting" pulse (lazer ArgonHoldNoteHittingLayer): while
+                # the LN is held, an additive lightened-accent overlay pulses
+                # (~80ms half-cycle) over the still-held body above the line.
+                if (scene.keys_held[n.column] and n.head_y_fraction >= 1.0
+                        and n.tail_y_fraction < 1.0):
+                    import math as _m
+                    pulse = 0.75 + 0.25 * _m.sin(2.0 * _m.pi * scene.t_ms / 160.0)
+                    lr = min(1.0, arr[0] * 1.2); lg = min(1.0, arr[1] * 1.2)
+                    lb = min(1.0, arr[2] * 1.2)
+                    pb = min(receptor_y, y_tail); pph = abs(y_tail - receptor_y)
+                    _fx_draw(ctx.fr, "solid", x0 + inset, pb, cw - 2 * inset, pph,
+                             (lr, lg, lb), 0.3 * pulse)
             else:
                 y = to_screen_y(n.y_fraction)
                 ctx.draw_sprite("argon_note_body", x0, y - nh // 2, cw, nh, arr)
@@ -367,6 +396,62 @@ def _cached_ring_tex(fr, color, outer, thickness):
     return e
 
 
+def _fx_tex(fr, kind):
+    """Cached white helper textures for Argon dynamic effects, tinted at draw
+    time. kind: "radial" (soft glow), "vgrad" (opaque bottom -> clear top),
+    "solid". One instance each; colour comes from the draw tint."""
+    cache = getattr(fr, "_argon_fx_tex", None)
+    if cache is None:
+        cache = fr._argon_fx_tex = {}
+    e = cache.get(kind)
+    if e is None:
+        import moderngl, math
+        from PIL import Image
+        if kind == "solid":
+            img = Image.new("RGBA", (4, 4), (255, 255, 255, 255))
+        elif kind == "vgrad":
+            Hh = 64
+            img = Image.new("RGBA", (4, Hh), (0, 0, 0, 0))
+            px = img.load()
+            for yy in range(Hh):
+                a = int(255 * (yy / (Hh - 1)))    # row0(top)=0 -> rowH(bottom)=255
+                for xx in range(4):
+                    px[xx, yy] = (255, 255, 255, a)
+        else:  # radial
+            S = 128
+            img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+            px = img.load()
+            c = (S - 1) / 2.0
+            for yy in range(S):
+                for xx in range(S):
+                    d = math.hypot(xx - c, yy - c) / c
+                    a = max(0.0, 1.0 - d)
+                    a = a * a
+                    px[xx, yy] = (255, 255, 255, int(255 * a))
+        tex = fr.rc.ctx.texture(img.size, 4, img.tobytes())
+        tex.build_mipmaps()
+        tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+        e = tex
+        cache[kind] = e
+    return e
+
+
+def _fx_draw(fr, kind, x, y, w, h, color, alpha, rotation=0.0):
+    """Additive tinted draw of a helper texture (immediate)."""
+    if alpha <= 0.003 or w <= 0 or h <= 0:
+        return
+    import moderngl
+    gl = fr.rc.ctx
+    fr._flush_sprite_batch()
+    gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+    try:
+        fr._draw_external_texture(_fx_tex(fr, kind), int(x), int(y), int(w), int(h),
+                                  float(alpha), tint=(color[0], color[1], color[2]),
+                                  rotation_deg=rotation)
+    finally:
+        gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+
+
 def _argon_ring_explosion(ctx, j, cx, cy, col):
     """Draw the Argon ring explosion for judgement popup `j` centred at
     (cx, cy) in GL (Y-up) render px, tinted `col`. Stateless: every ring's
@@ -443,20 +528,49 @@ def _argon_combo_and_judgment(ctx) -> None:
         j = s.active_judgments[-1]
         info = _ARGON_JUDGE_TEXT.get(j.judgment)
         if info is not None:
+            import moderngl as _mgl
             text, col = info
-            alpha = max(0.0, 1.0 - j.age_ms / 500.0)
-            jpop = 1.0 + 0.25 * max(0.0, 1.0 - j.age_ms / 120.0)
-            jh = int(40 * jpop)        # 1080-ref; _cached_text scales it
-            tracking = int(jh * 0.40)
-            glyphs = [fr._cached_text(ch, jh, (*col, 255)) for ch in text]
-            total = sum(g[1] for g in glyphs) + tracking * (len(glyphs) - 1)
+            age = j.age_ms
             jcy_gl = h * 0.44
-            gx = center_x - total / 2.0
-            for gtex, gw, ghh in glyphs:
-                fr._draw_external_texture(gtex, x=int(gx),
-                                          y=int(jcy_gl - ghh / 2), w=gw, h=ghh,
-                                          alpha=alpha)
-                gx += gw + tracking
+            if j.judgment != "miss":
+                # lazer ArgonJudgementPiece: text grows 1->1.4 over 1800ms
+                # (OutQuint), additive, FadeOutFromOne(800) linear. Letter-spaced.
+                sp = min(age, 1800) / 1800.0
+                scale = 1.0 + 0.4 * (1.0 - (1.0 - sp) ** 5)
+                alpha = max(0.0, 1.0 - age / 800.0)
+                jh = max(8, int(40 * scale))
+                tracking = int(jh * 0.40)
+                glyphs = [fr._cached_text(ch, jh, (*col, 255)) for ch in text]
+                total = sum(g[1] for g in glyphs) + tracking * (len(glyphs) - 1)
+                gx = center_x - total / 2.0
+                gl = fr.rc.ctx
+                fr._flush_sprite_batch()
+                gl.blend_func = (_mgl.SRC_ALPHA, _mgl.ONE)        # additive
+                try:
+                    for gtex, gw, ghh in glyphs:
+                        fr._draw_external_texture(gtex, x=int(gx),
+                                                  y=int(jcy_gl - ghh / 2),
+                                                  w=gw, h=ghh, alpha=alpha)
+                        gx += gw + tracking
+                finally:
+                    gl.blend_func = (_mgl.SRC_ALPHA, _mgl.ONE_MINUS_SRC_ALPHA)
+            else:
+                # lazer MISS: ScaleTo(1.6)->ScaleTo(1,100,In), then drop 100u +
+                # rotate 40deg over 800ms (InQuint), FadeOutFromOne(800). Drawn
+                # as one texture so the whole word rotates.
+                ssp = min(age, 100) / 100.0
+                scale = 1.6 + (1.0 - 1.6) * (ssp * ssp)
+                mp = (min(age, 800) / 800.0) ** 5
+                alpha = max(0.0, 1.0 - age / 800.0)
+                unit = 40.0 * (h / 1080.0) / 28.0     # lazer local unit -> render px
+                drop = mp * 100.0 * unit
+                rot = mp * 40.0
+                mtex, mw, mhh = fr._cached_text("MISS", max(8, int(40 * scale)),
+                                                (*col, 255))
+                fr._draw_external_texture(
+                    mtex, x=int(center_x - mw / 2),
+                    y=int(jcy_gl - drop - mhh / 2), w=mw, h=mhh,
+                    alpha=alpha, rotation_deg=-rot)
             _argon_ring_explosion(ctx, j, center_x, jcy_gl, col)
 
     if s.combo <= 0 or not ctx.options.show_combo:

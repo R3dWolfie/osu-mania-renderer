@@ -391,7 +391,7 @@ def build_frame_state(
             age_ms=t_ms - j.time_ms,
         )
         for j in plan.judgment_events
-        if 0 <= t_ms - j.time_ms < 600
+        if 0 <= t_ms - j.time_ms < 800
     )
     # One pass over the press-time-sorted timeline: counts → live accuracy +
     # quality-weighted score + running combo + UR/avg offset + HP +

@@ -1107,6 +1107,7 @@ class FrameRenderer:
 
     def _draw_external_texture(
         self, tex: moderngl.Texture, x: int, y: int, w: int, h: int, alpha: float,
+        tint: tuple = (1.0, 1.0, 1.0), rotation_deg: float = 0.0,
     ) -> None:
         # Flush whatever's queued in the sprite batch FIRST so this draw
         # lands on top of any sprite that was enqueued earlier in this
@@ -1145,13 +1146,28 @@ class FrameRenderer:
         prog["u_cov_fill"].value = 0.0
         prog["u_cov_grad"].value = 0.0
 
+        tr_, tg_, tb_ = tint
+        if rotation_deg:
+            import math as _m
+            cxs, cys = x + w / 2.0, y + h / 2.0
+            ct, st = _m.cos(_m.radians(rotation_deg)), _m.sin(_m.radians(rotation_deg))
+
+            def _rot(px, py):
+                dx, dy = px - cxs, py - cys
+                rx = cxs + dx * ct - dy * st
+                ry = cys + dx * st + dy * ct
+                return (rx / screen_w) * 2 - 1, (ry / screen_h) * 2 - 1
+            bl = _rot(x, y); br = _rot(x + w, y)
+            tr2 = _rot(x + w, y + h); tl = _rot(x, y + h)
+        else:
+            bl = (x0, y0); br = (x1, y0); tr2 = (x1, y1); tl = (x0, y1)
         verts = np.array([
-            [x0, y0, 0, 1, 0, 1, 1, 1, alpha],
-            [x1, y0, 1, 1, 0, 1, 1, 1, alpha],
-            [x1, y1, 1, 0, 0, 1, 1, 1, alpha],
-            [x0, y0, 0, 1, 0, 1, 1, 1, alpha],
-            [x1, y1, 1, 0, 0, 1, 1, 1, alpha],
-            [x0, y1, 0, 0, 0, 1, 1, 1, alpha],
+            [bl[0], bl[1], 0, 1, 0, tr_, tg_, tb_, alpha],
+            [br[0], br[1], 1, 1, 0, tr_, tg_, tb_, alpha],
+            [tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha],
+            [bl[0], bl[1], 0, 1, 0, tr_, tg_, tb_, alpha],
+            [tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha],
+            [tl[0], tl[1], 0, 0, 0, tr_, tg_, tb_, alpha],
         ], dtype="f4")
         vbo = ctx.buffer(verts.tobytes())
         vao = ctx.simple_vertex_array(
