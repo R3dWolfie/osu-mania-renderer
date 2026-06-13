@@ -102,10 +102,11 @@ def _receptors(ctx) -> None:
                     _fx_draw(ctx.fr, "radial", x0 + cw / 2 - halo_w / 2,
                              centre_y - halo_h / 2, halo_w, halo_h, (r, g, b),
                              0.5 * fade)
-                    core_h = int(accH * 1.4)
+                    core_h = int(accH * 2.0)
                     lr = r + (1.0 - r) * 0.8; lg = g + (1.0 - g) * 0.8
                     lb = b + (1.0 - b) * 0.8
-                    _fx_draw(ctx.fr, "solid", x0, centre_y - core_h / 2, cw, core_h,
+                    # radial (soft edges) so the core has no hard top/bottom line
+                    _fx_draw(ctx.fr, "radial", x0, centre_y - core_h / 2, cw, core_h,
                              (lr, lg, lb), 0.9 * fade)
             continue
 
