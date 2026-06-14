@@ -250,10 +250,13 @@ def _draw_notes_body(ctx) -> None:
                 # accent.Darken(0.6) = accent/1.6), full column width. Measured
                 # in-game = (157,68,1) for orange (252,109,1)/1.6. Was a dark
                 # translucent accent*0.45 -> too dark / see-through.
-                ctx.draw_sprite("argon_hold_body", x0, body_top, cw, body_h,
+                # body: FLAT accent/1.6 (lazer's hold body is uniform, the
+                # gloss comes from the caps, not a body gradient).
+                ctx.draw_sprite("column_bg", x0, body_top, cw, body_h,
                                 (arr[0] / 1.6, arr[1] / 1.6, arr[2] / 1.6, 1.0))
-                # tail: plain rounded cap, NO chevron (only the head is a head)
-                ctx.draw_sprite("argon_note_body", x0, y_tail - nh // 2, cw, nh, arr)
+                # tail: a cap that FADES from ~0.92 accent (top) into the body
+                # (0.62) so the join is smooth, not a harsh bright block.
+                ctx.draw_sprite("argon_hold_body", x0, y_tail - nh // 2, cw, nh, arr)
                 # head: body + LINE icon + bar (lazer ArgonHoldNoteHeadPiece uses
                 # a horizontal line, not the tap chevron), at the hit line when held
                 ctx.draw_sprite("argon_note_body", x0, y_head - nh // 2, cw, nh, arr)
