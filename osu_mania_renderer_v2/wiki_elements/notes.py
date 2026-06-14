@@ -250,7 +250,7 @@ def _draw_notes_body(ctx) -> None:
                 # accent.Darken(0.6) = accent/1.6), full column width. Measured
                 # in-game = (157,68,1) for orange (252,109,1)/1.6. Was a dark
                 # translucent accent*0.45 -> too dark / see-through.
-                ctx.draw_sprite("column_bg", x0, body_top, cw, body_h,
+                ctx.draw_sprite("argon_hold_body", x0, body_top, cw, body_h,
                                 (arr[0] / 1.6, arr[1] / 1.6, arr[2] / 1.6, 1.0))
                 # tail: plain rounded cap, NO chevron (only the head is a head)
                 ctx.draw_sprite("argon_note_body", x0, y_tail - nh // 2, cw, nh, arr)
