@@ -66,6 +66,13 @@ def parse_beatmap(
             overall_difficulty = float(difficulty.get("OverallDifficulty", "5"))
         except (TypeError, ValueError):
             overall_difficulty = 5.0
+        # The faithful-lazer note generator needs the FULL difficulty set:
+        # the RNG seed is Round(HP+CS)*20 + (int)(OD*41.2) + Round(AR), and
+        # conversionDifficulty depends on HP, AR, the object count and the
+        # drain time (last-first start time minus total break time).
+        hp_drain_rate = _float_or_none(difficulty.get("HPDrainRate"))
+        circle_size = _float_or_none(difficulty.get("CircleSize"))
+        approach_rate = _float_or_none(difficulty.get("ApproachRate"))
         return convert_standard_to_mania(
             hit_objects_block=hit_objects_raw,
             timing_points=_parse_timing_points(sections.get("TimingPoints", "")),
@@ -84,6 +91,11 @@ def parse_beatmap(
             key_count=convert_to_keys,
             seed_source=str(seed),
             replay_key_events=replay_key_events,
+            hp_drain_rate=hp_drain_rate,
+            circle_size=circle_size,
+            approach_rate=approach_rate,
+            total_break_time_ms=_parse_total_break_time(events),
+            kiai_points=_parse_kiai_points(sections.get("TimingPoints", "")),
         )
 
     try:
@@ -290,6 +302,54 @@ def _int_or_none(s: str | None) -> int | None:
         return int(s)
     except ValueError:
         return None
+
+
+def _float_or_none(s: str | None) -> float | None:
+    if s is None:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _parse_total_break_time(events: str) -> float:
+    """Sum of all break-period durations (ms). Break events are
+    ``2,start,end`` (or ``Break,start,end``). Used by lazer's
+    conversionDifficulty drain-time term."""
+    total = 0.0
+    for line in events.splitlines():
+        parts = line.split(",")
+        if len(parts) >= 3 and parts[0].strip() in ("2", "Break"):
+            try:
+                start = float(parts[1])
+                end = float(parts[2])
+            except ValueError:
+                continue
+            if end > start:
+                total += end - start
+    return total
+
+
+def _parse_kiai_points(block: str) -> tuple[tuple[int, bool], ...]:
+    """Extract (time, kiai) pairs from every timing point's effects field
+    (bit 0 = kiai), sorted by time. Mirrors lazer's EffectControlPoints,
+    whose KiaiMode persists until the next effect point overrides it."""
+    out: list[tuple[int, bool]] = []
+    for line in block.splitlines():
+        if not line.strip() or line.startswith("//"):
+            continue
+        parts = line.split(",")
+        if len(parts) < 8:
+            continue
+        try:
+            time_ms = int(float(parts[0]))
+            effects = int(parts[7]) if parts[7].strip() else 0
+        except ValueError:
+            continue
+        out.append((time_ms, bool(effects & 1)))
+    out.sort(key=lambda kp: kp[0])
+    return tuple(out)
 
 
 # ─── Cumulative SV distance ───
