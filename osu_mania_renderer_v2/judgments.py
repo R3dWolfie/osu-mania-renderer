@@ -72,6 +72,17 @@ class JudgmentEvent:
     hit_offset_ms: float | None = None
     # Signed press-time minus note-time. Negative = early, positive = late.
     # None on a true miss (no press matched). Used to compute UR + avg offset.
+    is_tail: bool = False
+    # True for a hold-note tail (release) event. Structural fact set by
+    # compute_judgments; used by reconcile_to_counts to detect the replay's
+    # hold-counting convention (stable ScoreV1 = 1 judgment per hold).
+    scoring: bool = True
+    # False when this event must NOT contribute to the accuracy/count tally.
+    # Set by reconcile_to_counts on tail events for ScoreV1 replays, where
+    # the .osr records ONE judgment per hold — the tail stays in the event
+    # stream for visuals (hit light / popup / combo) but is excluded from
+    # the running counts so the on-screen accuracy lands on the recorded
+    # value exactly.
 
 
 @dataclass(frozen=True)
@@ -102,18 +113,35 @@ def reconcile_to_counts(
     counts then track correctly the whole way and land exactly on what osu shows
     — no end-of-song patching.
 
-    Only applies when the event count maps 1:1 to the target total (e.g. no
-    hold-note counting ambiguity); otherwise the timeline is returned unchanged.
+    Hold-note counting convention (detected arithmetically per replay):
+      • sum(counts) == len(events)            → ScoreV2 / lazer: head AND tail
+        are each a recorded judgment. Relabel every event (old behaviour).
+      • sum(counts) == len(non-tail events)   → stable ScoreV1: ONE judgment
+        per hold. Relabel taps + hold heads to the recorded counts and mark
+        every tail event scoring=False so the tally excludes it (the tail
+        keeps its sim judgment purely for visuals).
+    Anything else (unexpected mismatch) returns the timeline unchanged.
     """
     events = timeline.events
     targets = [("geki", geki), ("300", c300), ("katu", katu),
                ("100", c100), ("50", c50), ("miss", miss)]
-    if sum(c for _, c in targets) != len(events) or not events:
+    total = sum(c for _, c in targets)
+    if not events:
         return timeline
+
+    if total == len(events):
+        # V2/lazer convention — every event is a recorded judgment.
+        idxs = list(range(len(events)))
+    else:
+        heads = [i for i, e in enumerate(events) if not e.is_tail]
+        if total != len(heads):
+            return timeline
+        # ScoreV1 convention — holds recorded once; tails are visual-only.
+        idxs = heads
 
     inf = float("inf")
     order = sorted(
-        range(len(events)),
+        idxs,
         key=lambda i: (abs(events[i].hit_offset_ms)
                        if events[i].hit_offset_ms is not None else inf),
     )
@@ -132,6 +160,11 @@ def reconcile_to_counts(
                 # still resolve.
                 off = e.hit_offset_ms if e.hit_offset_ms is not None else 0.0
                 new[i] = replace(e, judgment=tier, hit_offset_ms=off)
+    if len(idxs) != len(events):
+        # ScoreV1: exclude tails from the accuracy/count tally.
+        for i, e in enumerate(new):
+            if e.is_tail:
+                new[i] = replace(e, scoring=False)
 
     return JudgmentTimeline(
         events=tuple(new), count_geki=geki, count_300=c300, count_katu=katu,
@@ -149,9 +182,11 @@ def compute_judgments(
     """Pair each scoring event (tap, hold head, hold tail) with the closest
     matching keypress/release and classify by mania timing window.
 
-    Hold notes contribute TWO scoring events (head ↔ press; tail ↔
-    release). Previously we judged each hold as a single event, which left
-    our final counts off by `N_holds` from what osu! actually recorded.
+    Hold notes contribute TWO events (head ↔ press; tail ↔ release) —
+    the ScoreV2/lazer convention. Whether the TAIL counts as a recorded
+    judgment depends on the replay: stable ScoreV1 records ONE judgment per
+    hold, so reconcile_to_counts flags tails scoring=False in that case
+    (detected by comparing len(events) against the .osr count total).
     """
     from osu_mania_renderer_v2.models import HoldNote
 
@@ -236,7 +271,7 @@ def compute_judgments(
         counts[jud] += 1
         j_events.append(JudgmentEvent(
             time_ms=target_time, column=col, judgment=jud,
-            hit_offset_ms=offset,
+            hit_offset_ms=offset, is_tail=is_tail,
         ))
 
     return JudgmentTimeline(

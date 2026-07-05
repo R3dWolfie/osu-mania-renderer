@@ -197,8 +197,11 @@ async def build_render_plan(
         judgments, replay.count_geki, replay.count_300, replay.count_katu,
         replay.count_100, replay.count_50, replay.count_miss,
     )
+    # scoring-only: ScoreV1 hold tails are visual events (scoring=False) and
+    # must not dilute the score/accuracy pacing — see reconcile_to_counts.
     total_quality = max(
-        1, sum(_HIT_SCORE_WEIGHT[j.judgment] for j in judgments.events),
+        1, sum(_HIT_SCORE_WEIGHT[j.judgment]
+               for j in judgments.events if j.scoring),
     )
     # Per-note "consumed" timestamps: notes the player actually tried to hit.
     # `judged_hits` keyed on (column, scheduled note time) → press timestamp.
@@ -422,8 +425,13 @@ def build_frame_state(
     for eff_t, j in plan.judgment_timeline:
         if eff_t > t_ms:
             break
-        running[j.judgment] += 1
-        quality_so_far += _HIT_SCORE_WEIGHT[j.judgment]
+        # ScoreV1 hold tails (scoring=False) are visual-only: they flash the
+        # receptor / popup / combo but are NOT recorded judgments, so they
+        # stay out of the counts + quality tally (else the final accuracy
+        # can't land on the .osr's recorded value on hold-note maps).
+        if j.scoring:
+            running[j.judgment] += 1
+            quality_so_far += _HIT_SCORE_WEIGHT[j.judgment]
         if j.judgment == "miss":
             combo_at_t = 0
         else:
