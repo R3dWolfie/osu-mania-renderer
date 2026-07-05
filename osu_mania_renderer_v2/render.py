@@ -16,7 +16,7 @@ import os
 import time as _t
 from bisect import bisect_right as _br
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,7 @@ from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.readback import FrameReader
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
 from osu_mania_renderer_v2.judgments import compute_judgments, reconcile_to_counts
-from osu_mania_renderer_v2.models import HoldNote, RenderOptions
+from osu_mania_renderer_v2.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.hitsounds import build_hitsound_track
 from osu_mania_renderer_v2.pp import compute_pp
@@ -171,6 +171,20 @@ async def build_render_plan(
     for w in mod_res.warnings:
         log.warning(w)
     modded = mod_res.beatmap
+
+    # Rate mods (DT/NC/HT): the .osr keypress timeline is in MAP time, but
+    # apply_mods rescaled every note to REAL (video) time. Rescale the replay
+    # events identically, or the judgment sim pairs presses against notes up
+    # to 33% (DT) / 25% (HT) of the song-position away and reads a clean play
+    # as a fail (Tono HT 92.87% rendered as 44% FAILED). Hit windows stay
+    # unscaled: stable-mania windows are rate-independent in real time.
+    # NOTE: parse_beatmap above must keep consuming the RAW events - the
+    # std->mania convert recovery matches them against raw .osu times.
+    if mod_res.audio_rate != 1.0:
+        replay = _dc_replace(replay, key_events=tuple(
+            KeyEvent(time_ms=int(e.time_ms / mod_res.audio_rate),
+                     keys_held=e.keys_held)
+            for e in replay.key_events))
 
     judgments = compute_judgments(
         modded.notes, replay.key_events, modded.key_count,
