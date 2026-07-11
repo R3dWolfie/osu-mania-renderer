@@ -216,3 +216,7 @@ class RenderOptions:
     # Try to download the player's chosen skin (from osu! profile). Needs
     # an authenticated API call + skin-mirror integration; not yet wired.
     use_replay_skin: bool = False
+    # R3D intro "R" splash (parity with std/catch show_logo; off by default
+    # so existing renders are unchanged). Fades out exactly as the first
+    # note spawns — see logo.py + FrameRenderer.draw_logo_splash.
+    show_logo: bool = False

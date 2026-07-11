@@ -445,6 +445,12 @@ def _cli() -> None:
                    help="hide hit-judgement text/sprite")
     p.add_argument("--no-key-counter", action="store_true",
                    help="hide bottom-right key counter")
+    # NB: must be declared HERE (not only in cli.py) — parse_known_args
+    # silently drops unknown flags, so an undeclared --logo would no-op.
+    p.add_argument("--logo", action="store_true",
+                   help="show_logo: the R3D 'R' tile splash during the "
+                        "intro, fading out as the first note spawns "
+                        "(parity with std/catch)")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -464,6 +470,7 @@ def _cli() -> None:
         show_combo=not args.no_combo,
         show_judgment=not args.no_judgment,
         show_key_counter=not args.no_key_counter,
+        show_logo=args.logo,
     )
     async def _print_progress(fraction: float) -> None:
         # Same line shape the bot's _PROGRESS_RE parses from the subprocess

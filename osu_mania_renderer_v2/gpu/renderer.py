@@ -78,6 +78,10 @@ class FrameRenderer:
         # Settings-page toggles. Pass options to gate optional HUD draws.
         self.options = options or RenderOptions(resolution=(rc.width, rc.height), fps=60)
         self.first_note_ms = first_note_ms
+        # R3D intro splash (show_logo) textures — baked lazily on the first
+        # frame the splash is visible, so flag-off renders never touch them.
+        self._logo_tex: moderngl.Texture | None = None
+        self._logo_glow_tex: moderngl.Texture | None = None
         self.programs = load_programs(rc.ctx)
         # 4-tier sprite resolution: BEATMAP > SKIN > FALLBACK > DEFAULT.
         # Each map's folder can ship per-map skin overrides (rare but
@@ -647,6 +651,9 @@ class FrameRenderer:
             self._draw_sprite("column_bg", 0, 0,
                               self.rc.width, self.rc.height,
                               (0, 0, 0, scene.fade_to_black))
+        # R3D intro splash — topmost intro element (over the start fade),
+        # matching std/catch. No-op unless options.show_logo is on.
+        self.draw_logo_splash(scene.t_ms)
         if scene.results_opacity > 0 and self.options.show_result_screen:
             self._draw_results_overlay(scene)
         # Watermark goes after every other overlay so it's never covered.
@@ -666,6 +673,68 @@ class FrameRenderer:
             x=rc.width - w - 18,
             y=18,
             w=w, h=h, alpha=0.85,
+        )
+
+    def draw_logo_splash(self, t_ms: int) -> None:
+        """R3D 'R' tile intro splash (show_logo) — ported from the std/catch
+        renderers so the splash is identical across modes: a red additive
+        glow + the shared assets/logo.png tile, centred at (w/2, 0.44h from
+        the top), 220px in 1080-space with the settle scale, fading out
+        exactly as the first note spawns (first_note_ms - approach window).
+        No-op (and zero side effects) unless options.show_logo is on."""
+        if not getattr(self.options, "show_logo", False):
+            return
+        from osu_mania_renderer_v2.logo import (
+            LOGO_UI_SIZE,
+            bake_logo_tile,
+            logo_alpha,
+            logo_glow_rgba,
+            logo_scale,
+        )
+        # The splash window opens at the render's first frame (t=0) and
+        # closes at the first note's spawn. Approach mirrors
+        # render.build_render_plan's scroll-speed formula (lazy import —
+        # render.py imports this module at load time).
+        from osu_mania_renderer_v2.render import (
+            APPROACH_MS,
+            SCROLL_SPEED_BASELINE,
+        )
+        ss = getattr(self.options, "scroll_speed", None)
+        approach = int(APPROACH_MS * SCROLL_SPEED_BASELINE / ss) if ss else APPROACH_MS
+        gameplay_in = float(self.first_note_ms - approach)
+        la = logo_alpha(float(t_ms), 0.0, gameplay_in)
+        if la is None:
+            return
+        if self._logo_tex is None:
+            tile = bake_logo_tile()
+            self._logo_tex = self.rc.ctx.texture(
+                (tile.shape[1], tile.shape[0]), 4, tile.tobytes())
+            glow = logo_glow_rgba()
+            self._logo_glow_tex = self.rc.ctx.texture(
+                (glow.shape[1], glow.shape[0]), 4, glow.tobytes())
+        rc = self.rc
+        k_ui = rc.height / 1080.0
+        d = LOGO_UI_SIZE * k_ui * logo_scale(float(t_ms), 0.0)
+        cx = rc.width / 2.0
+        # std/catch centre the splash 0.44 of the screen from the TOP;
+        # this renderer's draw rects are bottom-left origin.
+        cy = rc.height * (1.0 - 0.44)
+        # Flush queued sprites (e.g. the fade-to-black wash) under the
+        # CURRENT blend mode before switching to additive for the glow.
+        self._flush_sprite_batch()
+        ctx = rc.ctx
+        g = d * 1.9
+        ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+        self._draw_external_texture(
+            self._logo_glow_tex,
+            x=int(cx - g / 2), y=int(cy - g / 2), w=int(g), h=int(g),
+            alpha=0.45 * la, tint=(0.95, 0.28, 0.30),
+        )
+        ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        self._draw_external_texture(
+            self._logo_tex,
+            x=int(cx - d / 2), y=int(cy - d / 2), w=int(d), h=int(d),
+            alpha=la,
         )
 
     def set_banner_text(self, text: str) -> None:

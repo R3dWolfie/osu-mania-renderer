@@ -95,6 +95,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skin-combo-colors", default=None,
                    choices=["beatmap", "skin"],
                    help="combo-color source (beatmap or skin)")
+    p.add_argument("--logo", action="store_true",
+                   help="show the R3D 'R' tile splash during the intro, "
+                        "fading out as the first note spawns "
+                        "(parity with std/catch)")
     p.add_argument("--watermark",       default=None,
                    help="text shown bottom-right (default: empty)")
     p.add_argument("--allow-converted", action="store_true",
@@ -163,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.nightcore_hitsounds: opts_kwargs["nightcore_hitsounds"]  = True
     if args.skin_hitsounds:      opts_kwargs["use_skin_hitsounds"]   = True
     if args.skin_combo_colors:   opts_kwargs["skin_combo_colors"]    = args.skin_combo_colors
+    if args.logo:                opts_kwargs["show_logo"]            = True
     if args.watermark is not None:
         opts_kwargs["watermark_text"] = args.watermark[:64]
     options = RenderOptions(**opts_kwargs)

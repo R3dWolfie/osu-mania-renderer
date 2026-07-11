@@ -76,3 +76,11 @@ def fade_to_black(*, element, skin, assets, variables, ctx) -> None:
             "column_bg", 0, 0, ctx.fr.rc.width, ctx.fr.rc.height,
             (0, 0, 0, s.fade_to_black),
         )
+
+
+def intro_logo(*, element, skin, assets, variables, ctx) -> None:
+    """R3D intro splash (show_logo): the shared 'R' tile + red glow, fading
+    out exactly as the first note spawns — parity with std/catch. Delegates
+    to the engine so the legacy and wiki paths draw identical pixels; no-op
+    unless options.show_logo is on."""
+    ctx.fr.draw_logo_splash(ctx.t_ms)

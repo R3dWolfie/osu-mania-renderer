@@ -39,6 +39,9 @@ _ORDER = [
     ("ur_summary", hud.ur_summary),
     ("miss_break_wash", effects.miss_break_wash),
     ("fade_to_black", effects.fade_to_black),
+    # R3D intro splash — topmost intro element (over the start fade),
+    # mirroring FrameRenderer.draw(); gone before results ever fade in.
+    ("intro_logo", effects.intro_logo),
     ("results_overlay", hud.results_overlay),
     ("watermark", hud.watermark),
 ]
