@@ -451,6 +451,9 @@ def _cli() -> None:
                    help="show_logo: the R3D 'R' tile splash during the "
                         "intro, fading out as the first note spawns "
                         "(parity with std/catch)")
+    p.add_argument("--featured-avatar-png", type=Path, default=None,
+                   help="featured player's osu! avatar PNG → results-screen "
+                        "header (parity with std). Absent ⇒ grey placeholder")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -471,6 +474,8 @@ def _cli() -> None:
         show_judgment=not args.no_judgment,
         show_key_counter=not args.no_key_counter,
         show_logo=args.logo,
+        featured_avatar_png=(str(args.featured_avatar_png)
+                             if args.featured_avatar_png else None),
     )
     async def _print_progress(fraction: float) -> None:
         # Same line shape the bot's _PROGRESS_RE parses from the subprocess

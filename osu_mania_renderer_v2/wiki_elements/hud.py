@@ -597,7 +597,9 @@ def ur_summary(*, element, skin, assets, variables, ctx) -> None:
 def results_overlay(*, element, skin, assets, variables, ctx) -> None:
     s = ctx.scene
     if s.results_opacity > 0 and ctx.options.show_result_screen:
-        ctx.fr._draw_results_overlay(s)
+        # Pass the live gameplay ctx so the results numbers render in the
+        # argon-counter font (draw_number/_argon_number need the FrameContext).
+        ctx.fr._draw_results_overlay(s, ctx)
 
 
 def watermark(*, element, skin, assets, variables, ctx) -> None:

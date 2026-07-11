@@ -220,3 +220,8 @@ class RenderOptions:
     # so existing renders are unchanged). Fades out exactly as the first
     # note spawns — see logo.py + FrameRenderer.draw_logo_splash.
     show_logo: bool = False
+    # Featured player's osu! avatar PNG (service-resolved) → drawn as a
+    # rounded square in the results-screen header. Absent/None ⇒ the results
+    # overlay draws the grey placeholder chip. Mirrors std's featured-avatar
+    # threading (mania_ordr.std_renderer's ("featured-avatar-png", …) map).
+    featured_avatar_png: str | None = None

@@ -1340,102 +1340,226 @@ class FrameRenderer:
             tex, x=x, y=y, w=w, h=h, alpha=0.95,
         )
 
-    def _draw_results_overlay(self, scene: SceneState) -> None:
-        """Post-game results card — lazer-inspired vertical stack of grade,
-        score, accuracy, max combo, judgment row, UR/avg, UR histogram, PP.
-        Each line is positioned BELOW the previous one (in GL Y-up coords,
-        which means a smaller y value) with a fixed gap so nothing overlaps.
+    def _results_avatar_texture(self) -> "moderngl.Texture | None":
+        """Load the featured player's osu! avatar (options.featured_avatar_png)
+        once, as a rounded-square GL texture, and cache it for the whole
+        results screen. Returns None when no path is set, the file is missing,
+        or decoding fails — the caller then draws the grey placeholder chip.
+        Never raises (a bad avatar must not break the render)."""
+        if getattr(self, "_results_avatar_tried", False):
+            return getattr(self, "_results_avatar_tex", None)
+        self._results_avatar_tried = True
+        self._results_avatar_tex = None
+        path = getattr(self.options, "featured_avatar_png", None)
+        if not path:
+            return None
+        try:
+            p = Path(path)
+            if not p.is_file():
+                return None
+            from PIL import ImageDraw
+            img = Image.open(p).convert("RGBA")
+            w, h = img.size
+            s = min(w, h)
+            img = img.crop(
+                ((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s)
+            ).resize((256, 256), Image.LANCZOS)
+            mask = Image.new("L", (256, 256), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, 255, 255), radius=46, fill=255)
+            img.putalpha(mask)
+            self._results_avatar_tex = self.rc.ctx.texture(
+                (256, 256), 4, img.tobytes())
+        except Exception:  # noqa: BLE001 — avatar is cosmetic; never fatal
+            self._results_avatar_tex = None
+        return self._results_avatar_tex
+
+    def _draw_results_overlay(self, scene: SceneState, ctx=None) -> None:
+        """Post-game results card — lazer-Argon faithful. Every NUMBER (score,
+        accuracy, max combo, the six judgment counts, unstable rate, per-column
+        UR, pp) is composed from the bundled argon-counter glyph font (lazer's
+        ArgonCounterTextComponent — live digits over the dim wireframe backing)
+        via `_argon_number`. Only *labels* (ACCURACY / MAX COMBO / the judgment
+        band names / the signed avg-offset caption, which the argon font has no
+        +/- glyph for) stay PIL text.
+
+        Layout is authored in lazer's 1080p design space and scaled by
+        `A = height/1080`, mirroring `_draw_argon_hud`. A drawing `ctx`
+        (FrameContext) is required for the argon glyph path; the wiki
+        `results_overlay` element passes the live gameplay ctx, and the legacy
+        monolithic `draw()` path (ctx=None) constructs an equivalent one so the
+        Argon look is identical regardless of render path.
         """
         rc = self.rc
         a = max(0.0, min(1.0, scene.results_opacity))
+        # Obtain / construct the FrameContext used for the argon glyph font.
+        if ctx is None:
+            try:
+                from osu_mania_renderer_v2.wiki_elements.context import (
+                    FrameContext,
+                )
+                ctx = FrameContext(
+                    fr=self, skin=None, gl=self.rc.ctx, fbo=self.rc.fbo,
+                    width=self.rc.width, height=self.rc.height,
+                    key_count=self.rc.key_count,
+                )
+                ctx.scene = scene
+            except Exception:  # noqa: BLE001
+                ctx = None
+        use_argon = ctx is not None and ctx.has_argon_font()
+        # Lazily import the shared argon-number primitive (avoids a module-load
+        # cycle with wiki_elements at import time).
+        _argon_number = None
+        if use_argon:
+            try:
+                from osu_mania_renderer_v2.wiki_elements.hud import (
+                    _argon_number as _an,
+                )
+                _argon_number = _an
+            except Exception:  # noqa: BLE001
+                use_argon = False
+
+        A = rc.height / 1080.0
+        cx = rc.width / 2.0
+
         # Dim the whole scene under the card.
         self._draw_sprite("column_bg", 0, 0, rc.width, rc.height,
-                          (0, 0, 0, 0.7 * a))
+                          (0, 0, 0, 0.92 * a))
 
-        cx = rc.width // 2
+        def _gl_center(from_top_px: float) -> float:
+            """1080-design from-top y → GL (bottom-left origin) centre y."""
+            return rc.height - from_top_px * A
 
-        # Build the stack top-to-bottom on screen. In GL coords, top of
-        # screen = high y; we cursor downward by subtracting each row's
-        # height and a small gap.
-        cursor_y = int(rc.height * 0.88)  # top of the card
+        def _num(text: str, gh: float, from_top_px: float,
+                 tint=(1.0, 1.0, 1.0), *, x=None, align: str = "center") -> None:
+            """Draw a numeric value in the argon-counter font (falls back to a
+            PIL glyph when the argon font is somehow unavailable). `gh` is the
+            1080-design glyph height; `x`/`from_top_px` place the anchor."""
+            xx = cx if x is None else x
+            cyg = _gl_center(from_top_px)
+            if use_argon:
+                _argon_number(ctx, text, x=xx, center_y=cyg, glyph_h=gh * A,
+                              align=align, alpha=a, tint=tint)
+                return
+            col = (int(tint[0] * 255), int(tint[1] * 255),
+                   int(tint[2] * 255), 255)
+            tex, w, h = self._cached_text(text, int(gh), col)
+            xpix = xx - w if align == "right" else (
+                xx - w / 2 if align == "center" else xx)
+            self._draw_external_texture(tex, x=int(xpix), y=int(cyg - h / 2),
+                                        w=w, h=h, alpha=a)
 
-        def _line(size: int, text: str, color: tuple[int, int, int, int],
-                  gap_after: int) -> None:
-            nonlocal cursor_y
-            tex, w, h = self._cached_text(text, size, color)
+        def _label(text: str, size: int, col, from_top_px: float,
+                   *, x=None, align: str = "center") -> None:
+            """Draw a PIL label (size is 1080-reference, auto-scaled)."""
+            xx = cx if x is None else x
+            cyg = _gl_center(from_top_px)
+            tex, w, h = self._cached_text(text, size, (col[0], col[1], col[2], 255))
+            xpix = xx - w if align == "right" else (
+                xx - w / 2 if align == "center" else xx)
+            self._draw_external_texture(tex, x=int(xpix), y=int(cyg - h / 2),
+                                        w=w, h=h, alpha=a)
+
+        # ── Header: featured player avatar (rounded square) + name ──────────
+        av = 104.0
+        av_top = 42.0
+        av_gl_bottom = rc.height - (av_top + av) * A
+        fp = 6.0
+        # Dark rounded frame behind the avatar (argon_card sprite, tinted).
+        self._draw_direct(
+            "argon_card", cx - (av / 2 + fp) * A, av_gl_bottom - fp * A,
+            (av + 2 * fp) * A, (av + 2 * fp) * A, (0.10, 0.11, 0.14, 0.92 * a))
+        avatar_tex = self._results_avatar_texture()
+        if avatar_tex is not None:
             self._draw_external_texture(
-                tex, x=cx - w // 2, y=cursor_y - h,
-                w=w, h=h, alpha=a,
-            )
-            cursor_y -= h + gap_after
+                avatar_tex, x=int(cx - av * A / 2), y=int(av_gl_bottom),
+                w=int(av * A), h=int(av * A), alpha=a)
+        else:
+            # Grey placeholder chip (matches the leaderboard-card fallback).
+            self._draw_direct(
+                "argon_card", cx - av * A / 2, av_gl_bottom, av * A, av * A,
+                (0.55, 0.57, 0.60, a))
+        # Player name — parsed off the banner text ("… [diff]   <player>"),
+        # exactly like the gameplay leaderboard card.
+        bt = getattr(self, "_banner_text", "") or ""
+        name = bt.rsplit("   ", 1)[-1].strip() if "   " in bt else (bt or "Player")
+        _label(name[:22], 22, (235, 238, 246), av_top + av + 22)
 
-        # 1. Grade letter, huge. Skipped if the user hid it via settings,
-        # but the rest of the results card stays.
+        # ── Grade letter (huge; argon font has no letters, so PIL) ──────────
         if self.options.show_grade:
             grade = scene.grade or "D"
             g_r, g_g, g_b = self._GRADE_COLOURS.get(grade, (200, 200, 220))
-            _line(220, grade, (g_r, g_g, g_b, 255), gap_after=18)
+            _label(grade, 148, (g_r, g_g, g_b), 250)
 
-        # 2. Score, large.
-        _line(96, f"{scene.score:,}", (255, 255, 255, 255), gap_after=10)
+        # ── Score (argon, large) ────────────────────────────────────────────
+        _num(str(int(scene.score)), 74, 372, (1.0, 1.0, 1.0))
 
-        # 3. Accuracy.
-        _line(56, f"{scene.accuracy:.2f}%",
-              (235, 235, 245, 255), gap_after=10)
+        # ── Stat row: ACCURACY / MAX COMBO / (PP) ───────────────────────────
+        has_pp = scene.max_pp > 0
+        stat_label_top = 472
+        stat_num_top = 514
+        if has_pp:
+            stats = [
+                (-330.0, "ACCURACY", f"{scene.accuracy:.2f}%", (1.0, 1.0, 1.0)),
+                (0.0, "MAX COMBO", f"{scene.max_combo}x", (1.0, 1.0, 1.0)),
+                (330.0, "PP", f"{int(round(scene.pp))}", (1.0, 0.86, 0.55)),
+            ]
+        else:
+            stats = [
+                (-200.0, "ACCURACY", f"{scene.accuracy:.2f}%", (1.0, 1.0, 1.0)),
+                (200.0, "MAX COMBO", f"{scene.max_combo}x", (1.0, 1.0, 1.0)),
+            ]
+        for dx, lab, val, tint in stats:
+            xc = cx + dx * A
+            _label(lab, 16, (196, 203, 222), stat_label_top, x=xc)
+            _num(val, 46, stat_num_top, tint, x=xc, align="center")
 
-        # 4. Max combo.
-        _line(40, f"Max combo {scene.max_combo}x",
-              (200, 200, 220, 255), gap_after=24)
-
-        # 5. Judgment counts row — 6 colour-coded cells laid out horizontally.
-        labels = ("320", "300", "200", "100", "50", "MISS")
+        # ── Judgment counts: 6 colour-coded cells (label + argon number) ────
+        jlabels = ("320", "300", "200", "100", "50", "MISS")
         counts = scene.judgment_counts
-        colours = (
-            (170, 240, 255), (255, 230, 120), (140, 220, 140),
-            (220, 200, 90),  (180, 180, 180), (240, 80, 80),
+        jcolours = (
+            (150, 215, 255), (255, 230, 120), (140, 220, 140),
+            (240, 220, 90), (185, 190, 200), (240, 96, 96),
         )
-        cells = [self._cached_text(f"{lab}: {cnt}", 36, (*col, 255))
-                 for lab, cnt, col in zip(labels, counts, colours)]
-        gap = 24
-        total_w = sum(w for _, w, _ in cells) + gap * (len(cells) - 1)
-        row_h = max(h for _, _, h in cells)
-        x = cx - total_w // 2
-        for (tex, w, h) in cells:
-            self._draw_external_texture(
-                tex, x=x, y=cursor_y - h, w=w, h=h, alpha=a,
-            )
-            x += w + gap
-        cursor_y -= row_h + 24
+        j_label_top = 592
+        j_num_top = 630
+        step = 152.0  # design px between cells
+        for i in range(6):
+            xc = cx + (i - 2.5) * step * A
+            _label(jlabels[i], 16, jcolours[i], j_label_top, x=xc)
+            _num(str(counts[i]), 34,
+                 j_num_top,
+                 (jcolours[i][0] / 255, jcolours[i][1] / 255, jcolours[i][2] / 255),
+                 x=xc, align="center")
 
-        # 6. UR / Avg offset line.
-        ur_text = (
-            f"UR {scene.unstable_rate:.1f}   "
-            f"Avg {scene.avg_hit_offset_ms:+.1f} ms"
-        )
-        _line(36, ur_text, (180, 200, 220, 255), gap_after=4)
+        # ── Unstable rate (argon) + signed avg-offset caption (PIL) ─────────
+        _label("UNSTABLE RATE", 15, (196, 203, 222), 686)
+        _num(f"{scene.unstable_rate:.1f}", 40, 720, (0.80, 0.86, 1.0))
+        _label(f"avg {scene.avg_hit_offset_ms:+.1f} ms", 16,
+               (168, 184, 210), 756)
 
-        # 6b. Per-column UR breakdown — one number per key, comma-joined.
-        if scene.per_column_ur:
-            cols = "  ·  ".join(
-                f"K{i + 1} {ur:.0f}"
-                for i, ur in enumerate(scene.per_column_ur)
-            )
-            _line(28, cols, (160, 175, 200, 255), gap_after=8)
+        # ── Per-column UR (labels + argon numbers) ──────────────────────────
+        pcols = scene.per_column_ur
+        if pcols:
+            n = len(pcols)
+            pstep = min(150.0, 620.0 / max(1, n))  # design px between keys
+            for i, ur in enumerate(pcols):
+                xc = cx + (i - (n - 1) / 2.0) * pstep * A
+                _label(f"K{i + 1}", 14, (150, 175, 205), 784, x=xc)
+                _num(f"{ur:.0f}", 24, 812, (0.70, 0.78, 0.92), x=xc,
+                     align="center")
 
-        # 7. UR histogram — wider, more visible than the gameplay strip.
+        # ── UR histogram (reused gameplay primitive) ────────────────────────
         if scene.recent_offsets:
-            hist_w = int(rc.width * 0.5)
-            hist_h = max(40, int(rc.height * 0.08))
+            hist_top = 842.0
+            hist_w = 760.0
+            hist_h = 94.0
             self._draw_ur_histogram(
-                cx - hist_w // 2, cursor_y - hist_h,
-                hist_w, hist_h, scene.recent_offsets, alpha=a,
+                int(cx - hist_w * A / 2),
+                int(rc.height - (hist_top + hist_h) * A),
+                int(hist_w * A), int(hist_h * A),
+                scene.recent_offsets, alpha=a,
             )
-            cursor_y -= hist_h + 16
-
-        # 8. PP line.
-        if scene.max_pp > 0:
-            _line(44, f"{scene.pp:.1f}pp   max {scene.max_pp:.1f}pp",
-                  (255, 220, 140, 255), gap_after=0)
 
     def _draw_ur_histogram(
         self,

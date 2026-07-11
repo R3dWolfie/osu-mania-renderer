@@ -99,6 +99,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="show the R3D 'R' tile splash during the intro, "
                         "fading out as the first note spawns "
                         "(parity with std/catch)")
+    p.add_argument("--featured-avatar-png", type=Path, default=None,
+                   help="featured player's osu! avatar PNG → results-screen "
+                        "header (parity with std). Absent ⇒ grey placeholder")
     p.add_argument("--watermark",       default=None,
                    help="text shown bottom-right (default: empty)")
     p.add_argument("--allow-converted", action="store_true",
@@ -168,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.skin_hitsounds:      opts_kwargs["use_skin_hitsounds"]   = True
     if args.skin_combo_colors:   opts_kwargs["skin_combo_colors"]    = args.skin_combo_colors
     if args.logo:                opts_kwargs["show_logo"]            = True
+    if args.featured_avatar_png is not None:
+        opts_kwargs["featured_avatar_png"] = str(args.featured_avatar_png)
     if args.watermark is not None:
         opts_kwargs["watermark_text"] = args.watermark[:64]
     options = RenderOptions(**opts_kwargs)
