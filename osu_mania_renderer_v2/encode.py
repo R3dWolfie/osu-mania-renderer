@@ -170,19 +170,34 @@ def build_ffmpeg_cmd(
             )
             mix_chain = (
                 "[song][hits]amix=inputs=2:duration=first:"
-                "normalize=0:weights=1 1[aout]"
+                "normalize=0:weights=1 1[amix]"
             )
-            filter_complex = ";".join([song_chain_str, hit_chain, mix_chain])
+            # LOUDNORM CONSOLIDATION (perf 2026-07-12): the orchestrator + bot
+            # loudnorm passes are disabled, so this is mania's ONLY loudness
+            # normalisation. Apply -10 LUFS to the FINAL mixed output (NEVER
+            # inside song_chain, which is pre-mix -- that would leave hitsounds
+            # outside the target).
+            norm_chain = "[amix]loudnorm=I=-10:TP=-1.5:LRA=11[aout]"
+            filter_complex = ";".join([song_chain_str, hit_chain, mix_chain, norm_chain])
             cmd += ["-filter_complex", filter_complex]
             audio_out_label = "aout"
         elif song_chain:
+            # LOUDNORM CONSOLIDATION (perf 2026-07-12): append the single
+            # surviving loudnorm (-10 LUFS) after song_chain.
             filter_complex = (
-                f"[{song_label}]{','.join(song_chain)}[aout]"
+                f"[{song_label}]{','.join(song_chain)},loudnorm=I=-10:TP=-1.5:LRA=11[aout]"
             )
             cmd += ["-filter_complex", filter_complex]
             audio_out_label = "aout"
         else:
-            audio_out_label = song_label
+            # LOUDNORM CONSOLIDATION (perf 2026-07-12): a bare song with no
+            # song_chain and no hitsounds still needs the single surviving
+            # loudnorm (-10 LUFS), so give this branch its own filtergraph.
+            filter_complex = (
+                f"[{song_label}]loudnorm=I=-10:TP=-1.5:LRA=11[aout]"
+            )
+            cmd += ["-filter_complex", filter_complex]
+            audio_out_label = "aout"
 
     # OpenGL's framebuffer has row 0 at the BOTTOM of the viewport, but MP4
     # (and PNG, and PIL) expect row 0 at the TOP. Without vflip the entire
