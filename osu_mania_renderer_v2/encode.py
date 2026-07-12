@@ -47,6 +47,10 @@ async def probe_encoder(encoder: str, device: str | None) -> str:
     text = out.decode(errors="ignore")
     # When no device was specified, try to auto-pick the standard VAAPI
     # render node. Host AMD GPUs always expose /dev/dri/renderD128.
+    # nvenc FIRST: R3D is an NVIDIA box; the old order never tried nvenc, so a
+    # dropped R3D_ENCODER env silently fell to vaapi/libx264 (5-10x slower).
+    if "h264_nvenc" in text:
+        return "h264_nvenc"
     if device is None and Path("/dev/dri/renderD128").exists():
         device = "/dev/dri/renderD128"
     if device is not None and "h264_vaapi" in text:
