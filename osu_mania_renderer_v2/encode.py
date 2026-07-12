@@ -156,10 +156,18 @@ def build_ffmpeg_cmd(
             # renderer applied DT/HT to note positions before generating it),
             # so it doesn't need asetrate. Just delay it by the same lead-in
             # the song uses so the two stay in sync.
+            # LOUDNORM FIX (2026-07-12, #17): loudnorm the SONG ALONE, before
+            # mixing, so its gain never reacts to the hitsound transients.
+            # Loudnorm on the song+HITS mix (the old norm_chain) let its
+            # limiter/gain duck the whole mix -- song included -- ~4 dB under
+            # every hit peak ("song ducks to hitsounds"). Song target -10 LUFS
+            # (== the no-hit branches); hits are transient (~+0.2 dB to the
+            # integrated), so the mix still lands ~-10 with them on top.
             song_chain_str = (
-                f"[{song_label}]{','.join(song_chain)}[song]"
+                f"[{song_label}]{','.join(song_chain)},"
+                "loudnorm=I=-10:TP=-1.5:LRA=11[song]"
                 if song_chain
-                else f"[{song_label}]anull[song]"
+                else f"[{song_label}]loudnorm=I=-10:TP=-1.5:LRA=11[song]"
             )
             # Build hit chain: optional adelay → optional volume → label.
             hit_filters: list[str] = []
@@ -172,17 +180,16 @@ def build_ffmpeg_cmd(
                 if hit_filters
                 else f"[{hit_label}]anull[hits]"
             )
+            # Mix the hits ON TOP of the already-normalised song, then a gentle
+            # true-peak limiter (level=disabled = clamp only, no makeup gain, no
+            # re-normalisation) to catch summed peaks WITHOUT ducking the song.
+            # No loudnorm on the mix -- that was what ducked the song under hits.
             mix_chain = (
                 "[song][hits]amix=inputs=2:duration=first:"
-                "normalize=0:weights=1 1[amix]"
+                "normalize=0:weights=1 1,"
+                "alimiter=limit=0.95:level=disabled:attack=1:release=20[aout]"
             )
-            # LOUDNORM CONSOLIDATION (perf 2026-07-12): the orchestrator + bot
-            # loudnorm passes are disabled, so this is mania's ONLY loudness
-            # normalisation. Apply -10 LUFS to the FINAL mixed output (NEVER
-            # inside song_chain, which is pre-mix -- that would leave hitsounds
-            # outside the target).
-            norm_chain = "[amix]loudnorm=I=-10:TP=-1.5:LRA=11[aout]"
-            filter_complex = ";".join([song_chain_str, hit_chain, mix_chain, norm_chain])
+            filter_complex = ";".join([song_chain_str, hit_chain, mix_chain])
             cmd += ["-filter_complex", filter_complex]
             audio_out_label = "aout"
         elif song_chain:
