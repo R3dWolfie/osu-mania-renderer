@@ -1008,11 +1008,20 @@ def _ci_lookup(base: Path, rel: str) -> Path | None:
     Combo` legitimately points at `combo-0.png`; on Linux that mismatch makes
     the file vanish. Exact match is the fast path; otherwise each path
     component is matched ignoring case."""
+    # osu! skin.ini paths are Windows-authored (backslash separators). On a
+    # CIFS mount a literal backslash in a path component makes stat() raise
+    # EINVAL (not ENOENT), which Path.is_file() re-raises -> the whole render
+    # crashes. Normalise before the fast path touches the FS, and guard other
+    # SMB-hostile names by falling through to the component-wise walk.
+    rel = rel.replace("\\", "/")
     p = base / rel
-    if p.is_file():
-        return p
+    try:
+        if p.is_file():
+            return p
+    except OSError:
+        pass
     cur = base
-    for part in rel.replace("\\", "/").split("/"):
+    for part in rel.split("/"):
         nxt = cur / part
         if nxt.exists():
             cur = nxt
