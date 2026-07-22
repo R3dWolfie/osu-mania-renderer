@@ -645,17 +645,19 @@ def build_frame_state(
     if total_so_far == 0:
         acc_so_far = 100.0
     else:
-        # osu!mania accuracy as the website / lazer UI shows it — using the
-        # SAME rainbow-300 weight the replay was parsed with (320 stable / 305
-        # lazer) so the running acc, the end-screen and the website card all
-        # agree. See replay.parse_replay / osr_parser.
-        mw = getattr(plan.replay, "mania_max_weight", 305)
+        # osu!mania accuracy as the website / osu! UI shows it — using the
+        # DISPLAY rainbow-300 weight the replay was parsed with (300 stable /
+        # 305 lazer, see replay.parse_replay) so the running acc lands exactly
+        # on replay.accuracy once the counts reconcile. NOT mania_max_weight:
+        # that is the ScoreV3 weight (320 stable) and using it here deflated
+        # every stable play's displayed acc (95.37% rendered as 93.42%).
+        aw = getattr(plan.replay, "mania_acc_weight", 305)
         weighted = (
             50 * running["50"] + 100 * running["100"]
             + 200 * running["katu"] + 300 * running["300"]
-            + mw * running["geki"]
+            + aw * running["geki"]
         )
-        acc_so_far = (weighted / (mw * total_so_far)) * 100
+        acc_so_far = (weighted / (aw * total_so_far)) * 100
 
     # End-of-song blend toward the .osr-recorded authoritative values.
     _ENDGAME_BLEND_MS = 500

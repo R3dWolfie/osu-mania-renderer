@@ -29,21 +29,38 @@ def parse_replay(path: Path) -> ReplayInfo:
         r.count_300 + r.count_100 + r.count_50 + r.count_miss
         + r.count_katu + r.count_geki
     )
-    # Mania accuracy weighting must match what osu! / the website card shows:
-    # stable replays weight the rainbow-300 (geki) at 320, lazer (and stable +
-    # Score V2) at 305. Detect via game_version (lazer writes 9-digit
-    # ≥30000000) and the Score V2 mod (1<<29) — identical to the bot's
-    # osr_parser so the in-render accuracy lands on the same number.
-    mw = 305 if (int(getattr(r, "game_version", 0) or 0) >= 30000000
-                 or (int(r.mods) & (1 << 29))) else 320
+    # Two DISTINCT geki (rainbow-300) weights — do not conflate them:
+    #
+    #   mw  (mania_max_weight, 320 stable / 305 lazer+V2) — the ScoreV3
+    #       standardised-score weight. Kept as-is: render.py's score curve
+    #       AND the bot's score_v3 backfill (score_v3_backfill/
+    #       backfill_mania.py) both read it, so the on-screen final score
+    #       keeps landing exactly on the DB's score_v3.
+    #
+    #   aw  (mania_acc_weight, 300 stable / 305 lazer+V2) — the DISPLAY
+    #       accuracy weight. Stable's ScoreV1 accuracy formula weights the
+    #       rainbow-300 at 300, SAME as a plain 300 (osu! wiki, and what
+    #       the osu! website shows for stable plays):
+    #         acc = (300·(MAX+300) + 200·200 + 100·100 + 50·50) / (300·total)
+    #       The old code used 320 here, deflating every stable play's
+    #       displayed acc (e.g. 95.37% rendered as 93.42%) and demoting
+    #       grades across the 95/90/80/70 thresholds. Lazer / Score-V2
+    #       replays genuinely weight MAX at 305 — unchanged.
+    #
+    # Lazer detection via game_version (lazer writes 9-digit ≥30000000);
+    # stable + the Score V2 mod (1<<29) also gets 305.
+    is_v2 = (int(getattr(r, "game_version", 0) or 0) >= 30000000
+             or bool(int(r.mods) & (1 << 29)))
+    mw = 305 if is_v2 else 320
+    aw = 305 if is_v2 else 300
     if total == 0:
         accuracy = 0.0
     else:
         weighted = (
             50 * r.count_50 + 100 * r.count_100 + 200 * r.count_katu
-            + 300 * r.count_300 + mw * r.count_geki
+            + 300 * r.count_300 + aw * r.count_geki
         )
-        accuracy = round((weighted / (mw * total)) * 100, 4)
+        accuracy = round((weighted / (aw * total)) * 100, 4)
 
     return ReplayInfo(
         mode=mode,
@@ -63,6 +80,7 @@ def parse_replay(path: Path) -> ReplayInfo:
         count_miss=int(r.count_miss),
         grade=_grade(accuracy, r),
         mania_max_weight=mw,
+        mania_acc_weight=aw,
     )
 
 

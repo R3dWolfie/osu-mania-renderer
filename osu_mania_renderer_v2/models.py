@@ -121,10 +121,16 @@ class ReplayInfo:
     count_50: int
     count_miss: int
     grade: str
-    # Mania accuracy denominator weight for the rainbow-300 (geki): 320 for
-    # stable replays, 305 for lazer / Score V2 — matches what osu! displays
-    # and the bot's website card (osr_parser). Default 305 = lazer.
+    # ScoreV3 (standardised score) weight for the rainbow-300 (geki): 320 for
+    # stable replays, 305 for lazer / Score V2. Used ONLY by the score curve
+    # (render.py ScoreV3 accumulators) and the bot's score_v3 backfill —
+    # NOT by the displayed accuracy. Default 305 = lazer.
     mania_max_weight: int = 305
+    # DISPLAY accuracy weight for the rainbow-300 (geki): 300 for stable
+    # (ScoreV1 accuracy weights MAX the same as a 300 — osu! wiki / website),
+    # 305 for lazer / Score V2. Drives the HUD running acc, the results-screen
+    # acc and the grade. Default 305 = lazer.
+    mania_acc_weight: int = 305
 
 
 @dataclass(frozen=True)
