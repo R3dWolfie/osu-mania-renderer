@@ -544,9 +544,18 @@ class FrameRenderer:
         # flip with it.
         rec_y = self.receptor_centre_y_gl
         rec_h = self.col_w_uniform
-        # Stage bottom: panel beneath the receptor (slightly taller than
-        # the receptor itself so it acts as a base plate).
+        # Stage bottom: a base panel anchored with its TOP at the receptor
+        # row, extending down. Size at the source's NATIVE aspect scaled to
+        # the playfield width (like stage_left/right) so a TALL key-panel
+        # skin (e.g. a 380x576 mania-stage-bottom) stays tall instead of
+        # being squashed into a thin ~1.2x-column strip. Falls back to the
+        # strip height when the skin ships no meaningful stage-bottom.
         sb_h = int(rec_h * 1.2)
+        _pf_src = self.atlas.global_source("playfield_frame")
+        if _pf_src in ("beatmap", "user"):
+            _pf_asp = self.atlas.global_aspect("playfield_frame")  # width/height
+            if _pf_asp and _pf_asp > 0:
+                sb_h = max(1, int(self.pf_w / _pf_asp))
         sb_y_gl = rec_y - sb_h
         # When upside-down, mirror so the panel sits ABOVE the receptor.
         if self.upside_down:
@@ -757,6 +766,9 @@ class FrameRenderer:
             # it might be the one we end up assigning to self._banner_tex.
             if prev_tex is not None:
                 try:
+                    if prev_tex.extra is not None:
+                        prev_tex.extra.release()
+                        prev_tex.extra = None
                     prev_tex.release()
                 except Exception:  # noqa: BLE001
                     pass
@@ -805,6 +817,12 @@ class FrameRenderer:
                 oldest_key = next(iter(self._hud_cache))
                 old_tex, _, _ = self._hud_cache.pop(oldest_key)
                 try:
+                    # Release the paired single-layer wrap array (built by
+                    # _draw_external_texture, cached on `extra`) with its
+                    # source texture so evictions don't leak GPU memory.
+                    if old_tex.extra is not None:
+                        old_tex.extra.release()
+                        old_tex.extra = None
                     old_tex.release()
                 except Exception:  # noqa: BLE001
                     pass
@@ -1177,6 +1195,43 @@ class FrameRenderer:
         _draw_hud already."""
         return
 
+    def _set_sprite_prog_uniforms(self, prog, screen_h: int) -> None:
+        """The non-instanced "sprite" program is only ever driven by
+        `_draw_external_texture` / `_draw_direct`, and both always set the
+        exact same constant uniform values. Uniform state persists on the
+        program object, so write them once and skip the ~8 redundant GL
+        uniform uploads on every subsequent call. Values identical to the
+        per-call sets they replace."""
+        if getattr(self, "_sprite_prog_uniforms_set", False):
+            return
+        prog["u_atlas"] = 0
+        prog["u_projection"].value = (1, 0, 0, 0, 1, 0, 0, 0, 1)
+        prog["u_hd"].value = 0.0
+        prog["u_fi"].value = 0.0
+        prog["u_hd_recep"].value = 0.0
+        prog["u_pf_top"].value = float(screen_h)
+        prog["u_cov_fill"].value = 0.0
+        prog["u_cov_grad"].value = 0.0
+        self._sprite_prog_uniforms_set = True
+
+    def _ext_quad_buffers(self):
+        """One persistent (VBO, VAO) pair for the ad-hoc 6-vertex quads that
+        `_draw_external_texture` / `_draw_direct` emit — the old code
+        created and released a fresh VBO+VAO on every call (dozens per
+        frame). Same layout, same program, same draw; the VBO contents are
+        rewritten before each render call."""
+        pair = getattr(self, "_ext_quad_pair", None)
+        if pair is None:
+            ctx = self.rc.ctx
+            vbo = ctx.buffer(reserve=6 * 9 * 4, dynamic=True)
+            vao = ctx.simple_vertex_array(
+                self.programs["sprite"], vbo,
+                "in_pos", "in_uv", "in_atlas_index", "in_color",
+            )
+            pair = (vbo, vao)
+            self._ext_quad_pair = pair
+        return pair
+
     def _draw_external_texture(
         self, tex: moderngl.Texture, x: int, y: int, w: int, h: int, alpha: float,
         tint: tuple = (1.0, 1.0, 1.0), rotation_deg: float = 0.0,
@@ -1188,9 +1243,14 @@ class FrameRenderer:
         self._flush_sprite_batch()
         # The sprite shader expects a sampler2DArray; the simplest way to draw
         # an ad-hoc 2D texture (e.g. text or background) with the same shader is
-        # to wrap it in a single-layer texture array on the fly. Slightly more
-        # GPU memory churn than a dedicated 2D shader, but keeps the codepath
-        # uniform. Optimize with a 2D-only program if profiling justifies it.
+        # to wrap it in a single-layer texture array. The wrap is built ONCE
+        # per source texture and cached on the texture's `extra` slot — the
+        # old per-call rebuild did a full GPU→CPU `tex.read()` + re-upload on
+        # EVERY draw (the background alone re-uploaded the whole frame each
+        # frame). All wrapped textures are immutable after creation (text,
+        # bg, logo, rings), so the cached wrap stays valid; the two texture
+        # release sites (_cached_text eviction, set_banner_text) release the
+        # paired wrap alongside the texture.
         ctx = self.rc.ctx
         prog = self.programs["sprite"]
         screen_w, screen_h = self.rc.width, self.rc.height
@@ -1203,20 +1263,16 @@ class FrameRenderer:
         # params describe the DRAW RECT on screen — they can differ from the
         # texture size when the caller wants to stretch/scale a glyph for an
         # animation (combo pop, results overlay). Treat them independently.
-        tex_2d_to_array = ctx.texture_array(
-            size=(tex.width, tex.height, 1),
-            components=4,
-            data=tex.read(),
-        )
+        tex_2d_to_array = tex.extra
+        if tex_2d_to_array is None:
+            tex_2d_to_array = ctx.texture_array(
+                size=(tex.width, tex.height, 1),
+                components=4,
+                data=tex.read(),
+            )
+            tex.extra = tex_2d_to_array
         tex_2d_to_array.use(0)
-        prog["u_atlas"] = 0
-        prog["u_projection"].value = (1, 0, 0, 0, 1, 0, 0, 0, 1)
-        prog["u_hd"].value = 0.0
-        prog["u_fi"].value = 0.0
-        prog["u_hd_recep"].value = 0.0
-        prog["u_pf_top"].value = float(screen_h)
-        prog["u_cov_fill"].value = 0.0
-        prog["u_cov_grad"].value = 0.0
+        self._set_sprite_prog_uniforms(prog, screen_h)
 
         tr_, tg_, tb_ = tint
         if rotation_deg:
@@ -1241,14 +1297,9 @@ class FrameRenderer:
             [tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha],
             [tl[0], tl[1], 0, 0, 0, tr_, tg_, tb_, alpha],
         ], dtype="f4")
-        vbo = ctx.buffer(verts.tobytes())
-        vao = ctx.simple_vertex_array(
-            prog, vbo, "in_pos", "in_uv", "in_atlas_index", "in_color",
-        )
+        vbo, vao = self._ext_quad_buffers()
+        vbo.write(verts.tobytes())
         vao.render(moderngl.TRIANGLES)
-        vbo.release()
-        vao.release()
-        tex_2d_to_array.release()
 
     def _draw_direct(
         self, name: str, x: int, y: int, w: int, h: int,
@@ -1283,14 +1334,7 @@ class FrameRenderer:
         else:
             r, g, b, a = tint
         arr.use(0)
-        prog["u_atlas"] = 0
-        prog["u_projection"].value = (1, 0, 0, 0, 1, 0, 0, 0, 1)
-        prog["u_hd"].value = 0.0
-        prog["u_fi"].value = 0.0
-        prog["u_hd_recep"].value = 0.0
-        prog["u_pf_top"].value = float(sh)
-        prog["u_cov_fill"].value = 0.0
-        prog["u_cov_grad"].value = 0.0
+        self._set_sprite_prog_uniforms(prog, sh)
         verts = np.array([
             [x0, y0, 0, 1, 0, r, g, b, a],
             [x1, y0, 1, 1, 0, r, g, b, a],
@@ -1299,13 +1343,9 @@ class FrameRenderer:
             [x1, y1, 1, 0, 0, r, g, b, a],
             [x0, y1, 0, 0, 0, r, g, b, a],
         ], dtype="f4")
-        vbo = ctx.buffer(verts.tobytes())
-        vao = ctx.simple_vertex_array(
-            prog, vbo, "in_pos", "in_uv", "in_atlas_index", "in_color",
-        )
+        vbo, vao = self._ext_quad_buffers()
+        vbo.write(verts.tobytes())
         vao.render(moderngl.TRIANGLES)
-        vbo.release()
-        vao.release()
 
     _GRADE_COLOURS: dict[str, tuple[int, int, int]] = {
         "SS": (240, 220, 120),   # gold
@@ -2202,16 +2242,34 @@ class FrameRenderer:
         if n == 0:
             return
         slab = self._instance_arr[:n]
-        self._instance_vbo.write(slab.tobytes())
+        # ndarray implements the buffer protocol — write it directly instead
+        # of paying a tobytes() copy per flush. Same bytes hit the GPU.
+        self._instance_vbo.write(slab)
         prog = self.programs["sprite_instanced"]
         self.atlas.texture_array.use(0)
-        prog["u_atlas"] = 0
-        prog["u_hd"].value = 1.0 if self._hd_active else 0.0
-        prog["u_fi"].value = 1.0 if self._fi_active else 0.0
-        prog["u_hd_recep"].value = self._cov_recep
-        prog["u_pf_top"].value = float(self.rc.height)
-        prog["u_cov_fill"].value = self._cov_fill_px
-        prog["u_cov_grad"].value = self._cov_grad_px
+        # Uniform state persists on the program between draws, so only
+        # re-upload when a value actually changed (HD/FI toggles and the
+        # combo-driven cover geometry change a handful of times per frame
+        # at most; everything else is constant for the render). Identical
+        # GL state to the unconditional per-flush writes this replaces.
+        u_state = (
+            1.0 if self._hd_active else 0.0,
+            1.0 if self._fi_active else 0.0,
+            self._cov_recep,
+            self._cov_fill_px,
+            self._cov_grad_px,
+        )
+        if getattr(self, "_flush_u_state", None) != u_state:
+            if getattr(self, "_flush_u_state", None) is None:
+                # First flush: also set the per-render constants once.
+                prog["u_atlas"] = 0
+                prog["u_pf_top"].value = float(self.rc.height)
+            prog["u_hd"].value = u_state[0]
+            prog["u_fi"].value = u_state[1]
+            prog["u_hd_recep"].value = u_state[2]
+            prog["u_cov_fill"].value = u_state[3]
+            prog["u_cov_grad"].value = u_state[4]
+            self._flush_u_state = u_state
         self._instance_vao.render(
             moderngl.TRIANGLE_STRIP, vertices=4, instances=n,
         )

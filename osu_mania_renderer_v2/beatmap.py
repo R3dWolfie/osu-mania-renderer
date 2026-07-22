@@ -1,12 +1,20 @@
 """Parse osu!mania .osu files. Mania-only — std/taiko/ctb raise NotAManiaError."""
 from __future__ import annotations
 
+from bisect import bisect_right as _bisect_right
 from pathlib import Path
 
 from osu_mania_renderer_v2.errors import BeatmapParseError, NotAManiaError
 from osu_mania_renderer_v2.models import (
     BeatmapInfo, HitSample, HoldNote, Note, TimingPoint,
 )
+
+# Single-slot identity cache for sv_distance_at's TP-times list. The old
+# code rebuilt `[tp.time_ms for tp in timing_points]` on EVERY call — and
+# sv_distance_at runs once per visible note per frame. The same
+# timing_points tuple is passed for a whole render, so cache the derived
+# list keyed on tuple identity. Bit-identical results; perf only.
+_SV_TIMES_CACHE: tuple | None = None
 
 # Mania hit-object type bit 7 (128) = hold note.
 _HOLD_TYPE_BIT = 1 << 7
@@ -409,9 +417,13 @@ def sv_distance_at(
         return float(t_ms)
     # Binary search for the TP that owns `t_ms`. `bisect_right` gives
     # the first index strictly past t_ms; subtract 1 for the owning TP.
-    from bisect import bisect_right
-    times = [tp.time_ms for tp in timing_points]
-    idx = bisect_right(times, t_ms) - 1
+    global _SV_TIMES_CACHE
+    _stc = _SV_TIMES_CACHE
+    if _stc is None or _stc[0] is not timing_points:
+        _stc = (timing_points, [tp.time_ms for tp in timing_points])
+        _SV_TIMES_CACHE = _stc
+    times = _stc[1]
+    idx = _bisect_right(times, t_ms) - 1
     if idx < 0:
         return float(t_ms)
     tp = timing_points[idx]

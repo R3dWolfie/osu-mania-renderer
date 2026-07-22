@@ -1,10 +1,19 @@
 """Per-frame scene state for the renderer. Pure function of beatmap + replay + t."""
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
+from osu_mania_renderer_v2.beatmap import sv_distance_at as _sv_distance_at
 from osu_mania_renderer_v2.models import HoldNote, KeyEvent, VisualMods
+
+# Single-slot identity caches for per-render immutable inputs that the old
+# code re-derived EVERY frame (a full list rebuild per call). Keyed on the
+# tuple object's identity — the same tuple is passed for the whole render,
+# so the hit rate is ~100% and the derived values are bit-identical to the
+# per-frame recomputation they replace. (Perf only; no behaviour change.)
+_KEYS_TIMES_CACHE: tuple | None = None      # (key_events_ref, [e.time_ms])
+_MIN_SV_CACHE: tuple | None = None          # (timing_points_ref, min_sv)
 
 
 @dataclass(frozen=True)
@@ -153,17 +162,23 @@ def snapshot(
     # Cache the current frame's cumulative-distance — it doesn't change
     # within a frame, so compute once and reuse for every note.
     if use_integration:
-        from osu_mania_renderer_v2.beatmap import sv_distance_at as _sv_at
-        current_cum = _sv_at(t_ms, timing_points, sv_table)
+        current_cum = _sv_distance_at(t_ms, timing_points, sv_table)
     else:
-        _sv_at = None
         current_cum = 0.0
     # The horizon needs to allow for SV sections where notes may be
     # CLOSER (smaller SV → larger time window for the same playfield
     # distance). For integration path, use the smallest SV in the
     # table (≥0.05 by parser clamp) as the safe floor.
     if use_integration:
-        min_sv = min(tp.sv_multiplier for tp in timing_points) if timing_points else 1.0
+        global _MIN_SV_CACHE
+        _msc = _MIN_SV_CACHE
+        if _msc is None or _msc[0] is not timing_points:
+            _msc = (
+                timing_points,
+                min(tp.sv_multiplier for tp in timing_points) if timing_points else 1.0,
+            )
+            _MIN_SV_CACHE = _msc
+        min_sv = _msc[1]
         horizon = t_ms + int(approach_ms / max(0.05, min_sv))
     else:
         horizon = t_ms + int(approach_ms / 0.25)
@@ -180,9 +195,8 @@ def snapshot(
     # rescans the entire note list every frame (14M+ pure-Python checks
     # for a busy map at 30fps).
     if note_times is not None:
-        import bisect as _bisect
         lower_t = t_ms - max(max_hold_dur_ms, 0) - MISS_GRACE_MS
-        start_idx = _bisect.bisect_left(note_times, lower_t)
+        start_idx = bisect_left(note_times, lower_t)
     else:
         start_idx = 0
     for n in notes[start_idx:]:
@@ -286,8 +300,7 @@ def _y_integrated(
     `approach_ms` here means "playfield-distance to cover from spawn
     to receptor at SV=1." So at SV=1 the formula degenerates to the
     legacy one and rendering is identical."""
-    from osu_mania_renderer_v2.beatmap import sv_distance_at
-    note_cum = sv_distance_at(note_time, timing_points, sv_table)
+    note_cum = _sv_distance_at(note_time, timing_points, sv_table)
     return 1.0 - (note_cum - current_cum) / approach_ms
 
 
@@ -296,7 +309,14 @@ def _keys_held_at(
 ) -> tuple[bool, ...]:
     if not events:
         return tuple(False for _ in range(key_count))
-    times = [e.time_ms for e in events]
+    # The times list only depends on `events` (immutable tuple, same object
+    # for the whole render) — build it once instead of every frame.
+    global _KEYS_TIMES_CACHE
+    _ktc = _KEYS_TIMES_CACHE
+    if _ktc is None or _ktc[0] is not events:
+        _ktc = (events, [e.time_ms for e in events])
+        _KEYS_TIMES_CACHE = _ktc
+    times = _ktc[1]
     idx = bisect_right(times, t_ms) - 1
     if idx < 0:
         return tuple(False for _ in range(key_count))

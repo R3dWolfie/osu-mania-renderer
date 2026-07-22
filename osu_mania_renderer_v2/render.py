@@ -73,6 +73,28 @@ _HIT_SCORE_WEIGHT: dict[str, int] = {
     "100": 100, "50": 50, "miss": 0,
 }
 
+# ScoreV3 (standardised) mod-score multipliers (ppy/osu#37967 rework). NC is
+# stored as DT|NC, so drop the implied DT bit or 1.23× squares to 1.51×.
+_MOD_SCORE_MULT = {1 << 1: 0.80, 1 << 3: 1.04, 1 << 4: 1.09, 1 << 6: 1.23,
+                   1 << 8: 0.55, 1 << 9: 1.23, 1 << 10: 1.20, 1 << 12: 0.95}
+
+
+def mods_score_multiplier(mods: int) -> float:
+    mods = int(mods or 0)
+    if mods & (1 << 9):        # NC set → clear implied DT (count speed once)
+        mods &= ~(1 << 6)
+    m = 1.0
+    for bit, mult in _MOD_SCORE_MULT.items():
+        if mods & bit:
+            m *= mult
+    return m
+
+
+# ScoreV3 accuracy base per mania judgment; geki (MAX) uses the replay's max
+# weight (305 lazer / 300 stable), applied at use.
+_SD_ACC_WEIGHT: dict[str, int] = {"300": 300, "katu": 200, "100": 100,
+                                  "50": 50, "miss": 0}
+
 # Default skin location on the host (Night05 lives here, including a
 # combobreak.wav). The renderer treats it as a fallback for samples
 # missing in the beatmap dir.
@@ -136,6 +158,12 @@ class RenderPlan:
     bg_path: Path | None
     first_note_ms: int
     banner_text: str
+    # ScoreV3 (standardised) precomputed constants — defaults keep any other
+    # RenderPlan construction path valid.
+    n_scoring: int = 0
+    max_combo_portion: float = 0.0
+    mod_mult: float = 1.0
+    mania_mw: int = 305
 
 
 async def build_render_plan(
@@ -203,6 +231,14 @@ async def build_render_plan(
         1, sum(_HIT_SCORE_WEIGHT[j.judgment]
                for j in judgments.events if j.scoring),
     )
+    # ScoreV3 (standardised) constants: max_combo_portion is the full-combo
+    # denominator Σ mw·√k over the scoring judgments; mw (geki accuracy weight)
+    # cancels in the combo ratio but is kept explicit. mod_mult per ppy/osu#37967.
+    _mania_mw = getattr(replay, "mania_max_weight", 305)
+    _n_scoring = sum(1 for j in judgments.events if j.scoring)
+    _max_combo_portion = sum(_mania_mw * ((k + 1) ** 0.5)
+                             for k in range(_n_scoring))
+    _mod_mult = mods_score_multiplier(int(getattr(replay, "mods", 0) or 0))
     # Per-note "consumed" timestamps: notes the player actually tried to hit.
     # `judged_hits` keyed on (column, scheduled note time) → press timestamp.
     # Only NON-miss notes appear here, so true misses fall through to the
@@ -370,6 +406,8 @@ async def build_render_plan(
         hitsound_wav=hitsound_wav, effective_lead_in_ms=effective_lead_in_ms,
         ffmpeg_cmd=cmd, fifo_path=fifo_path, bg_path=bg_path,
         first_note_ms=first_note_ms, banner_text=banner_text,
+        n_scoring=_n_scoring, max_combo_portion=_max_combo_portion,
+        mod_mult=_mod_mult, mania_mw=_mania_mw,
     )
 
 
@@ -402,29 +440,98 @@ def build_frame_state(
         max_hold_dur_ms=plan.max_hold_dur_ms,
     )
     # Active judgments: any whose time ∈ [t-600ms, t].
-    active = tuple(
-        JudgmentPopup(
-            column=j.column, judgment=j.judgment,
-            age_ms=t_ms - j.time_ms,
+    # `judgment_events` is note-time-sorted (compute_judgments folds a
+    # sorted scoring list), so the window `0 <= t_ms - time < 800` is a
+    # contiguous slice — find it with two bisects instead of scanning the
+    # whole event list every frame. Sortedness is verified once per render;
+    # an unsorted timeline (never in practice) falls back to the original
+    # full scan so behaviour is identical either way.
+    _je = plan.judgment_events
+    _je_times = getattr(plan, "_je_times", None)
+    if _je_times is None:
+        _je_times = [j.time_ms for j in _je]
+        plan._je_times = _je_times
+        plan._je_sorted = all(
+            _je_times[i] <= _je_times[i + 1]
+            for i in range(len(_je_times) - 1)
         )
-        for j in plan.judgment_events
-        if 0 <= t_ms - j.time_ms < 800
-    )
+    if plan._je_sorted:
+        # 0 <= t_ms - time < 800  ⇔  t_ms - 800 < time <= t_ms
+        active = tuple(
+            JudgmentPopup(
+                column=j.column, judgment=j.judgment,
+                age_ms=t_ms - j.time_ms,
+            )
+            for j in _je[_br(_je_times, t_ms - 800):_br(_je_times, t_ms)]
+        )
+    else:
+        active = tuple(
+            JudgmentPopup(
+                column=j.column, judgment=j.judgment,
+                age_ms=t_ms - j.time_ms,
+            )
+            for j in _je
+            if 0 <= t_ms - j.time_ms < 800
+        )
     # One pass over the press-time-sorted timeline: counts → live accuracy +
     # quality-weighted score + running combo + UR/avg offset + HP +
     # last-hit-per-column + offset-per-column.
-    running = {"geki": 0, "300": 0, "katu": 0, "100": 0, "50": 0, "miss": 0}
-    quality_so_far = 0
-    offsets_so_far: list[float] = []
-    combo_at_t = 0
-    last_combo_change_t = 0
-    hp = 1.0
-    last_hit_per_col: list[tuple[int, str, float]] = [
-        (-99999, "", 0.0) for _ in range(key_count)
-    ]
-    for eff_t, j in plan.judgment_timeline:
+    #
+    # Incremental across frames: the render loop calls this with a
+    # nondecreasing t_ms and this is a pure prefix-fold over
+    # judgment_timeline, so the fold state is carried on the plan between
+    # calls and only the events NEW since the previous frame are folded in.
+    # The accumulation order (and therefore every float) is identical to
+    # the from-scratch loop. A t_ms that goes backwards (no caller does)
+    # resets the state and refolds from the start, preserving purity.
+    _fsc = getattr(plan, "_fs_cache", None)
+    if _fsc is None or t_ms < _fsc["last_t"]:
+        _fsc = {
+            "last_t": t_ms, "idx": 0,
+            "running": {"geki": 0, "300": 0, "katu": 0, "100": 0,
+                        "50": 0, "miss": 0},
+            "quality": 0,
+            "offsets": [],
+            # Running left-to-right sum of `offsets` in append order — the
+            # exact fold builtin sum() performs, so bit-identical to the
+            # per-frame sum(offsets_so_far) it replaces.
+            "offsets_sum": 0,
+            "combo": 0,
+            "last_combo_t": 0,
+            "hp": 1.0,
+            "last_hit_per_col": [
+                (-99999, "", 0.0) for _ in range(key_count)
+            ],
+            "sd_combo": 0, "combo_portion": 0.0, "cur_base": 0.0,
+            "n_scored": 0,
+            # (len(offsets), avg, ur) at the last stats computation — the
+            # avg/UR only change when a new offset lands, so frames without
+            # a new judgment reuse the previous values unchanged.
+            "stats": (-1, 0.0, 0.0),
+        }
+        plan._fs_cache = _fsc
+    running = _fsc["running"]
+    quality_so_far = _fsc["quality"]
+    offsets_so_far = _fsc["offsets"]
+    _offsets_sum = _fsc["offsets_sum"]
+    combo_at_t = _fsc["combo"]
+    last_combo_change_t = _fsc["last_combo_t"]
+    hp = _fsc["hp"]
+    last_hit_per_col = _fsc["last_hit_per_col"]
+    # ScoreV3 (standardised) accumulators — scoring judgments only.
+    _mw = plan.mania_mw
+    _sd_combo = _fsc["sd_combo"]
+    _combo_portion = _fsc["combo_portion"]
+    _cur_base = _fsc["cur_base"]
+    _n_scored = _fsc["n_scored"]
+    _tl = plan.judgment_timeline
+    _idx = _fsc["idx"]
+    _n_tl = len(_tl)
+    while _idx < _n_tl:
+        eff_t, j = _tl[_idx]
         if eff_t > t_ms:
             break
+        _idx += 1
         # ScoreV1 hold tails (scoring=False) are visual-only: they flash the
         # receptor / popup / combo but are NOT recorded judgments, so they
         # stay out of the counts + quality tally (else the final accuracy
@@ -432,6 +539,14 @@ def build_frame_state(
         if j.scoring:
             running[j.judgment] += 1
             quality_so_far += _HIT_SCORE_WEIGHT[j.judgment]
+            _n_scored += 1
+            _cur_base += (_mw if j.judgment == "geki"
+                          else _SD_ACC_WEIGHT.get(j.judgment, 0))
+            if j.judgment == "miss":
+                _sd_combo = 0
+            else:
+                _sd_combo += 1
+                _combo_portion += _mw * (_sd_combo ** 0.5)
         if j.judgment == "miss":
             combo_at_t = 0
         else:
@@ -444,16 +559,47 @@ def build_frame_state(
             )
         if j.hit_offset_ms is not None:
             offsets_so_far.append(j.hit_offset_ms)
-    score_so_far = int(replay.score * quality_so_far / plan.total_quality)
+            _offsets_sum = _offsets_sum + j.hit_offset_ms
+    _fsc["last_t"] = t_ms
+    _fsc["idx"] = _idx
+    _fsc["quality"] = quality_so_far
+    _fsc["offsets_sum"] = _offsets_sum
+    _fsc["combo"] = combo_at_t
+    _fsc["last_combo_t"] = last_combo_change_t
+    _fsc["hp"] = hp
+    _fsc["sd_combo"] = _sd_combo
+    _fsc["combo_portion"] = _combo_portion
+    _fsc["cur_base"] = _cur_base
+    _fsc["n_scored"] = _n_scored
+    # ScoreV3 standardised: 500k·acc·comboProgress + 500k·acc⁵·progress ×mult.
+    # acc == the reconciled accuracy the HUD shows (lands on replay.accuracy),
+    # so an all-MAX play scores exactly 1,000,000 (×mod multiplier).
+    if plan.max_combo_portion > 0 and _n_scored > 0:
+        _acc = _cur_base / (_mw * _n_scored)
+        _cprog = _combo_portion / plan.max_combo_portion
+        _aprog = _n_scored / plan.n_scoring if plan.n_scoring else 1.0
+        score_so_far = int(round(
+            (500000.0 * _acc * _cprog
+             + 500000.0 * (_acc ** 5) * _aprog) * plan.mod_mult))
+    else:
+        score_so_far = 0
     pp_live = (plan.player_pp * quality_so_far / plan.total_quality
                if plan.total_quality > 0 else 0.0)
     if offsets_so_far:
-        avg_offset = sum(offsets_so_far) / len(offsets_so_far)
-        if len(offsets_so_far) >= 2:
-            var = sum((x - avg_offset) ** 2 for x in offsets_so_far) / len(offsets_so_far)
-            ur = 10.0 * (var ** 0.5)
+        _n_off, _avg_cached, _ur_cached = _fsc["stats"]
+        if _n_off == len(offsets_so_far):
+            # No new offset since the last computation — same list, same
+            # avg/UR (they're pure functions of the list contents).
+            avg_offset = _avg_cached
+            ur = _ur_cached
         else:
-            ur = 0.0
+            avg_offset = _offsets_sum / len(offsets_so_far)
+            if len(offsets_so_far) >= 2:
+                var = sum((x - avg_offset) ** 2 for x in offsets_so_far) / len(offsets_so_far)
+                ur = 10.0 * (var ** 0.5)
+            else:
+                ur = 0.0
+            _fsc["stats"] = (len(offsets_so_far), avg_offset, ur)
     else:
         avg_offset = 0.0
         ur = 0.0
@@ -518,12 +664,11 @@ def build_frame_state(
     ) / _ENDGAME_BLEND_MS)) if gameplay_end_ms > 0 else 0.0
     if _endgame_blend_t > 0.0:
         b = _endgame_blend_t
-        score_so_far = int(
-            score_so_far + (replay.score - score_so_far) * b
-        )
-        # accuracy is NOT blended any more: judgments are reconciled to the .osr
-        # tallies up front, so acc_so_far already lands exactly on replay.accuracy
-        # — blending it caused the visible end-of-song "patch".
+        # score is NOT blended to replay.score any more: it's now the absolute
+        # standardised ScoreV3 curve (already lands correctly at the end), and
+        # replay.score is mixed-format (stable ScoreV1 / lazer ScoreV3) — the
+        # very inconsistency this rework removes. accuracy already lands on
+        # replay.accuracy via reconcile. Only pp still eases to its final.
         pp_live = pp_live + (plan.player_pp - pp_live) * b
 
     # Score / accuracy tween — single-pole low-pass per frame.
