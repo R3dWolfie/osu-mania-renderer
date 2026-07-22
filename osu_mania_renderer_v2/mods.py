@@ -43,6 +43,11 @@ class ModResult:
     audio_rate: float
     visual_mods: VisualMods
     warnings: tuple[str, ...] = ()
+    # True when the speed mod also shifts PITCH with the rate (Nightcore).
+    # Stable semantics: DT/HT are pitch-PRESERVING tempo changes (BASS FX
+    # tempo); only NC plays the track resampled so pitch rises with speed.
+    # Drives the atempo-vs-asetrate branch in encode.build_ffmpeg_cmd.
+    audio_pitch: bool = False
 
 
 # Display order roughly matches in-game ordering (difficulty-affecting first,
@@ -88,13 +93,15 @@ def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
     mods = replay.mods
     warnings: list[str] = []
 
-    # Speed.
+    # Speed. NC implies the DT bit; only NC pitches the audio with the rate
+    # (stable: DT/HT are pitch-preserving tempo changes, NC is a resample).
     if mods & Mod.DT or mods & Mod.NC:
         audio_rate = 1.5
     elif mods & Mod.HT:
         audio_rate = 0.75
     else:
         audio_rate = 1.0
+    audio_pitch = bool(mods & Mod.NC)
 
     # Apply speed to note times.
     notes = _rescale_times(beatmap.notes, audio_rate)
@@ -125,6 +132,7 @@ def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
         audio_rate=audio_rate,
         visual_mods=visual,
         warnings=tuple(warnings),
+        audio_pitch=audio_pitch,
     )
 
 

@@ -355,6 +355,7 @@ async def build_render_plan(
         fps=options.fps,
         audio_path=audio_path,
         audio_rate=mod_res.audio_rate,
+        audio_pitch=mod_res.audio_pitch,
         audio_lead_in_ms=effective_lead_in_ms,
         video_bitrate=options.video_bitrate,
         audio_bitrate=options.audio_bitrate,

@@ -70,6 +70,7 @@ def build_ffmpeg_cmd(
     fps: int,
     audio_path: Path | None,
     audio_rate: float,
+    audio_pitch: bool = False,
     audio_lead_in_ms: int,
     video_bitrate: str,
     audio_bitrate: str,
@@ -127,9 +128,25 @@ def build_ffmpeg_cmd(
     if audio_path is not None:
         song_chain: list[str] = []
         if audio_rate != 1.0:
-            # asetrate changes both speed AND pitch (matches osu! DT/HT).
-            song_chain.append(f"asetrate=44100*{audio_rate}")
-            song_chain.append("aresample=44100")
+            if audio_pitch:
+                # Nightcore: rate change — pitch rises with speed (stable
+                # NC semantics; the resampled "nightcore" sound). Normalise
+                # to 44100 FIRST: asetrate's factor is relative to the
+                # stream's actual sample rate, and the old bare
+                # `asetrate=44100*rate` on a 48 kHz mp3 produced
+                # 66150/48000 = 1.378x instead of 1.5x — audibly flat AND
+                # ~9% out of sync with the note timeline.
+                song_chain.append("aresample=44100")
+                song_chain.append(f"asetrate=44100*{audio_rate}")
+                song_chain.append("aresample=44100")
+            else:
+                # DT / HT: stable plays these pitch-PRESERVING (BASS FX
+                # tempo shift) — only NC pitches up. The old code ran the
+                # asetrate branch for every rate mod, which made DT sound
+                # like Nightcore. atempo is sample-rate-agnostic and
+                # handles any factor in [0.5, 100] in one stage, which
+                # covers our only rates (0.75 / 1.5).
+                song_chain.append(f"atempo={audio_rate}")
         if audio_lead_in_ms > 0:
             song_chain.append(f"adelay={audio_lead_in_ms}|{audio_lead_in_ms}")
         # Apply music gain. 1.0 = no-op; ffmpeg accepts plain multipliers.
