@@ -101,6 +101,10 @@ class BeatmapInfo:
     # OD from `[Difficulty] OverallDifficulty`. Drives lazer-style
     # OD-scaled hit windows in the local judgment classifier.
     overall_difficulty: float = 5.0
+    # `[Events]` break periods as (start_ms, end_ms) tuples, MAP time at
+    # parse (mods.apply_mods rescales them to REAL/video time alongside the
+    # notes). Drives the background dim envelope's breaks phase (dim.py).
+    breaks: tuple = ()  # tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)

@@ -106,6 +106,13 @@ def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
     # Apply speed to note times.
     notes = _rescale_times(beatmap.notes, audio_rate)
     total = int(beatmap.total_duration_ms / audio_rate)
+    # Break periods ride the same clock (MAP → REAL/video time) so the
+    # background dim envelope's break glides line up with the rescaled notes.
+    if audio_rate != 1.0:
+        breaks = tuple((int(a / audio_rate), int(b / audio_rate))
+                       for a, b in getattr(beatmap, "breaks", ()))
+    else:
+        breaks = tuple(getattr(beatmap, "breaks", ()))
 
     # Mirror.
     if mods & Mod.MR:
@@ -126,7 +133,8 @@ def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
         score_v2=bool(mods & Mod.V2),
     )
 
-    modded = replace(beatmap, notes=tuple(notes), total_duration_ms=total)
+    modded = replace(beatmap, notes=tuple(notes), total_duration_ms=total,
+                     breaks=breaks)
     return ModResult(
         beatmap=modded,
         audio_rate=audio_rate,

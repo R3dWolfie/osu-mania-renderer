@@ -15,6 +15,7 @@ import moderngl
 import numpy as np
 from PIL import Image
 
+from osu_mania_renderer_v2.dim import build_dim_envelope
 from osu_mania_renderer_v2.gpu.atlas import SpriteAtlas, column_variant
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
@@ -73,11 +74,35 @@ class FrameRenderer:
         skin_dir: Path | None = None,
         beatmap_dir: Path | None = None,
         first_note_ms: int = 0,
+        note_starts: tuple = (),
+        breaks: tuple = (),
+        approach_ms: int | None = None,
     ) -> None:
         self.rc = rc
         # Settings-page toggles. Pass options to gate optional HUD draws.
         self.options = options or RenderOptions(resolution=(rc.width, rc.height), fps=60)
         self.first_note_ms = first_note_ms
+        # Background dim envelope (std's DimEnvelope, ported in dim.py): the
+        # dim GLIDES intro→game as the first note begins its scroll-in
+        # (approach_ms = RenderPlan.effective_approach_ms), brightens into
+        # [Events] breaks and re-dims at the resume anchor — smoothstep over
+        # the same 900 ms std/catch use. Built only when the orchestrator
+        # provides note_starts (render.py / wiki_renderer.py); constructions
+        # without them (unit tests, tools) keep the legacy 600 ms linear
+        # intro ramp in _draw_background.
+        self._dim_env = None
+        if note_starts:
+            _game = (self.options.bg_dim_game
+                     if self.options.bg_dim_game is not None
+                     else self.options.background_dim)
+            _intro = (self.options.bg_dim_intro
+                      if self.options.bg_dim_intro is not None else _game)
+            _breaks = (self.options.bg_dim_breaks
+                       if self.options.bg_dim_breaks is not None else _game)
+            self._dim_env = build_dim_envelope(
+                _intro, _game, _breaks, note_starts,
+                float(approach_ms if approach_ms is not None else 600),
+                breaks or ())
         # R3D intro splash (show_logo) textures — baked lazily on the first
         # frame the splash is visible, so flag-off renders never touch them.
         self._logo_tex: moderngl.Texture | None = None
@@ -395,9 +420,13 @@ class FrameRenderer:
     def _draw_background(self, scene: SceneState | None = None) -> None:
         if not getattr(self, "_bg_tex", None):
             return
-        # Pick the active dim phase. Intro fades to game dim over 600ms once
-        # we cross first_note_ms so the change isn't an abrupt jump. Breaks
-        # aren't detected yet — they read as gameplay dim.
+        # Pick the active dim level. With a DimEnvelope (built in __init__
+        # from the orchestrator's note/break data) the dim GLIDES: intro HELD
+        # until the first note's approach then a 900 ms smoothstep to game
+        # dim, brighten at each break's start, re-dim at the resume anchor —
+        # std/catch's exact envelope, replacing the old 600 ms linear ramp
+        # (which also never brightened for breaks). Constructions without the
+        # envelope (unit tests, tools) keep the legacy ramp below.
         dim_game = (
             self.options.bg_dim_game if self.options.bg_dim_game is not None
             else self.options.background_dim
@@ -406,7 +435,9 @@ class FrameRenderer:
             self.options.bg_dim_intro if self.options.bg_dim_intro is not None
             else dim_game
         )
-        if scene is None or self.first_note_ms <= 0:
+        if self._dim_env is not None and scene is not None:
+            dim = self._dim_env.level(float(scene.t_ms))
+        elif scene is None or self.first_note_ms <= 0:
             dim = dim_game
         elif scene.t_ms < self.first_note_ms - 600:
             dim = dim_intro

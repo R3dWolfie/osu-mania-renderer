@@ -355,6 +355,11 @@ async def render(
             fr = FrameRenderer(
                 rc, options, skin_dir=skin_dir, beatmap_dir=beatmap_dir,
                 first_note_ms=plan.first_note_ms,
+                # bg dim envelope inputs (dim.py): modded-time note starts +
+                # break periods, and the scroll-speed-scaled approach window.
+                note_starts=plan.note_times,
+                breaks=getattr(plan.modded, "breaks", ()),
+                approach_ms=plan.effective_approach_ms,
             )
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
@@ -445,6 +450,20 @@ def _cli() -> None:
                    help="hide hit-judgement text/sprite")
     p.add_argument("--no-key-counter", action="store_true",
                    help="hide bottom-right key counter")
+    # Background dim (same names/mapping as cli.py — the bot's
+    # mania_ordr/renderer.py has ALWAYS sent these four flags, but only
+    # cli.py declared them, so this prod path silently dropped them via
+    # parse_known_args and every render used the 0.70 background_dim
+    # default). ints are 0-100 preset values → RenderOptions fractions;
+    # --bg-dim is the legacy single float 0-1.
+    p.add_argument("--bg-dim",          type=float, default=None,
+                   help="background dim 0.0 - 1.0 (legacy single-value)")
+    p.add_argument("--bg-dim-intro",    type=int, default=None,
+                   help="background dim during intro 0-100 (overrides --bg-dim)")
+    p.add_argument("--bg-dim-game",     type=int, default=None,
+                   help="background dim during gameplay 0-100")
+    p.add_argument("--bg-dim-breaks",   type=int, default=None,
+                   help="background dim during breaks 0-100")
     # NB: must be declared HERE (not only in cli.py) — parse_known_args
     # silently drops unknown flags, so an undeclared --logo would no-op.
     p.add_argument("--logo", action="store_true",
@@ -467,6 +486,17 @@ def _cli() -> None:
     import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
     from osu_mania_renderer_v2.models import RenderOptions as _RO  # noqa: F811
     w, h = (int(x) for x in args.resolution.lower().split("x"))
+    # Stage-aware bg dim (cli.py's exact clamping/mapping): omitted flags
+    # keep the RenderOptions defaults (background_dim 0.70 fallback).
+    dim_kwargs: dict = {}
+    if args.bg_dim is not None:
+        dim_kwargs["background_dim"] = max(0.0, min(1.0, args.bg_dim))
+    if args.bg_dim_intro is not None:
+        dim_kwargs["bg_dim_intro"] = max(0, min(100, args.bg_dim_intro)) / 100.0
+    if args.bg_dim_game is not None:
+        dim_kwargs["bg_dim_game"] = max(0, min(100, args.bg_dim_game)) / 100.0
+    if args.bg_dim_breaks is not None:
+        dim_kwargs["bg_dim_breaks"] = max(0, min(100, args.bg_dim_breaks)) / 100.0
     options = RenderOptions(
         resolution=(w, h), fps=args.fps, encoder=args.encoder,
         timeout_seconds=(args.timeout or 600),
@@ -476,6 +506,7 @@ def _cli() -> None:
         show_logo=args.logo,
         featured_avatar_png=(str(args.featured_avatar_png)
                              if args.featured_avatar_png else None),
+        **dim_kwargs,
     )
     async def _print_progress(fraction: float) -> None:
         # Same line shape the bot's _PROGRESS_RE parses from the subprocess

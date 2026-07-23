@@ -770,6 +770,11 @@ async def render_mania(
                 rc, options, skin_dir=skin_dir,
                 beatmap_dir=beatmap_dir,
                 first_note_ms=plan.first_note_ms,
+                # bg dim envelope inputs (dim.py): modded-time note starts +
+                # break periods, and the scroll-speed-scaled approach window.
+                note_starts=plan.note_times,
+                breaks=getattr(plan.modded, "breaks", ()),
+                approach_ms=plan.effective_approach_ms,
             )
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)

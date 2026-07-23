@@ -81,7 +81,11 @@ def parse_beatmap(
         hp_drain_rate = _float_or_none(difficulty.get("HPDrainRate"))
         circle_size = _float_or_none(difficulty.get("CircleSize"))
         approach_rate = _float_or_none(difficulty.get("ApproachRate"))
-        return convert_standard_to_mania(
+        # Attach the source map's break periods afterwards (the converter
+        # builds the BeatmapInfo itself; breaks pass through untouched by
+        # the conversion — lazer keeps the source breaks on converts too).
+        from dataclasses import replace as _dc_replace
+        return _dc_replace(convert_standard_to_mania(
             hit_objects_block=hit_objects_raw,
             timing_points=_parse_timing_points(sections.get("TimingPoints", "")),
             audio_filename=general.get("AudioFilename"),
@@ -104,7 +108,7 @@ def parse_beatmap(
             approach_rate=approach_rate,
             total_break_time_ms=_parse_total_break_time(events),
             kiai_points=_parse_kiai_points(sections.get("TimingPoints", "")),
-        )
+        ), breaks=_parse_breaks(events))
 
     try:
         key_count = int(float(difficulty["CircleSize"]))
@@ -145,6 +149,7 @@ def parse_beatmap(
         default_sample_set=default_sample_set,
         timing_points=timing_points,
         overall_difficulty=od,
+        breaks=_parse_breaks(events),
     )
 
 
@@ -319,6 +324,26 @@ def _float_or_none(s: str | None) -> float | None:
         return float(s)
     except ValueError:
         return None
+
+
+def _parse_breaks(events: str) -> tuple:
+    """`[Events]` break periods as ``(start_ms, end_ms)`` tuples, sorted by
+    start. Break events are ``2,start,end`` (or ``Break,start,end``) — the
+    same lines _parse_total_break_time sums. Drives the background dim
+    envelope's breaks phase (dim.py); MAP time here, rescaled to REAL/video
+    time by mods.apply_mods alongside the notes."""
+    out = []
+    for line in events.splitlines():
+        parts = line.split(",")
+        if len(parts) >= 3 and parts[0].strip() in ("2", "Break"):
+            try:
+                start = int(float(parts[1]))
+                end = int(float(parts[2]))
+            except ValueError:
+                continue
+            if end > start:
+                out.append((start, end))
+    return tuple(sorted(out))
 
 
 def _parse_total_break_time(events: str) -> float:
