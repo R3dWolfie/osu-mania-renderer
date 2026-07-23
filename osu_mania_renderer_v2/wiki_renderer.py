@@ -360,6 +360,8 @@ async def render(
                 note_starts=plan.note_times,
                 breaks=getattr(plan.modded, "breaks", ()),
                 approach_ms=plan.effective_approach_ms,
+                # break overlay clock: real/video time -> map time
+                rate=plan.audio_rate,
             )
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)

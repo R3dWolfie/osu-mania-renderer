@@ -37,6 +37,9 @@ _ORDER = [
     ("top_chrome", hud.top_chrome),
     ("flashlight", effects.flashlight),
     ("ur_summary", hud.ur_summary),
+    # lazer BreakOverlay: above every HUD element, below the wash/fade/
+    # results/watermark layers (Player.createOverlayComponents z-order).
+    ("break_overlay", effects.break_overlay),
     ("miss_break_wash", effects.miss_break_wash),
     ("fade_to_black", effects.fade_to_black),
     # R3D intro splash — topmost intro element (over the start fade),

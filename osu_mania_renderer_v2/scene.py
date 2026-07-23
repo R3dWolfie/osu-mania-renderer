@@ -110,6 +110,11 @@ class SceneState:
     # Age (ms) since the most recent combo-break that was large enough to
     # trigger the shake/flash. 9999 = no recent break.
     miss_break_age_ms: int = 9999
+    # Live grade at t (render.build_frame_state — the engine's own mania
+    # boundaries over the judgments so far). Drives the lazer break
+    # overlay's Grade line; scene.grade stays the whole-replay grade the
+    # results card shows.
+    live_grade: str = "SS"
 
 
 def snapshot(

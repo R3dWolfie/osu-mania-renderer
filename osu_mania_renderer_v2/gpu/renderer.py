@@ -77,6 +77,7 @@ class FrameRenderer:
         note_starts: tuple = (),
         breaks: tuple = (),
         approach_ms: int | None = None,
+        rate: float = 1.0,
     ) -> None:
         self.rc = rc
         # Settings-page toggles. Pass options to gate optional HUD draws.
@@ -103,6 +104,20 @@ class FrameRenderer:
                 _intro, _game, _breaks, note_starts,
                 float(approach_ms if approach_ms is not None else 600),
                 breaks or ())
+        # lazer's BreakOverlay (countdown + progress bar + CURRENT PROGRESS
+        # info + slide-in chevrons) — gpu/break_overlay.py, a 1:1 port of
+        # osu.Game/Screens/Play/BreakOverlay.cs on this engine's GL quad
+        # primitives (the catch d8ccb60 rollout). Fed the SAME real-time
+        # break periods the dim envelope gets; `rate` (plan.audio_rate)
+        # converts them — and each frame's clock — back to the map-time
+        # axis lazer's transforms run on. None on no-break maps; all GL
+        # objects bake lazily on the first visible break frame, so
+        # no-break renders never touch GL state here (byte-identical).
+        self._break_overlay = None
+        if breaks:
+            from osu_mania_renderer_v2.gpu.break_overlay import \
+                LazerBreakOverlay
+            self._break_overlay = LazerBreakOverlay(self, breaks, rate)
         # R3D intro splash (show_logo) textures — baked lazily on the first
         # frame the splash is visible, so flag-off renders never touch them.
         self._logo_tex: moderngl.Texture | None = None
@@ -677,6 +692,13 @@ class FrameRenderer:
             self._draw_flashlight_pass()
         if self.options.show_ur_bar:
             self._draw_ur_summary(scene)
+        # lazer z-order: BreakOverlay is a LATER overlay-component child
+        # than HUDOverlay (Player.createOverlayComponents) — drawn above
+        # every HUD element (hud/top chrome/flashlight/UR), under the
+        # miss-flash/fade/results/watermark layers below, matching lazer's
+        # Player container order. No-op (zero GL calls) outside breaks.
+        if self._break_overlay is not None:
+            self._break_overlay.draw(scene)
         # Combo-break red flash: when a ≥20-combo break happened in the
         # last 300 ms, paint a fading red wash over the playfield so the
         # break reads visually as well as audibly. Matches lazer's punchy

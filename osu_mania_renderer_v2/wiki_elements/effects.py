@@ -69,6 +69,18 @@ def miss_break_wash(*, element, skin, assets, variables, ctx) -> None:
         )
 
 
+def break_overlay(*, element, skin, assets, variables, ctx) -> None:
+    """lazer's BreakOverlay (gpu/break_overlay.py, the catch d8ccb60
+    rollout) — a LATER overlay-component child than HUDOverlay in lazer's
+    Player, so it draws above every HUD element and under the
+    miss-flash/fade/results/watermark layers, mirroring
+    FrameRenderer.draw(). Delegates to the engine so the legacy and wiki
+    paths draw identical pixels; None on no-break maps and zero GL calls
+    outside break windows."""
+    if ctx.fr._break_overlay is not None:
+        ctx.fr._break_overlay.draw(ctx.scene)
+
+
 def fade_to_black(*, element, skin, assets, variables, ctx) -> None:
     s = ctx.scene
     if s.fade_to_black > 0:

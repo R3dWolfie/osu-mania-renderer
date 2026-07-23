@@ -660,6 +660,25 @@ def build_frame_state(
         )
         acc_so_far = (weighted / (aw * total_so_far)) * 100
 
+    # Live grade for the lazer break overlay (gpu/break_overlay.py): the
+    # engine's own mania grade boundaries (_compute_grade_from_replay —
+    # purely accuracy-based, SS only while nothing below a geki has been
+    # judged) applied to the judgments SO FAR — bound live like lazer's
+    # Rank bindable, not the snapshotted whole-replay grade.
+    if (running["300"] == 0 and running["katu"] == 0 and running["100"] == 0
+            and running["50"] == 0 and running["miss"] == 0):
+        live_grade = "SS"
+    elif acc_so_far >= 95.0:
+        live_grade = "S"
+    elif acc_so_far >= 90.0:
+        live_grade = "A"
+    elif acc_so_far >= 80.0:
+        live_grade = "B"
+    elif acc_so_far >= 70.0:
+        live_grade = "C"
+    else:
+        live_grade = "D"
+
     # End-of-song blend toward the .osr-recorded authoritative values.
     _ENDGAME_BLEND_MS = 500
     _endgame_blend_t = max(0.0, min(1.0, (
@@ -706,6 +725,7 @@ def build_frame_state(
         mod_acronyms=plan.acronyms,
         results_opacity=results_opacity,
         grade=_compute_grade_from_replay(replay),
+        live_grade=live_grade,
         judgment_counts=(
             replay.count_geki, replay.count_300,
             replay.count_katu, replay.count_100,
@@ -775,6 +795,8 @@ async def render_mania(
                 note_starts=plan.note_times,
                 breaks=getattr(plan.modded, "breaks", ()),
                 approach_ms=plan.effective_approach_ms,
+                # break overlay clock: real/video time -> map time
+                rate=plan.audio_rate,
             )
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
