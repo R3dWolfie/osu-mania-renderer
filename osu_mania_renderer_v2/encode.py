@@ -62,6 +62,21 @@ async def probe_encoder(encoder: str, device: str | None) -> str:
     return "libx264"  # let ffmpeg raise a clear error if nothing is available
 
 
+def nvenc_target_bps(w: int, h: int, fps: float) -> int:
+    """Resolution-scaled NVENC bitrate ladder (R3D cross-engine policy, 2026-07).
+
+    Replaces the flat per-engine bitrate: scale a 4 Mbps 720p30 reference
+    by pixel rate with a perceptual exponent (0.70 -- deliberately NOT
+    linear), clamped to [2.5, 16] Mbps.  Anchors: 720p30=4.0M,
+    720p60=6.5M, 1080p30=7.1M, 1080p60=11.5M, 1440p60/1080p120+=16M cap.
+    Callers pair the target with maxrate=1.5x / bufsize=2x for NVENC VBR.
+    Same formula in all four engines (catch/taiko/std/mania v2).
+    """
+    ref = 1280.0 * 720.0 * 30.0
+    target = 4_000_000.0 * ((float(w) * float(h) * float(fps)) / ref) ** 0.70
+    return int(min(16_000_000.0, max(2_500_000.0, target)))
+
+
 def build_ffmpeg_cmd(
     *,
     encoder: str,
@@ -243,7 +258,17 @@ def build_ffmpeg_cmd(
         vf_chain += ["scale=in_range=full:out_range=limited", "format=yuv420p"]
     cmd += ["-vf", ",".join(vf_chain)]
 
-    cmd += ["-c:v", encoder, "-b:v", video_bitrate]
+    if encoder in ("h264_nvenc", "hevc_nvenc"):
+        # Resolution-scaled NVENC bitrate ladder (R3D cross-engine policy,
+        # 2026-07): the flat video_bitrate (2500k default) starved 1080p60+;
+        # NVENC now targets nvenc_target_bps(w, h, fps) with maxrate=1.5x /
+        # bufsize=2x. Non-NVENC encoders keep the caller's video_bitrate
+        # exactly as before.
+        _tgt = nvenc_target_bps(w, h, fps)
+        cmd += ["-c:v", encoder, "-b:v", str(_tgt),
+                "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
+    else:
+        cmd += ["-c:v", encoder, "-b:v", video_bitrate]
     # Pin BT.709 + limited-range tags on the SPS so downstream players
     # don't have to guess. (Limited range matches the scale=out_range
     # conversion above; both must agree or you get a brightness shift.)
