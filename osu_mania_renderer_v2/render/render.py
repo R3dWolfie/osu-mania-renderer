@@ -18,6 +18,7 @@ from bisect import bisect_right as _br
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
+import pathlib
 from typing import Any
 
 from osu_mania_renderer_v2.beatmap.beatmap import build_sv_distance_table, parse_beatmap
@@ -875,6 +876,23 @@ def _find_osu(beatmap_dir: Path, expected_md5: str) -> Path:
         h = hashlib.md5(f.read_bytes()).hexdigest()
         if h == expected_md5:
             return f
+    # DMCA/mirror-down recovery: the bot's manual-.osz upload path writes a
+    # ".r3d_forced_osu" marker naming the difficulty it matched when the
+    # replay's exact md5 is not in the archive (a pack shipping a different
+    # version, or an unsubmitted map). Honour it before the mode/first
+    # fallback so we render THAT diff -- and resolve ITS audio/bg -- instead
+    # of the first same-mode one (which desyncs or renders silently).
+    _forced_marker = beatmap_dir / ".r3d_forced_osu"
+    if _forced_marker.is_file():
+        try:
+            _forced = beatmap_dir / pathlib.Path(
+                _forced_marker.read_text(encoding="utf-8").strip()
+            ).name
+        except OSError:
+            _forced = None
+        if _forced is not None and _forced.is_file() \
+                and _forced.suffix.lower() == ".osu":
+            return _forced
     # Fall back to first .osu file.
     for f in entries:
         if f.suffix.lower() == ".osu":
