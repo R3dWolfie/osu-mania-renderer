@@ -331,6 +331,7 @@ async def build_render_plan(
                 audio_rate=mod_res.audio_rate,
                 skin_dirs=tuple(skin_dirs),
                 beatmap_hitsounds=options.beatmap_hitsounds,
+                miss_hitsound=options.miss_hitsound,
                 nightcore=options.nightcore_hitsounds,
             )
         except Exception as e:  # noqa: BLE001

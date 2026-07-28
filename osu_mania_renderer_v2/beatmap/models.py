@@ -221,6 +221,9 @@ class RenderOptions:
     # beatmap's own custom samples are used; off -> skin + bundled default
     # samples play instead.
     beatmap_hitsounds: bool = True
+    # Miss / combo-break hitsound (default on): off silences the
+    # combobreak.wav that plays on a break of >= 20 combo.
+    miss_hitsound: bool = True
     # Combo color source for note tints when an .osk is loaded.
     #   "beatmap" — use Beatmap.colours
     #   "skin"    — use Skin.colours

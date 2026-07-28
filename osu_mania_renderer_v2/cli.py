@@ -94,6 +94,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="prefer hitsounds from the user .osk over bundled")
     p.add_argument("--no-beatmap-hitsounds", action="store_true",
                    help="ignore the beatmap's custom hitsounds (skin/default only)")
+    p.add_argument("--no-miss-hitsound", action="store_true",
+                   help="silence the combobreak (miss) hitsound")
     p.add_argument("--skin-combo-colors", default=None,
                    choices=["beatmap", "skin"],
                    help="combo-color source (beatmap or skin)")
@@ -172,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.nightcore_hitsounds: opts_kwargs["nightcore_hitsounds"]  = True
     if args.skin_hitsounds:      opts_kwargs["use_skin_hitsounds"]   = True
     if args.no_beatmap_hitsounds: opts_kwargs["beatmap_hitsounds"]  = False
+    if args.no_miss_hitsound:     opts_kwargs["miss_hitsound"]      = False
     if args.skin_combo_colors:   opts_kwargs["skin_combo_colors"]    = args.skin_combo_colors
     if args.logo:                opts_kwargs["show_logo"]            = True
     if args.featured_avatar_png is not None:

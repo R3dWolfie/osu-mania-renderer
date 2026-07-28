@@ -235,6 +235,7 @@ def build_hitsound_track(
     audio_rate: float = 1.0,     # noqa: ARG001 — note times already modded
     skin_dirs: tuple[Path, ...] = (),
     beatmap_hitsounds: bool = True,
+    miss_hitsound: bool = True,
     nightcore: bool = False,
 ) -> Path | None:
     """Mix each non-miss note's resolved hitsound(s) at its press time into
@@ -278,7 +279,8 @@ def build_hitsound_track(
     # Combo-break sample (osu! plays it on any miss that breaks a combo of
     # ≥ COMBO_BREAK_THRESHOLD). Found once up-front; None ⇒ no combobreak
     # WAV available, just skip the miss audio path entirely.
-    cb_path = _find_combobreak_sample(beatmap_dir, skin_dirs)
+    cb_path = (_find_combobreak_sample(beatmap_dir, skin_dirs)
+               if miss_hitsound else None)
     cb_sample: np.ndarray | None = None
     if cb_path is not None:
         cb_sample = cache.get(cb_path)
