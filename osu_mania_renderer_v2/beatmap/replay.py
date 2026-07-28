@@ -8,7 +8,7 @@ from pathlib import Path
 from osrparse import GameMode, Replay
 
 from osu_mania_renderer_v2.errors import NotAManiaError, ReplayParseError
-from osu_mania_renderer_v2.models import KeyEvent, ReplayInfo
+from osu_mania_renderer_v2.beatmap.models import KeyEvent, ReplayInfo
 
 
 def parse_replay(path: Path) -> ReplayInfo:

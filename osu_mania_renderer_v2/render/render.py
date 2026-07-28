@@ -20,8 +20,8 @@ from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
-from osu_mania_renderer_v2.beatmap import build_sv_distance_table, parse_beatmap
-from osu_mania_renderer_v2.encode import FfmpegPipe, build_ffmpeg_cmd, probe_encoder
+from osu_mania_renderer_v2.beatmap.beatmap import build_sv_distance_table, parse_beatmap
+from osu_mania_renderer_v2.render.encode import FfmpegPipe, build_ffmpeg_cmd, probe_encoder
 from osu_mania_renderer_v2.errors import (
     BeatmapParseError,
     MissingAudioError,
@@ -30,13 +30,13 @@ from osu_mania_renderer_v2.errors import (
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.readback import FrameReader
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-from osu_mania_renderer_v2.judgments import compute_judgments, reconcile_to_counts
-from osu_mania_renderer_v2.models import HoldNote, KeyEvent, RenderOptions
-from osu_mania_renderer_v2.mods import apply_mods, mod_acronyms
-from osu_mania_renderer_v2.hitsounds import build_hitsound_track
-from osu_mania_renderer_v2.pp import compute_pp
-from osu_mania_renderer_v2.replay import parse_replay
-from osu_mania_renderer_v2.scene import JudgmentPopup, snapshot
+from osu_mania_renderer_v2.beatmap.judgments import compute_judgments, reconcile_to_counts
+from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
+from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
+from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
+from osu_mania_renderer_v2.beatmap.pp import compute_pp
+from osu_mania_renderer_v2.beatmap.replay import parse_replay
+from osu_mania_renderer_v2.render.scene import JudgmentPopup, snapshot
 
 log = logging.getLogger("osu_mania_renderer_v2")
 

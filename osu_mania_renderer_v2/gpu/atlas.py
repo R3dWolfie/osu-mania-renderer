@@ -31,7 +31,7 @@ import moderngl
 import numpy as np
 from PIL import Image
 
-from osu_mania_renderer_v2.skin_ini import ManiaSection
+from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
 
 SPRITES_DIR = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 _LOG = logging.getLogger("osu_mania_renderer_v2")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, replace
 
-from osu_mania_renderer_v2.models import BeatmapInfo, HoldNote, Note, ReplayInfo, VisualMods
+from osu_mania_renderer_v2.beatmap.models import BeatmapInfo, HoldNote, Note, ReplayInfo, VisualMods
 
 
 class Mod(enum.IntFlag):

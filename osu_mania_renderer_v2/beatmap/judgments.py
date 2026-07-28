@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from osu_mania_renderer_v2.models import KeyEvent
+from osu_mania_renderer_v2.beatmap.models import KeyEvent
 
 # Stable mania uses FIXED hit windows regardless of OD. These are the
 # constants we used until we learned osu!web displays lazer-recomputed
@@ -188,7 +188,7 @@ def compute_judgments(
     hold, so reconcile_to_counts flags tails scoring=False in that case
     (detected by comparing len(events) against the .osr count total).
     """
-    from osu_mania_renderer_v2.models import HoldNote
+    from osu_mania_renderer_v2.beatmap.models import HoldNote
 
     if not events:
         return _all_miss(notes)

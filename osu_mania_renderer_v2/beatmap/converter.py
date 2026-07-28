@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from osu_mania_renderer_v2.models import (
+from osu_mania_renderer_v2.beatmap.models import (
     BeatmapInfo,
     HitSample,
     HoldNote,
@@ -35,7 +35,7 @@ from osu_mania_renderer_v2.models import (
     Note,
     TimingPoint,
 )
-from osu_mania_renderer_v2 import legacy_mania_convert as _legacy
+from osu_mania_renderer_v2.beatmap import legacy_mania_convert as _legacy
 
 
 # Default key count when a converted chart doesn't specify one. osu!mania

@@ -4,8 +4,8 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
-from osu_mania_renderer_v2.beatmap import sv_distance_at as _sv_distance_at
-from osu_mania_renderer_v2.models import HoldNote, KeyEvent, VisualMods
+from osu_mania_renderer_v2.beatmap.beatmap import sv_distance_at as _sv_distance_at
+from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, VisualMods
 
 # Single-slot identity caches for per-render immutable inputs that the old
 # code re-derived EVERY frame (a full list rebuild per call). Keyed on the

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-log = logging.getLogger("osu_mania_renderer_v2.hitsounds")
+log = logging.getLogger("osu_mania_renderer_v2.render.hitsounds")
 
 DEFAULT_HIT_GAIN = 0.55     # ceiling applied on top of per-note volume
 COMBO_BREAK_THRESHOLD = 20  # osu! stable: combobreak.wav only plays on a

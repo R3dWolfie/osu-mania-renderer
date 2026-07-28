@@ -15,13 +15,13 @@ import moderngl
 import numpy as np
 from PIL import Image
 
-from osu_mania_renderer_v2.dim import build_dim_envelope
+from osu_mania_renderer_v2.render.dim import build_dim_envelope
 from osu_mania_renderer_v2.gpu.atlas import SpriteAtlas, column_variant
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
-from osu_mania_renderer_v2.models import RenderOptions
-from osu_mania_renderer_v2.scene import SceneState
-from osu_mania_renderer_v2.skin_ini import parse_skin_ini
+from osu_mania_renderer_v2.beatmap.models import RenderOptions
+from osu_mania_renderer_v2.render.scene import SceneState
+from osu_mania_renderer_v2.beatmap.skin_ini import parse_skin_ini
 
 # Playfield dimensions, expressed as fractions of the screen.
 # Kept as the legacy "fraction of screen" fallback for code paths that
@@ -746,7 +746,7 @@ class FrameRenderer:
         No-op (and zero side effects) unless options.show_logo is on."""
         if not getattr(self.options, "show_logo", False):
             return
-        from osu_mania_renderer_v2.logo import (
+        from osu_mania_renderer_v2.render.logo import (
             LOGO_UI_SIZE,
             bake_logo_tile,
             logo_alpha,
@@ -757,7 +757,7 @@ class FrameRenderer:
         # closes at the first note's spawn. Approach mirrors
         # render.build_render_plan's scroll-speed formula (lazy import —
         # render.py imports this module at load time).
-        from osu_mania_renderer_v2.render import (
+        from osu_mania_renderer_v2.render.render import (
             APPROACH_MS,
             SCROLL_SPEED_BASELINE,
         )

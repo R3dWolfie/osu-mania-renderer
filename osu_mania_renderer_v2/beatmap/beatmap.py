@@ -5,7 +5,7 @@ from bisect import bisect_right as _bisect_right
 from pathlib import Path
 
 from osu_mania_renderer_v2.errors import BeatmapParseError, NotAManiaError
-from osu_mania_renderer_v2.models import (
+from osu_mania_renderer_v2.beatmap.models import (
     BeatmapInfo, HitSample, HoldNote, Note, TimingPoint,
 )
 
@@ -60,7 +60,7 @@ def parse_beatmap(
         # Converted path: turn the standard chart into a synthetic mania
         # chart and short-circuit the rest of this function. The renderer
         # never has to know the source mode wasn't mania.
-        from osu_mania_renderer_v2.converter import convert_standard_to_mania
+        from osu_mania_renderer_v2.beatmap.converter import convert_standard_to_mania
         try:
             audio_lead_in_ms = int(float(general.get("AudioLeadIn", "0")))
         except ValueError:

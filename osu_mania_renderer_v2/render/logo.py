@@ -58,7 +58,7 @@ def bake_logo_tile(size: int = 256) -> np.ndarray:
     identical across modes); procedural fallback (rounded red tile + white R)
     only if the asset is missing."""
     try:
-        lp = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+        lp = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")
         im = Image.open(lp).convert("RGBA").resize((size, size), Image.LANCZOS)
         return np.asarray(im, dtype=np.uint8).copy()
     except Exception:

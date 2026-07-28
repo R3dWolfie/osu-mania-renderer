@@ -17,14 +17,14 @@ from osu_mania_renderer_v2.errors import (
     RenderTimeoutError,
     ReplayParseError,
 )
-from osu_mania_renderer_v2.models import RenderOptions
+from osu_mania_renderer_v2.beatmap.models import RenderOptions
 # GPU renderer imported lazily (its dependency chain pulls in moderngl,
 # which may not be available in every Python environment — e.g. CI,
 # headless wiki-renderer-only builds).
 
 async def _gpu_render_mania(**kwargs):  # type: ignore
     """Lazy import of the GPU render path."""
-    from osu_mania_renderer_v2.render import render_mania as _inner
+    from osu_mania_renderer_v2.render.render import render_mania as _inner
     return await _inner(**kwargs)
 
 log = logging.getLogger("osu_mania_renderer_v2")

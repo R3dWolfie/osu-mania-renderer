@@ -315,12 +315,12 @@ async def render(
     # Heavy GPU deps imported lazily so `import osu_mania_renderer_v2.wiki_elements`
     # (to populate registries) stays cheap.
     import asyncio
-    from osu_mania_renderer_v2.encode import FfmpegPipe
+    from osu_mania_renderer_v2.render.encode import FfmpegPipe
     from osu_mania_renderer_v2.errors import RenderTimeoutError
     from osu_mania_renderer_v2.gpu.context import HeadlessGl
     from osu_mania_renderer_v2.gpu.readback import FrameReader
     from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-    from osu_mania_renderer_v2.render import build_frame_state, build_render_plan
+    from osu_mania_renderer_v2.render.render import build_frame_state, build_render_plan
     from osu_mania_renderer_v2.wiki_elements.context import FrameContext
 
     if not RENDER_ORDER:
@@ -429,7 +429,7 @@ def _cli() -> None:
     -o OUT --skin-dir DIR [--default-skin DIR] [legacy flags]`. Builds a
     RenderOptions from the flags and drives the async `render`."""
     import asyncio
-    from osu_mania_renderer_v2.models import RenderOptions
+    from osu_mania_renderer_v2.beatmap.models import RenderOptions
 
     p = argparse.ArgumentParser(description="wiki-driven renderer (admin test path)")
     p.add_argument("osr", type=Path, help=".osr replay file")
@@ -486,7 +486,7 @@ def _cli() -> None:
         args.skin_dir = Path(tempfile.mkdtemp(prefix="argon-empty-"))
 
     import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
-    from osu_mania_renderer_v2.models import RenderOptions as _RO  # noqa: F811
+    from osu_mania_renderer_v2.beatmap.models import RenderOptions as _RO  # noqa: F811
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Stage-aware bg dim (cli.py's exact clamping/mapping): omitted flags
     # keep the RenderOptions defaults (background_dim 0.70 fallback).

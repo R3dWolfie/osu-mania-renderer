@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from osu_mania_renderer_v2.models import ReplayInfo
+from osu_mania_renderer_v2.beatmap.models import ReplayInfo
 
-log = logging.getLogger("osu_mania_renderer_v2.pp")
+log = logging.getLogger("osu_mania_renderer_v2.beatmap.pp")
 
 
 def _mods_to_acronyms(mods_bitfield: int) -> str:

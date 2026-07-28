@@ -23,7 +23,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from osu_mania_renderer_v2.encode import _ffmpeg_prefix
+from osu_mania_renderer_v2.render.encode import _ffmpeg_prefix
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
