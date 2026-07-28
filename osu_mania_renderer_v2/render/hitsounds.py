@@ -227,6 +227,17 @@ def build_hitsound_track(
     """Mix each non-miss note's resolved hitsound(s) at its press time into
     one stereo WAV at ``output_wav``. Returns the path or None on failure.
     """
+    # OOM/waste guard (audit #52): the whole build needs soundfile — to
+    # decode samples AND to write the WAV. When it is not importable the
+    # build is a no-op that would still allocate a ~420MB whole-song
+    # float32 buffer (total_samples x 2 x 4B) and then fail the write, so
+    # skip early and render without replay hitsounds — identical outcome,
+    # minus the wasted allocation + long-map OOM risk.
+    import importlib.util
+    if importlib.util.find_spec("soundfile") is None:
+        log.warning("hitsound_skip_no_soundfile",
+                    extra={"output": str(output_wav)})
+        return None
     cache = _SampleCache(target_sample_rate)
     cache._beatmap_dir = beatmap_dir  # type: ignore[attr-defined]
 
