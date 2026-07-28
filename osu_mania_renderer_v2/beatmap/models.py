@@ -217,6 +217,10 @@ class RenderOptions:
     # preference to the bundled defaults. Falls back to defaults when a
     # specific sample is missing.
     use_skin_hitsounds: bool = False
+    # Beatmap hitsounds (lazer BeatmapHitsounds; default on): on -> the
+    # beatmap's own custom samples are used; off -> skin + bundled default
+    # samples play instead.
+    beatmap_hitsounds: bool = True
     # Combo color source for note tints when an .osk is loaded.
     #   "beatmap" — use Beatmap.colours
     #   "skin"    — use Skin.colours

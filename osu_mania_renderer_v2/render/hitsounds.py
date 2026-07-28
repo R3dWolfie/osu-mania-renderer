@@ -41,6 +41,11 @@ _ADDITIONS: tuple[tuple[int, str], ...] = (
     (8, "clap"),
 )
 
+# Bundled osu! default hitsounds (soft/normal/drum x hitnormal/whistle/finish/
+# clap) from ppy/osu-resources — the LAST fallback so maps without custom
+# samples still sound, matching lazer's beatmap -> skin -> default lookup.
+_DEFAULT_HITSOUND_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_hitsounds"
+
 
 def _active_timing_point(timing_points: tuple, time_ms: int):
     """Last timing point whose time_ms <= ``time_ms`` (or None)."""
@@ -59,16 +64,19 @@ def _active_timing_point(timing_points: tuple, time_ms: int):
 
 
 def _candidate_paths(
-    beatmap_dir: Path, set_name: str, type_name: str, index: int,
+    dirs, set_name: str, type_name: str, index: int,
 ) -> list[Path]:
-    """Generate sample-file candidates in fallback order."""
+    """Sample-file candidates in fallback order, across a dir stack
+    (beatmap -> skin(s) -> bundled default), each with the osu! lookup order
+    {set}-hit{type}{index} -> {set}-hit{type} (matches lazer LookupNames)."""
     out: list[Path] = []
     suffixes = ("wav", "ogg")
-    if index > 0:
+    for d in dirs:
+        if index > 0:
+            for s in suffixes:
+                out.append(d / f"{set_name}-hit{type_name}{index}.{s}")
         for s in suffixes:
-            out.append(beatmap_dir / f"{set_name}-hit{type_name}{index}.{s}")
-    for s in suffixes:
-        out.append(beatmap_dir / f"{set_name}-hit{type_name}.{s}")
+            out.append(d / f"{set_name}-hit{type_name}.{s}")
     return out
 
 
@@ -152,9 +160,9 @@ def _resolve_samples_for_note(
                 return data
         return None
 
-    # 1. Custom filename override: only that file plays.
-    if sample_filename:
-        from pathlib import Path as _P
+    # 1. Custom filename override (beatmap-specified exact file): only that
+    #    file plays. Skipped when beatmap hitsounds are disabled.
+    if sample_filename and getattr(cache, "_use_beatmap", True):
         path = _bm_dir(beatmap, cache) / sample_filename
         arr = _cache_get(cache, path)
         if arr is not None:
@@ -164,7 +172,7 @@ def _resolve_samples_for_note(
         # the resolved default so the note still makes a sound.
 
     # 2. Normal hitsound (always played for every non-miss note).
-    candidates = _candidate_paths(_bm_dir(beatmap, cache),
+    candidates = _candidate_paths(_sample_dirs(cache),
                                   set_name, "normal", effective_index)
     arr = _load_first_existing(candidates)
     if arr is not None:
@@ -176,7 +184,7 @@ def _resolve_samples_for_note(
     add_set_name = _SET_NAMES.get(addition_set, set_name)
     for bit, type_name in _ADDITIONS:
         if note.hit_sound & bit:
-            cands = _candidate_paths(_bm_dir(beatmap, cache),
+            cands = _candidate_paths(_sample_dirs(cache),
                                      add_set_name, type_name,
                                      effective_index)
             arr = _load_first_existing(cands)
@@ -195,6 +203,10 @@ def _cache_get(cache: _SampleCache, path: Path) -> np.ndarray | None:
 
 def _bm_dir(beatmap, cache: _SampleCache) -> Path:
     return cache._beatmap_dir  # type: ignore[attr-defined]
+
+
+def _sample_dirs(cache: _SampleCache) -> tuple:
+    return getattr(cache, "_sample_dirs", (cache._beatmap_dir,))  # type: ignore[attr-defined]
 
 
 def _find_combobreak_sample(
@@ -222,6 +234,7 @@ def build_hitsound_track(
     target_sample_rate: int = 44100,
     audio_rate: float = 1.0,     # noqa: ARG001 — note times already modded
     skin_dirs: tuple[Path, ...] = (),
+    beatmap_hitsounds: bool = True,
     nightcore: bool = False,
 ) -> Path | None:
     """Mix each non-miss note's resolved hitsound(s) at its press time into
@@ -240,6 +253,17 @@ def build_hitsound_track(
         return None
     cache = _SampleCache(target_sample_rate)
     cache._beatmap_dir = beatmap_dir  # type: ignore[attr-defined]
+    # Sample lookup stack (osu!/lazer BeatmapHitsounds): the beatmap dir when
+    # the beatmap-hitsounds toggle is on, then any skin dirs, then the bundled
+    # default set. First existing file wins.
+    _dirs: list[Path] = []
+    if beatmap_hitsounds:
+        _dirs.append(beatmap_dir)
+    _dirs.extend(skin_dirs)
+    if _DEFAULT_HITSOUND_DIR.is_dir():
+        _dirs.append(_DEFAULT_HITSOUND_DIR)
+    cache._sample_dirs = tuple(_dirs)       # type: ignore[attr-defined]
+    cache._use_beatmap = beatmap_hitsounds  # type: ignore[attr-defined]
 
     total_samples = int(duration_ms / 1000 * target_sample_rate)
     track = np.zeros((total_samples, 2), dtype=np.float32)
