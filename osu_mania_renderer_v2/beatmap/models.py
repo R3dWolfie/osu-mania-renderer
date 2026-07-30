@@ -178,6 +178,10 @@ class RenderOptions:
     show_combo: bool = True             # the centred combo counter
     show_judgment: bool = True          # the hit-judgement text/sprite burst
     show_pp_counter: bool = False       # off by default; needs rosu-pp live
+    # Exact official-PP override. When set, the results card + live pp
+    # counter show this value instead of the rosu-pp estimate (rosu only
+    # approximates the osu! server pp). None -> use the computed rosu pp.
+    pp_override: float | None = None
     show_result_screen: bool = True
     hide_judgement_line: bool = False   # the horizontal line at the receptor
     skip_intro: bool = True             # skip audio_lead_in_ms intro silence

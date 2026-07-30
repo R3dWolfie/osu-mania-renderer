@@ -268,6 +268,20 @@ async def build_render_plan(
 
     # PP for this play + max possible PP (SS-FC). Both 0 if rosu-pp absent.
     player_pp, max_pp = compute_pp(osu_file, replay)
+    # Exact-pp override: when the caller supplies the authoritative passed
+    # pp (the osu! server value), anchor player_pp to it so the live
+    # counter eases onto it and the results card shows it exactly.
+    if options.pp_override is not None:
+        player_pp = float(options.pp_override)
+        # The results card + live counter gate the PP display on
+        # `max_pp > 0`. When rosu-pp is unavailable in the render venv
+        # (as on FoofPC) max_pp is 0, which would hide the PP even though
+        # the override gives us an exact value to show. max_pp is ONLY
+        # ever a `> 0` display gate (never rendered, never a divisor), so
+        # lift it to a positive sentinel to surface the override. A real
+        # rosu max_pp (>0) is left untouched.
+        if max_pp <= 0.0:
+            max_pp = player_pp if player_pp > 0.0 else 1.0
     log.info("pp", extra={"player": player_pp, "max": max_pp})
 
     # Pre-sort judgments by the PRESS time so the combo/score/accuracy

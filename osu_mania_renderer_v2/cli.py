@@ -82,6 +82,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-key-counter",  action="store_true", help="hide bottom-right key-press counter")
     p.add_argument("--no-result-screen",action="store_true", help="cut the results card")
     p.add_argument("--show-pp",         action="store_true", help="show live PP counter")
+    p.add_argument("--pp",              type=float, default=None,
+                   help="exact official PP for the results card / live "
+                        "counter (overrides the rosu-pp estimate); "
+                        "omit to use rosu")
     p.add_argument("--hide-judgement-line", action="store_true",
                    help="hide the horizontal line at the receptor")
     p.add_argument("--no-skip-intro",   action="store_true",
@@ -168,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_key_counter:     opts_kwargs["show_key_counter"]  = False
     if args.no_result_screen:   opts_kwargs["show_result_screen"]= False
     if args.show_pp:            opts_kwargs["show_pp_counter"]   = True
+    if args.pp is not None:     opts_kwargs["pp_override"]       = args.pp
     if args.hide_judgement_line:opts_kwargs["hide_judgement_line"] = True
     if args.no_skip_intro:      opts_kwargs["skip_intro"]        = False
     if args.no_replay_hitsounds: opts_kwargs["use_replay_hitsounds"] = False

@@ -475,6 +475,14 @@ def _cli() -> None:
     p.add_argument("--featured-avatar-png", type=Path, default=None,
                    help="featured player's osu! avatar PNG → results-screen "
                         "header (parity with std). Absent ⇒ grey placeholder")
+    # Exact official-PP override (parity with the taiko renderer). When the
+    # caller supplies the authoritative passed pp, the results card + live
+    # counter show it exactly instead of the rosu-pp estimate. Must be
+    # declared HERE - parse_known_args silently drops undeclared flags.
+    p.add_argument("--pp", type=float, default=None,
+                   help="exact official PP for the results card / live "
+                        "counter (overrides the rosu-pp estimate); "
+                        "omit to use rosu")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -508,6 +516,7 @@ def _cli() -> None:
         show_logo=args.logo,
         featured_avatar_png=(str(args.featured_avatar_png)
                              if args.featured_avatar_png else None),
+        pp_override=args.pp,
         **dim_kwargs,
     )
     async def _print_progress(fraction: float) -> None:
