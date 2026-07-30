@@ -338,6 +338,34 @@ async def build_render_plan(
     else:
         _score_raw_end = 0.0
     _osr_score = int(getattr(replay, "score", 0) or 0)
+    # #115: the displayed score must be the lazer-standardised ScoreV3 for
+    # EVERY replay. A LAZER .osr header already IS ScoreV3, so it is anchored
+    # as-is (above). A STABLE .osr header is the legacy ScoreV1 total (a
+    # different scoring model), so convert it to the standardised total the
+    # player recognises from lazer -- osu!(lazer)'s own convertFromLegacyTotal-
+    # Score, ruleset 3 (see beatmap/score_fidelity.py). Gated on game_version
+    # (< 30M = stable); lazer replays are untouched. Fail-soft: any problem
+    # keeps the raw header (never breaks a render, never a worse number).
+    _gv = int(getattr(replay, "game_version", 0) or 0)
+    _mods = int(getattr(replay, "mods", 0) or 0)
+    if _osr_score > 0 and _gv < 30_000_000 and not (_mods & (1 << 29)):
+        try:
+            from osu_mania_renderer_v2.beatmap.score_fidelity import (
+                mania_lazer_accuracy, stable_to_standardised,
+            )
+            _lz_acc = mania_lazer_accuracy(
+                replay.count_geki, replay.count_300, replay.count_katu,
+                replay.count_100, replay.count_50, replay.count_miss)
+            _std_score = stable_to_standardised(
+                _osr_score, _mods, _lz_acc, _mod_mult)
+            if _std_score > 0:
+                log.info("score_fidelity",
+                         extra={"stable_v1": _osr_score,
+                                "standardised_v3": _std_score,
+                                "lazer_acc": round(_lz_acc, 4)})
+                _osr_score = _std_score
+        except Exception:  # noqa: BLE001 -- never break a render
+            log.warning("score_fidelity_failed_keeping_header", exc_info=True)
     if _osr_score > 0 and _score_raw_end > 0.0:
         _score_scale = _osr_score / _score_raw_end   # curve -> .osr total
         _score_final = _osr_score                    # endpoint EXACT (no fp drift)
