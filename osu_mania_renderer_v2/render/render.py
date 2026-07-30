@@ -165,6 +165,13 @@ class RenderPlan:
     max_combo_portion: float = 0.0
     mod_mult: float = 1.0
     mania_mw: int = 305
+    # Score-curve endpoint normalisation (parity with the taiko #91 fix).
+    # score_scale multiplies the standardised ScoreV3 curve so it lands on
+    # the .osr total; score_final pins the exact endpoint. score_final None
+    # => no stored .osr score, fall back to the ScoreV3 x mod-multiplier
+    # scaling carried in score_scale.
+    score_scale: float = 1.0
+    score_final: int | None = None
 
 
 async def build_render_plan(
@@ -296,6 +303,47 @@ async def build_render_plan(
         ),
         key=lambda pair: pair[0],
     )
+
+    # Displayed score = the .osr's authoritative total, EXACTLY (Red
+    # 2026-07-30, parity with the taiko #91 fix). The standardised (ScoreV3)
+    # curve in build_frame_state supplies only the SHAPE of the score climb;
+    # its ENDPOINT is normalised to the replay's stored score so the
+    # gameplay HUD and the results card both land on the exact number osu!
+    # itself recorded (1:1 with the .osr). Compute the raw endpoint here by
+    # folding the scoring judgments in the SAME press-time order (and float
+    # ops) build_frame_state uses, so it equals the per-frame raw at the
+    # final frame. The ScoreV3 x mod-multiplier scaling survives only as a
+    # fallback for the rare replay with no stored score.
+    _end_cur_base = 0.0
+    _end_combo_portion = 0.0
+    _end_sd_combo = 0
+    _end_n_scored = 0
+    for _eff_t, _je in judgment_timeline:
+        if not _je.scoring:
+            continue
+        _end_n_scored += 1
+        _end_cur_base += (_mania_mw if _je.judgment == "geki"
+                          else _SD_ACC_WEIGHT.get(_je.judgment, 0))
+        if _je.judgment == "miss":
+            _end_sd_combo = 0
+        else:
+            _end_sd_combo += 1
+            _end_combo_portion += _mania_mw * (_end_sd_combo ** 0.5)
+    if _max_combo_portion > 0 and _end_n_scored > 0:
+        _end_acc = _end_cur_base / (_mania_mw * _end_n_scored)
+        _end_cprog = _end_combo_portion / _max_combo_portion
+        # _aprog == n_scored / n_scoring == 1.0 once every note is judged.
+        _score_raw_end = (500000.0 * _end_acc * _end_cprog
+                          + 500000.0 * (_end_acc ** 5))
+    else:
+        _score_raw_end = 0.0
+    _osr_score = int(getattr(replay, "score", 0) or 0)
+    if _osr_score > 0 and _score_raw_end > 0.0:
+        _score_scale = _osr_score / _score_raw_end   # curve -> .osr total
+        _score_final = _osr_score                    # endpoint EXACT (no fp drift)
+    else:
+        _score_scale = _mod_mult                     # fallback: ScoreV3 x mod mult
+        _score_final = None
     log.info(
         "judgments_done",
         extra={
@@ -426,6 +474,7 @@ async def build_render_plan(
         first_note_ms=first_note_ms, banner_text=banner_text,
         n_scoring=_n_scoring, max_combo_portion=_max_combo_portion,
         mod_mult=_mod_mult, mania_mw=_mania_mw,
+        score_scale=_score_scale, score_final=_score_final,
     )
 
 
@@ -598,7 +647,7 @@ def build_frame_state(
         _aprog = _n_scored / plan.n_scoring if plan.n_scoring else 1.0
         score_so_far = int(round(
             (500000.0 * _acc * _cprog
-             + 500000.0 * (_acc ** 5) * _aprog) * plan.mod_mult))
+             + 500000.0 * (_acc ** 5) * _aprog) * plan.score_scale))
     else:
         score_so_far = 0
     pp_live = (plan.player_pp * quality_so_far / plan.total_quality
@@ -703,11 +752,12 @@ def build_frame_state(
     ) / _ENDGAME_BLEND_MS)) if gameplay_end_ms > 0 else 0.0
     if _endgame_blend_t > 0.0:
         b = _endgame_blend_t
-        # score is NOT blended to replay.score any more: it's now the absolute
-        # standardised ScoreV3 curve (already lands correctly at the end), and
-        # replay.score is mixed-format (stable ScoreV1 / lazer ScoreV3) — the
-        # very inconsistency this rework removes. accuracy already lands on
-        # replay.accuracy via reconcile. Only pp still eases to its final.
+        # score needs no end-of-song blend here: its curve is already
+        # scaled (score_scale) so the climb lands on the .osr total, and the
+        # results endpoint is pinned to score_final (see build_render_plan),
+        # so the displayed score matches the .osr 1:1 without a late nudge.
+        # accuracy already lands on replay.accuracy via reconcile. Only pp
+        # still eases to its final here.
         pp_live = pp_live + (plan.player_pp - pp_live) * b
 
     # Score / accuracy tween — single-pole low-pass per frame.
@@ -736,7 +786,10 @@ def build_frame_state(
         t_ms=scene.t_ms, visible_notes=scene.visible_notes,
         keys_held=scene.keys_held, visual_mods=scene.visual_mods,
         active_judgments=active,
-        score=score_so_far, combo=combo_at_t,
+        score=(plan.score_final
+               if (results_opacity > 0 and plan.score_final is not None)
+               else score_so_far),
+        combo=combo_at_t,
         max_combo=replay.max_combo,
         accuracy=(replay.accuracy if results_opacity > 0 else acc_so_far),
         mod_acronyms=plan.acronyms,
