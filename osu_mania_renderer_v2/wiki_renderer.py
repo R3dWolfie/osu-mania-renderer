@@ -483,6 +483,12 @@ def _cli() -> None:
                    help="exact official PP for the results card / live "
                         "counter (overrides the rosu-pp estimate); "
                         "omit to use rosu")
+    # --sr (parity with taiko/std/catch). Must be declared HERE too -
+    # parse_known_args silently drops undeclared flags. mania draws no SR
+    # on-card yet, so this is accepted + stored but currently inert.
+    p.add_argument("--sr", type=float, default=None,
+                   help="exact official star rating (parity with taiko/std/"
+                        "catch); accepted + stored, no visible effect yet")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -517,6 +523,7 @@ def _cli() -> None:
         featured_avatar_png=(str(args.featured_avatar_png)
                              if args.featured_avatar_png else None),
         pp_override=args.pp,
+        sr_override=args.sr,
         **dim_kwargs,
     )
     async def _print_progress(fraction: float) -> None:

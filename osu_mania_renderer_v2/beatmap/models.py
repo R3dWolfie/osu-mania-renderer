@@ -182,6 +182,14 @@ class RenderOptions:
     # counter show this value instead of the rosu-pp estimate (rosu only
     # approximates the osu! server pp). None -> use the computed rosu pp.
     pp_override: float | None = None
+    # Exact official star-rating override (--sr), parity with the taiko/std/
+    # catch renderers. NOTE: the mania results card currently draws NO star
+    # rating anywhere in-video (banner is "artist - title [diff]  player"; the
+    # card shows score / accuracy / max-combo / pp / judgements / UR only), so
+    # this value is accepted + stored but has no display consumer yet. Declared
+    # so the shared dispatcher can pass --sr to every renderer uniformly
+    # (cli.py uses a STRICT parse_args that would otherwise crash on it).
+    sr_override: float | None = None
     show_result_screen: bool = True
     hide_judgement_line: bool = False   # the horizontal line at the receptor
     skip_intro: bool = True             # skip audio_lead_in_ms intro silence
