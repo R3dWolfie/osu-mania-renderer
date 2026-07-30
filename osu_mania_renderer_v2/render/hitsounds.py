@@ -232,11 +232,12 @@ def build_hitsound_track(
     output_wav: Path,
     duration_ms: int,
     target_sample_rate: int = 44100,
-    audio_rate: float = 1.0,     # noqa: ARG001 — note times already modded
+    audio_rate: float = 1.0,     # NC-mod overlay maps map-time beats → video time
     skin_dirs: tuple[Path, ...] = (),
     beatmap_hitsounds: bool = True,
     miss_hitsound: bool = True,
     nightcore: bool = False,
+    nc_mod: bool = False,
 ) -> Path | None:
     """Mix each non-miss note's resolved hitsound(s) at its press time into
     one stereo WAV at ``output_wav``. Returns the path or None on failure.
@@ -327,6 +328,17 @@ def build_hitsound_track(
             target_sample_rate, duration_ms,
         )
 
+    # ModNightcore beat overlay — AUTOMATIC when the NC mod is active,
+    # independent of the `nightcore` metronome toggle above (both may lay).
+    # Mania timing points are MAP time (apply_mods rescales notes, not TPs),
+    # so this pass maps map-time beats → video time via audio_rate.
+    nc_mod_layered = 0
+    if nc_mod:
+        nc_mod_layered = _layer_nightcore_mod(
+            track, beatmap.timing_points, cache, skin_dirs,
+            target_sample_rate, duration_ms, audio_rate, play_hats=True,
+        )
+
     np.clip(track, -1.0, 1.0, out=track)
 
     output_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -335,7 +347,8 @@ def build_hitsound_track(
     log.info("hitsound_track_built",
              extra={"path": str(output_wav), "hits": placed,
                     "breaks": breaks, "skipped": skipped_unknown,
-                    "nightcore_beats": nc_layered})
+                    "nightcore_beats": nc_layered,
+                    "nc_mod_beats": nc_mod_layered})
     return output_wav
 
 
@@ -395,3 +408,73 @@ def _find_skin_sample(
                 if arr is not None:
                     return arr
     return None
+
+
+# --- ModNightcore beat overlay (NC-mod-gated, distinct from the metronome) -----
+
+_NC_MOD_GAIN = 0.5      # nightcore-kick/clap/hat/finish drums
+
+
+def _layer_nightcore_mod(
+    track: np.ndarray, timing_points: tuple, cache: "_SampleCache",
+    skin_dirs: tuple[Path, ...], sample_rate: int, duration_ms: int,
+    audio_rate: float, *, play_hats: bool = True,
+) -> int:
+    """osu! ModNightcore beat overlay — the drum pattern osu! plays on each
+    beat AUTOMATICALLY while the Nightcore mod is active. NOT the general
+    metronome (_layer_nightcore) above; both can lay. Half-beat grid
+    (BeatSyncedContainer Divisor=2): per 4/4 bar, kick on beats 1 & 3, clap on
+    2 & 4, hat on the off-beats (the '&'s), plus a finish cymbal at the start
+    of every 4th bar — from the SKIN's nightcore-kick/-clap/-hat/-finish
+    samples (silent sample → silence; missing sample → skipped, no synth).
+    Mania has no readily-available SliderTickRate so hats play unconditionally
+    (osu gates them on SliderTickRate%2==0); the measure is assumed 4/4 (no
+    signature stored on the mania timing point). Map-time beats are mapped to
+    video time via `audio_rate` (NC ⇒ 1.5). Returns samples laid.
+
+    Port of osu.Game/Rulesets/Mods/ModNightcore.NightcoreBeatContainer."""
+    rate = audio_rate or 1.0
+    samples = {
+        name: _find_skin_sample(
+            (f"nightcore-{name}.wav", f"nightcore-{name}.ogg",
+             f"nightcore-{name}.mp3"), skin_dirs, cache)
+        for name in ("kick", "clap", "hat", "finish")
+    }
+    if not any(v is not None for v in samples.values()):
+        return 0
+    red_tps = [tp for tp in timing_points if tp.uninherited]
+    if not red_tps:
+        return 0
+    horizon_map = duration_ms * rate           # video horizon back to map time
+    seg_len = 4 * 8                            # 4/4: beatsPerBar(4) * 2 * 4 bars
+    laid = 0
+    for i, tp in enumerate(red_tps):
+        beat_ms = max(60.0, tp.beat_length_ms)   # cap <60ms (>1000 BPM) sanity
+        half = beat_ms / 2.0
+        end_map = red_tps[i + 1].time_ms if i + 1 < len(red_tps) else horizon_map
+        end_map = min(end_map, horizon_map)
+        k = 0
+        t_map = float(tp.time_ms)
+        while t_map < end_map:
+            bseg = k % seg_len
+            r = bseg % 4
+            names = []
+            if r == 0:
+                names.append("kick")
+            elif r == 2:
+                names.append("clap")
+            elif play_hats:
+                names.append("hat")
+            if bseg == 0:
+                names.append("finish")
+            start = int((t_map / rate) / 1000.0 * sample_rate)
+            if 0 <= start < track.shape[0]:
+                for name in names:
+                    sample = samples.get(name)
+                    if sample is not None:
+                        end = min(start + sample.shape[0], track.shape[0])
+                        track[start:end] += sample[:end - start] * _NC_MOD_GAIN
+                        laid += 1
+            k += 1
+            t_map = tp.time_ms + k * half
+    return laid

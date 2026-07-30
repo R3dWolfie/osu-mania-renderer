@@ -406,9 +406,15 @@ async def build_render_plan(
     # Hitsound track — a temp WAV pre-mixed with one sample at every non-miss
     # judgment's press time. Failure → song only.
     hitsound_wav: Path | None = None
-    if audio_path is not None and (options.use_replay_hitsounds or options.nightcore_hitsounds):
+    # ModNightcore beat overlay is AUTOMATIC when the NC mod (bit 1<<9) is on.
+    _nc_mod = bool(int(getattr(replay, "mods", 0) or 0) & (1 << 9))
+    if audio_path is not None and (options.use_replay_hitsounds
+                                   or options.nightcore_hitsounds or _nc_mod):
         skin_dirs: list[Path] = []
-        if options.use_skin_hitsounds and skin_dir is not None and skin_dir.is_dir():
+        # NC-mod samples come from the SKIN, so include the user skin whenever
+        # the NC overlay is active even if skin hitsounds are otherwise off.
+        if ((options.use_skin_hitsounds or _nc_mod)
+                and skin_dir is not None and skin_dir.is_dir()):
             skin_dirs.append(skin_dir)
         skin_dirs.extend(p for p in _DEFAULT_SKIN_DIRS if p.is_dir())
         try:
@@ -423,6 +429,7 @@ async def build_render_plan(
                 beatmap_hitsounds=options.beatmap_hitsounds,
                 miss_hitsound=options.miss_hitsound,
                 nightcore=options.nightcore_hitsounds,
+                nc_mod=_nc_mod,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("hitsound_build_failed", extra={"err": str(e)})
