@@ -24,10 +24,10 @@ import numpy as np
 
 log = logging.getLogger("osu_mania_renderer_v2.render.hitsounds")
 
-DEFAULT_HIT_GAIN = 0.55     # ceiling applied on top of per-note volume
+DEFAULT_HIT_GAIN = 0.22     # ceiling applied on top of per-note volume
 COMBO_BREAK_THRESHOLD = 20  # osu! stable: combobreak.wav only plays on a
                             # combo ≥ 20 break.
-COMBO_BREAK_GAIN = 0.65     # slightly louder than normal hits so it cuts
+COMBO_BREAK_GAIN = 0.26     # slightly louder than normal hits so it cuts
                             # through; matches the stable client.
 
 # Maps the osu! sample-set int → directory-prefix string.
@@ -357,7 +357,7 @@ def build_hitsound_track(
     return output_wav
 
 
-_NIGHTCORE_GAIN = 0.35      # lower than per-note hits so it doesn't dominate
+_NIGHTCORE_GAIN = 0.14      # lower than per-note hits so it doesn't dominate
 
 
 def _layer_nightcore(
@@ -417,7 +417,7 @@ def _find_skin_sample(
 
 # --- ModNightcore beat overlay (NC-mod-gated, distinct from the metronome) -----
 
-_NC_MOD_GAIN = 0.5      # nightcore-kick/clap/hat/finish drums
+_NC_MOD_GAIN = 0.20      # nightcore-kick/clap/hat/finish drums
 
 
 def _layer_nightcore_mod(
