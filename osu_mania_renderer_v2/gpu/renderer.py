@@ -8,6 +8,7 @@ This file is implemented incrementally:
 """
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,10 @@ from osu_mania_renderer_v2.gpu.text import text_to_texture
 from osu_mania_renderer_v2.beatmap.models import RenderOptions
 from osu_mania_renderer_v2.render.scene import SceneState
 from osu_mania_renderer_v2.beatmap.skin_ini import parse_skin_ini
+
+# 6 vertices x 9 float32 attrs for the ad-hoc external-texture quads.
+# Little-endian f32 == the np.array(dtype="f4").tobytes() it replaces.
+_EXT_QUAD_PACK = struct.Struct("<54f").pack
 
 # Playfield dimensions, expressed as fractions of the screen.
 # Kept as the legacy "fraction of screen" fallback for code paths that
@@ -1342,16 +1347,19 @@ class FrameRenderer:
             tr2 = _rot(x + w, y + h); tl = _rot(x, y + h)
         else:
             bl = (x0, y0); br = (x1, y0); tr2 = (x1, y1); tl = (x0, y1)
-        verts = np.array([
-            [bl[0], bl[1], 0, 1, 0, tr_, tg_, tb_, alpha],
-            [br[0], br[1], 1, 1, 0, tr_, tg_, tb_, alpha],
-            [tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha],
-            [bl[0], bl[1], 0, 1, 0, tr_, tg_, tb_, alpha],
-            [tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha],
-            [tl[0], tl[1], 0, 0, 0, tr_, tg_, tb_, alpha],
-        ], dtype="f4")
+        # struct.pack instead of np.array-of-nested-lists: same 54 little-
+        # endian float32s on the wire, ~4µs less Python per call — and this
+        # runs ~30x per frame (HUD text, judgments, combo, backgrounds).
+        verts = _EXT_QUAD_PACK(
+            bl[0], bl[1], 0, 1, 0, tr_, tg_, tb_, alpha,
+            br[0], br[1], 1, 1, 0, tr_, tg_, tb_, alpha,
+            tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha,
+            bl[0], bl[1], 0, 1, 0, tr_, tg_, tb_, alpha,
+            tr2[0], tr2[1], 1, 0, 0, tr_, tg_, tb_, alpha,
+            tl[0], tl[1], 0, 0, 0, tr_, tg_, tb_, alpha,
+        )
         vbo, vao = self._ext_quad_buffers()
-        vbo.write(verts.tobytes())
+        vbo.write(verts)
         vao.render(moderngl.TRIANGLES)
 
     def _draw_direct(
@@ -1388,16 +1396,16 @@ class FrameRenderer:
             r, g, b, a = tint
         arr.use(0)
         self._set_sprite_prog_uniforms(prog, sh)
-        verts = np.array([
-            [x0, y0, 0, 1, 0, r, g, b, a],
-            [x1, y0, 1, 1, 0, r, g, b, a],
-            [x1, y1, 1, 0, 0, r, g, b, a],
-            [x0, y0, 0, 1, 0, r, g, b, a],
-            [x1, y1, 1, 0, 0, r, g, b, a],
-            [x0, y1, 0, 0, 0, r, g, b, a],
-        ], dtype="f4")
+        verts = _EXT_QUAD_PACK(
+            x0, y0, 0, 1, 0, r, g, b, a,
+            x1, y0, 1, 1, 0, r, g, b, a,
+            x1, y1, 1, 0, 0, r, g, b, a,
+            x0, y0, 0, 1, 0, r, g, b, a,
+            x1, y1, 1, 0, 0, r, g, b, a,
+            x0, y1, 0, 0, 0, r, g, b, a,
+        )
         vbo, vao = self._ext_quad_buffers()
-        vbo.write(verts.tobytes())
+        vbo.write(verts)
         vao.render(moderngl.TRIANGLES)
 
     _GRADE_COLOURS: dict[str, tuple[int, int, int]] = {

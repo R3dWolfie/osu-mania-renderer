@@ -38,6 +38,10 @@ def _font_bold(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+# Shared measuring surface for text_to_texture's textbbox() call.
+_MEASURE_DRAW = ImageDraw.Draw(Image.new("RGBA", (4, 4), (0, 0, 0, 0)))
+
+
 def text_to_texture(
     ctx: moderngl.Context,
     text: str,
@@ -45,9 +49,10 @@ def text_to_texture(
     color: tuple[int, int, int, int] = (255, 255, 255, 255),
 ) -> tuple[moderngl.Texture, int, int]:
     font = _font_bold(size)
-    # Measure
-    dummy = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
-    bbox = ImageDraw.Draw(dummy).textbbox((0, 0), text, font=font)
+    # Measure. textbbox() never touches pixels, so one shared 4x4 measuring
+    # surface replaces the per-call Image.new + Draw construction (this runs
+    # once per rasterised string — nearly every frame via the score counter).
+    bbox = _MEASURE_DRAW.textbbox((0, 0), text, font=font)
     w = max(8, bbox[2] - bbox[0] + 8)
     h = max(8, bbox[3] - bbox[1] + 8)
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
