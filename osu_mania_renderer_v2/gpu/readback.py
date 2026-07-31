@@ -50,6 +50,15 @@ class FrameReader:
         # emit a black frame for the warmup slots; the user-visible video
         # starts with a black fade-in anyway.
         self._warmup_blank = bytes(self.frame_size)
+        # Reusable CPU-side frame buffers, rotated per read. Avoids a fresh
+        # 6 MB bytes allocation (mmap + page-fault + free) every frame.
+        # Pool depth must exceed every buffer the caller may still hold:
+        # FfmpegPipe keeps ≤ 2 frames queued + 1 in the writer thread, so
+        # ring + 3 leaves 2 buffers of slack on top of the one being
+        # filled. (~37 MB at 1080p — constant, replaces per-frame churn.)
+        self._out_pool = [bytearray(self.frame_size)
+                          for _ in range(self.ring_size + 3)]
+        self._out_idx = 0
         if _GL_AVAILABLE:
             try:
                 # Allocate the ring of pack-side PBOs. moderngl's Buffer
@@ -67,7 +76,7 @@ class FrameReader:
         else:
             log.warning("pyopengl_missing_fallback_sync")
 
-    def read(self) -> bytes:
+    def read(self) -> bytes | bytearray:
         """Return one frame's worth of RGB bytes. With PBO mode active,
         the bytes returned are from the read issued K=ring_size frames
         ago — perfectly fine for streaming to ffmpeg since each frame is
@@ -90,26 +99,32 @@ class FrameReader:
         )
         _GL.glBindBuffer(_GL.GL_PIXEL_PACK_BUFFER, 0)
 
-        out: bytes
         if self._frame_idx < ring - 1:
             # Pipeline still warming up — emit black for these initial
             # slots; the actual frames will come out at the end.
             out = self._warmup_blank
         else:
-            # Map the buffer that's been settled for (ring - 1) frames.
-            out = bytes(self._pbos[next_to_map].read())
+            # Map the buffer that's been settled for (ring - 1) frames,
+            # into a rotated reusable CPU buffer (no per-frame alloc).
+            out = self._next_out()
+            self._pbos[next_to_map].read_into(out)
 
         self._frame_idx += 1
         return out
 
-    def drain(self) -> list[bytes]:
+    def _next_out(self) -> bytearray:
+        buf = self._out_pool[self._out_idx]
+        self._out_idx = (self._out_idx + 1) % len(self._out_pool)
+        return buf
+
+    def drain(self) -> list[bytes | bytearray]:
         """Flush any frames still in flight in the PBO ring. Call once
         after the main render loop so the last `ring_size - 1` frames'
         reads complete and we can hand them to ffmpeg."""
         if not self._pbos:
             return []
         ring = self.ring_size
-        out: list[bytes] = []
+        out: list[bytes | bytearray] = []
         # The most recently-issued read is at (self._frame_idx - 1) % ring.
         # We've already mapped buffers that are (ring - 1) older than the
         # newest issued. Remaining unread = newest, newest-1, ... newest-
@@ -117,5 +132,7 @@ class FrameReader:
         for k in range(ring - 1, 0, -1):
             idx = (self._frame_idx - k) % ring
             if self._frame_idx >= k:  # actually issued
-                out.append(bytes(self._pbos[idx].read()))
+                buf = self._next_out()
+                self._pbos[idx].read_into(buf)
+                out.append(buf)
         return out

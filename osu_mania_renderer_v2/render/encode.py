@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
+import threading
 from pathlib import Path
 
 from osu_mania_renderer_v2.errors import EncoderError
@@ -330,6 +332,14 @@ class FfmpegPipe:
         self.proc: asyncio.subprocess.Process | None = None
         self._stderr_log: bytes = b""
         self._fifo_fd: int | None = None
+        self._stdin_fd: int | None = None
+        # Dedicated writer thread + bounded queue (see write_frame). A
+        # depth-2 queue decouples the render loop from ffmpeg's per-frame
+        # read/filter cadence without unbounded buffering; the thread is
+        # plain `queue`/`os.write` — no asyncio in the hot write path.
+        self._q: queue.Queue | None = None
+        self._writer: threading.Thread | None = None
+        self._werr: BaseException | None = None
 
     async def start(self) -> None:
         if self.fifo_path is not None:
@@ -346,29 +356,88 @@ class FfmpegPipe:
                 stderr=asyncio.subprocess.PIPE,
             )
             self._fifo_fd = os.open(str(self.fifo_path), os.O_RDWR)
+            _grow_pipe(self._fifo_fd)
         else:
-            self.proc = await asyncio.create_subprocess_exec(
-                *self.cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+            # Hand ffmpeg a plain os.pipe() instead of asyncio's stdin
+            # transport. The asyncio writer chops each 6 MB rawvideo frame
+            # into ~95 pipe-capacity (64 KiB) chunks, each with an epoll
+            # wakeup + _write_ready dispatch — measured at ~60% of the
+            # whole render loop. A raw fd grown to pipe-max-size (1 MiB)
+            # takes the same bytes in ~6 blocking writes issued from a
+            # worker thread, no event-loop churn. Byte stream is identical.
+            rfd, wfd = os.pipe()
+            try:
+                self.proc = await asyncio.create_subprocess_exec(
+                    *self.cmd,
+                    stdin=rfd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            finally:
+                # Child owns its dup of the read end; drop ours either way.
+                os.close(rfd)
+            self._stdin_fd = wfd
+            _grow_pipe(wfd)
+
+    def _ensure_writer(self, fd: int) -> queue.Queue:
+        if self._q is None:
+            self._q = queue.Queue(maxsize=2)
+            self._writer = threading.Thread(
+                target=self._writer_loop, args=(fd,),
+                name="ffmpeg-frame-writer", daemon=True,
             )
+            self._writer.start()
+        return self._q
+
+    def _writer_loop(self, fd: int) -> None:
+        """Drain the frame queue into the pipe. On any write error, record
+        it (surfaced loudly by the NEXT write_frame/close) and keep
+        consuming so the producer can never block on a dead pipe."""
+        q = self._q
+        assert q is not None
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            if self._werr is not None:
+                continue
+            try:
+                _blocking_write_all(fd, item)
+            except BaseException as e:  # noqa: BLE001 — must not kill thread
+                self._werr = e
 
     async def write_frame(self, data: bytes) -> None:
         if self.proc is None:
             raise EncoderError("ffmpeg not started")
-        if self._fifo_fd is not None:
-            # Off-loop write — writing 165 MB/s of raw frames blocks until
-            # ffmpeg drains, so we must not stall the asyncio loop.
-            await asyncio.to_thread(_blocking_write_all, self._fifo_fd, data)
-        else:
-            assert self.proc.stdin is not None
-            self.proc.stdin.write(data)
-            await self.proc.stdin.drain()
+        if self._werr is not None:
+            raise EncoderError(
+                f"ffmpeg pipe write failed: {self._werr!r}") from self._werr
+        fd = self._fifo_fd if self._fifo_fd is not None else self._stdin_fd
+        if fd is None:
+            raise EncoderError("ffmpeg stdin closed")
+        # Hand the frame to the writer thread. The bounded queue gives
+        # depth-2 pipelining — the GL/Python side renders the next frame
+        # while the thread pushes this one — and `put` blocking when full
+        # is exactly the old stdin backpressure. Frames are immutable bytes
+        # or caller-rotated buffers (FrameReader pool > queue depth + 2),
+        # so an in-flight buffer can't be mutated underneath the writer.
+        self._ensure_writer(fd).put(data)
+
+    def _join_writer(self) -> None:
+        if self._writer is not None:
+            assert self._q is not None
+            self._q.put(None)
+            self._writer.join()
+            self._writer = None
+            self._q = None
 
     async def close(self, output_path: Path) -> None:
         if self.proc is None:
             return
+        self._join_writer()
+        if self._werr is not None:
+            raise EncoderError(
+                f"ffmpeg pipe write failed: {self._werr!r}") from self._werr
         if self._fifo_fd is not None:
             os.close(self._fifo_fd)
             self._fifo_fd = None
@@ -377,8 +446,9 @@ class FfmpegPipe:
                     os.unlink(str(self.fifo_path))
                 except OSError:
                     pass
-        elif self.proc.stdin is not None:
-            self.proc.stdin.close()
+        elif self._stdin_fd is not None:
+            os.close(self._stdin_fd)
+            self._stdin_fd = None
         _, stderr = await self.proc.communicate()
         self._stderr_log = stderr or b""
         if self.proc.returncode != 0:
@@ -390,10 +460,29 @@ class FfmpegPipe:
             raise EncoderError(f"output MP4 missing or empty: {output_path}")
 
 
-def _blocking_write_all(fd: int, data: bytes) -> None:
+def _grow_pipe(fd: int) -> None:
+    """Best-effort: grow the kernel pipe buffer to /proc/sys/fs/pipe-max-size
+    (1 MiB default) so a 6 MB raw frame moves in ~6 write() calls instead of
+    ~95 at the 64 KiB default. Purely a syscall-count optimisation — the byte
+    stream is unchanged — so any failure (EPERM, non-Linux) is ignored."""
+    try:
+        import fcntl
+        f_setpipe_sz = getattr(fcntl, "F_SETPIPE_SZ", 1031)  # Linux
+        try:
+            max_size = int(
+                Path("/proc/sys/fs/pipe-max-size").read_text().strip())
+        except (OSError, ValueError):
+            max_size = 1 << 20
+        fcntl.fcntl(fd, f_setpipe_sz, max_size)
+    except OSError:
+        pass
+
+
+def _blocking_write_all(fd: int, data) -> None:
     """Loop os.write until every byte of `data` is committed to `fd`. A
-    partial write can happen on FIFOs once the kernel pipe buffer fills."""
+    partial write can happen on pipes/FIFOs once the kernel buffer fills."""
+    view = memoryview(data)
     offset = 0
-    n = len(data)
+    n = len(view)
     while offset < n:
-        offset += os.write(fd, data[offset:])
+        offset += os.write(fd, view[offset:])
