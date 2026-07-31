@@ -45,6 +45,9 @@ _ADDITIONS: tuple[tuple[int, str], ...] = (
 # clap) from ppy/osu-resources — the LAST fallback so maps without custom
 # samples still sound, matching lazer's beatmap -> skin -> default lookup.
 _DEFAULT_HITSOUND_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_hitsounds"
+# Bundled osu! DEFAULT nightcore drums (ppy/osu-resources Legacy skin) — final
+# fallback for the NC-mod overlay when the skin OMITS a nightcore sample.
+_DEFAULT_NC_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_nightcore"
 
 
 def _active_timing_point(timing_points: tuple, time_ms: int):
@@ -321,8 +324,10 @@ def build_hitsound_track(
                     breaks += 1
             combo = 0
 
+    # The general metronome is SUPPRESSED while NC is active (the NC drum
+    # overlay below plays instead — osu! never plays both on one render).
     nc_layered = 0
-    if nightcore:
+    if nightcore and not nc_mod:
         nc_layered = _layer_nightcore(
             track, beatmap.timing_points, cache, skin_dirs,
             target_sample_rate, duration_ms,
@@ -434,10 +439,14 @@ def _layer_nightcore_mod(
 
     Port of osu.Game/Rulesets/Mods/ModNightcore.NightcoreBeatContainer."""
     rate = audio_rate or 1.0
+    # Skin dirs first, then the bundled osu! DEFAULT last: a skin's SILENT file
+    # (in a skin dir) resolves first and wins; a sample the skin OMITS falls
+    # back to the default (osu! default-skin parity).
+    nc_dirs = tuple(skin_dirs) + (_DEFAULT_NC_DIR,)
     samples = {
         name: _find_skin_sample(
             (f"nightcore-{name}.wav", f"nightcore-{name}.ogg",
-             f"nightcore-{name}.mp3"), skin_dirs, cache)
+             f"nightcore-{name}.mp3"), nc_dirs, cache)
         for name in ("kick", "clap", "hat", "finish")
     }
     if not any(v is not None for v in samples.values()):

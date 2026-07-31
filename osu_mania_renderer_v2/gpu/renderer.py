@@ -1503,12 +1503,14 @@ class FrameRenderer:
         # Lazily import the shared argon-number primitive (avoids a module-load
         # cycle with wiki_elements at import time).
         _argon_number = None
+        _argon_overlap = 0
         if use_argon:
             try:
                 from osu_mania_renderer_v2.wiki_elements.hud import (
-                    _argon_number as _an,
+                    _argon_number as _an, ARGON_OVERLAP as _ao,
                 )
                 _argon_number = _an
+                _argon_overlap = _ao
             except Exception:  # noqa: BLE001
                 use_argon = False
 
@@ -1587,25 +1589,51 @@ class FrameRenderer:
         # ── Score (argon, large) ────────────────────────────────────────────
         _num(str(int(scene.score)), 74, 372, (1.0, 1.0, 1.0))
 
-        # ── Stat row: ACCURACY / MAX COMBO / (PP) ───────────────────────────
+        # ── Stat row: ACCURACY / MAX COMBO / (PP) / (STAR RATING) ───────────
         has_pp = scene.max_pp > 0
+        has_sr = scene.stars > 0
         stat_label_top = 472
         stat_num_top = 514
+        # Cells in fixed order; each = (label, value, tint, is_star). The star
+        # rating (--sr override, else rosu) reads "X.XX★" like the other engines;
+        # the argon-counter font has no ★, so its digits are argon and the ★ is a
+        # PIL suffix (mirrors the card's PIL grade letter).
+        cells = [
+            ("ACCURACY", f"{scene.accuracy:.2f}%", (1.0, 1.0, 1.0), False),
+            ("MAX COMBO", f"{scene.max_combo}x", (1.0, 1.0, 1.0), False),
+        ]
         if has_pp:
-            stats = [
-                (-330.0, "ACCURACY", f"{scene.accuracy:.2f}%", (1.0, 1.0, 1.0)),
-                (0.0, "MAX COMBO", f"{scene.max_combo}x", (1.0, 1.0, 1.0)),
-                (330.0, "PP", f"{int(round(scene.pp))}", (1.0, 0.86, 0.55)),
-            ]
-        else:
-            stats = [
-                (-200.0, "ACCURACY", f"{scene.accuracy:.2f}%", (1.0, 1.0, 1.0)),
-                (200.0, "MAX COMBO", f"{scene.max_combo}x", (1.0, 1.0, 1.0)),
-            ]
-        for dx, lab, val, tint in stats:
+            cells.append(("PP", f"{int(round(scene.pp))}", (1.0, 0.86, 0.55), False))
+        if has_sr:
+            cells.append(("STAR RATING", f"{scene.stars:.2f}", (1.0, 0.82, 0.30), True))
+        n = len(cells)
+        # Symmetric spacing: keeps the classic ±200 (2 cells) / ±330 (3) spans
+        # and extends to 4 cells (±480) without crowding.
+        span = {2: 400.0, 3: 660.0, 4: 960.0}.get(n, 320.0 * max(1, n - 1))
+        for i, (lab, val, tint, is_star) in enumerate(cells):
+            dx = (-span / 2.0 + span / (n - 1) * i) if n > 1 else 0.0
             xc = cx + dx * A
             _label(lab, 16, (196, 203, 222), stat_label_top, x=xc)
-            _num(val, 46, stat_num_top, tint, x=xc, align="center")
+            if not is_star:
+                _num(val, 46, stat_num_top, tint, x=xc, align="center")
+                continue
+            # argon digits + a PIL ★ suffix, drawn as one centred "X.XX★" unit
+            gh = 46
+            star_col = (int(tint[0] * 255), int(tint[1] * 255),
+                        int(tint[2] * 255), 255)
+            star_tex, sw, sh = self._cached_text("★", 34, star_col)
+            gap = 5.0 * A
+            if use_argon:
+                num_w = ctx.number_width(val, gh * A, _argon_overlap, "argon")
+            else:
+                _nt, num_w, _nh = self._cached_text(val, gh, star_col)
+            total_w = num_w + gap + sw
+            left = xc - total_w / 2.0
+            _num(val, gh, stat_num_top, tint, x=left, align="left")
+            self._draw_external_texture(
+                star_tex, x=int(round(left + num_w + gap)),
+                y=int(round(_gl_center(stat_num_top) - sh / 2.0)),
+                w=sw, h=sh, alpha=a)
 
         # ── Judgment counts: 6 colour-coded cells (label + argon number) ────
         jlabels = ("320", "300", "200", "100", "50", "MISS")

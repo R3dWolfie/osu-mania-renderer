@@ -88,8 +88,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         "omit to use rosu")
     p.add_argument("--sr",              type=float, default=None,
                    help="exact official star rating (parity with taiko/std/"
-                        "catch); accepted + stored, but mania draws no SR "
-                        "on-card yet, so it has no visible effect")
+                        "catch); shown as the 'X.XX★' pill on the results card "
+                        "(omit to use the rosu estimate)")
     p.add_argument("--hide-judgement-line", action="store_true",
                    help="hide the horizontal line at the receptor")
     p.add_argument("--no-skip-intro",   action="store_true",

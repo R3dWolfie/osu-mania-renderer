@@ -69,6 +69,8 @@ class SceneState:
     # PP values (player's and the map's max-FC PP). Both 0 until computed.
     pp: float = 0.0
     max_pp: float = 0.0
+    # Star rating shown on the results card (--sr override, else rosu). 0 hides.
+    stars: float = 0.0
     # Black-fade opacity layered over the whole frame. 1.0 = pure black,
     # 0.0 = no overlay. Used to fade in at song start and fade out into the
     # results card.

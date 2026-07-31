@@ -83,3 +83,27 @@ def compute_pp(osu_path: Path, replay: ReplayInfo) -> tuple[float, float]:
     except Exception as e:  # noqa: BLE001
         log.warning("pp_compute_failed", extra={"error": str(e)})
         return 0.0, 0.0
+
+
+def compute_star_rating(osu_path: Path, replay: ReplayInfo) -> float:
+    """Rosu-pp star rating for this play (mods applied — DT/NC/HR/EZ scale it).
+    Fallback for the results-card SR pill when no exact --sr override is passed.
+    Returns 0.0 on any failure (rosu-pp missing, unsupported map, …)."""
+    try:
+        import rosu_pp_py as rosu  # type: ignore[import-not-found]
+    except ImportError:
+        log.warning("rosu_pp_py not installed; star rating set to 0")
+        return 0.0
+    try:
+        bmap = rosu.Beatmap(path=str(osu_path))
+        if bmap.is_suspicious():
+            return 0.0
+        mods = _mods_to_acronyms(replay.mods)
+        diff_kwargs = dict(lazer=True)
+        if mods:
+            diff_kwargs["mods"] = mods
+        attrs = rosu.Difficulty(**diff_kwargs).calculate(bmap)
+        return float(attrs.stars or 0.0)
+    except Exception as e:  # noqa: BLE001
+        log.warning("star_rating_compute_failed", extra={"error": str(e)})
+        return 0.0

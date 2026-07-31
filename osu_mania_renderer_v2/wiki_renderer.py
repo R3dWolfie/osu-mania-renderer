@@ -484,11 +484,12 @@ def _cli() -> None:
                         "counter (overrides the rosu-pp estimate); "
                         "omit to use rosu")
     # --sr (parity with taiko/std/catch). Must be declared HERE too -
-    # parse_known_args silently drops undeclared flags. mania draws no SR
-    # on-card yet, so this is accepted + stored but currently inert.
+    # parse_known_args silently drops undeclared flags. Shown as the 'X.XX★'
+    # pill on the results card (rosu estimate when omitted).
     p.add_argument("--sr", type=float, default=None,
                    help="exact official star rating (parity with taiko/std/"
-                        "catch); accepted + stored, no visible effect yet")
+                        "catch); shown as the 'X.XX★' results-card pill "
+                        "(omit to use the rosu estimate)")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin

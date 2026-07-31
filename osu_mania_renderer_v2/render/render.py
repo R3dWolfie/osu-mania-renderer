@@ -35,7 +35,7 @@ from osu_mania_renderer_v2.beatmap.judgments import compute_judgments, reconcile
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
-from osu_mania_renderer_v2.beatmap.pp import compute_pp
+from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
 from osu_mania_renderer_v2.render.scene import JudgmentPopup, snapshot
 
@@ -143,6 +143,7 @@ class RenderPlan:
     acronyms: tuple[str, ...]
     player_pp: float
     max_pp: float
+    stars: float
     gameplay_end_ms: int
     results_start_ms: int
     total_video_ms: int
@@ -290,6 +291,14 @@ async def build_render_plan(
         if max_pp <= 0.0:
             max_pp = player_pp if player_pp > 0.0 else 1.0
     log.info("pp", extra={"player": player_pp, "max": max_pp})
+
+    # Star rating for the results card: exact --sr override when given, else the
+    # rosu-pp estimate (mods applied). 0.0 hides the pill (parity with the other
+    # engines' --sr handling).
+    stars = (float(options.sr_override) if options.sr_override is not None
+             else compute_star_rating(osu_file, replay))
+    log.info("stars", extra={"stars": stars,
+                             "override": options.sr_override is not None})
 
     # Pre-sort judgments by the PRESS time so the combo/score/accuracy
     # timeline reflects the player's actual hand, not the scheduled times.
@@ -499,7 +508,7 @@ async def build_render_plan(
         total_quality=total_quality, kiai_ranges=kiai_ranges,
         per_column_ur=per_column_ur, miss_break_times=miss_break_times,
         press_iters=press_iters, acronyms=acronyms,
-        player_pp=player_pp, max_pp=max_pp,
+        player_pp=player_pp, max_pp=max_pp, stars=stars,
         gameplay_end_ms=gameplay_end_ms, results_start_ms=results_start_ms,
         total_video_ms=total_video_ms, total_frames=total_frames,
         encoder=encoder, encoder_device=encoder_device,
@@ -841,6 +850,7 @@ def build_frame_state(
         unstable_rate=ur,
         pp=(plan.player_pp if results_opacity > 0 else pp_live),
         max_pp=plan.max_pp,
+        stars=plan.stars,
         fade_to_black=fade,
         hit_light_age_ms=hit_light_age,
         hit_light_judgment=hit_light_jud,
