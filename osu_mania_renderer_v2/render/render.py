@@ -22,6 +22,7 @@ import pathlib
 from typing import Any
 
 from osu_mania_renderer_v2.beatmap.beatmap import build_sv_distance_table, parse_beatmap
+from osu_mania_renderer_v2.render import loudnorm_cache
 from osu_mania_renderer_v2.render.encode import FfmpegPipe, build_ffmpeg_cmd, probe_encoder
 from osu_mania_renderer_v2.errors import (
     BeatmapParseError,
@@ -457,6 +458,15 @@ async def build_render_plan(
     # skip_intro=True collapses the silent lead-in to zero.
     effective_lead_in_ms = 0 if options.skip_intro else modded.audio_lead_in_ms
 
+    # Loudnorm PCM cache (opt-in via R3D_LOUDNORM_CACHE): fetch/build the
+    # rate/pitch-adjusted, loudness-normalised song once and reuse it across
+    # renders/engines. On a hit the encode filtergraph skips the ~2-3 s inline
+    # loudnorm pass. None (disabled / any failure) => unchanged fused path.
+    prenormalized_audio: Path | None = None
+    if audio_path is not None:
+        prenormalized_audio = await loudnorm_cache.get_or_build_normalized(
+            audio_path, rate=mod_res.audio_rate, pitch=mod_res.audio_pitch)
+
     cmd = build_ffmpeg_cmd(
         encoder=encoder,
         encoder_device=encoder_device,
@@ -465,6 +475,7 @@ async def build_render_plan(
         audio_path=audio_path,
         audio_rate=mod_res.audio_rate,
         audio_pitch=mod_res.audio_pitch,
+        prenormalized_audio_path=prenormalized_audio,
         audio_lead_in_ms=effective_lead_in_ms,
         video_bitrate=options.video_bitrate,
         audio_bitrate=options.audio_bitrate,

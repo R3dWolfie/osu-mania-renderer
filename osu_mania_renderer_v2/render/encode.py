@@ -17,6 +17,20 @@ from pathlib import Path
 
 from osu_mania_renderer_v2.errors import EncoderError
 
+# Single-pass loudnorm applied to the MUSIC ALONE (the 2026-07-12 #17 duck
+# fix — normalising the song before hits are mixed on top). The SAME string is
+# used as (a) the fused filter in build_ffmpeg_cmd below and (b) part of the
+# shared loudnorm-cache key (loudnorm_cache.py). It MUST stay byte-identical to
+# the sibling engines' _LOUDNORM_FILTER (osu-std record/audio.py) or the shared
+# cache key diverges and cross-engine reuse silently stops.
+LOUDNORM = "loudnorm=I=-10:TP=-1.5:LRA=11"
+# Format of the shared loudnorm-cache artifact: raw headerless little-endian
+# float32 PCM, 48 kHz, stereo — IDENTICAL to the sibling engines so the
+# `{key}.f32le` files interoperate. build_ffmpeg_cmd must tell ffmpeg the raw
+# input geometry (there is no header) when it consumes such a file.
+LOUDNORM_CACHE_SR = 48000
+LOUDNORM_CACHE_CH = 2
+
 
 def _ffmpeg_prefix() -> list[str]:
     """Prefix command to escape to host ffmpeg when we're inside a
@@ -88,6 +102,7 @@ def build_ffmpeg_cmd(
     audio_path: Path | None,
     audio_rate: float,
     audio_pitch: bool = False,
+    prenormalized_audio_path: Path | None = None,
     audio_lead_in_ms: int,
     video_bitrate: str,
     audio_bitrate: str,
@@ -104,6 +119,14 @@ def build_ffmpeg_cmd(
     rather than stdin — required for the host-ffmpeg case (we route via
     flatpak-spawn, which proxies stdin through D-Bus and is far too slow
     for raw-video throughput, but a FIFO on a shared tmpfs is direct).
+
+    ``prenormalized_audio_path`` — when set, it is a cached PCM file that has
+    ALREADY had the rate/pitch change AND ``LOUDNORM`` baked in (see
+    :mod:`osu_mania_renderer_v2.render.loudnorm_cache`). We feed it as the song
+    input and the filtergraph SKIPS both the rate/pitch filters and loudnorm,
+    keeping only the per-render lead-in/volume/fade + hitsound mix. ``None``
+    (kill-switch off / cache miss failure) is the unchanged fused path where
+    loudnorm runs inline every render.
     """
     w, h = resolution
     cmd: list[str] = [*_ffmpeg_prefix(), "-y", "-hide_banner", "-loglevel", "error"]
@@ -133,7 +156,15 @@ def build_ffmpeg_cmd(
     # through `-filter_complex` instead of `-filter:a` so a second audio
     # stream can be mixed in cleanly.
     if audio_path is not None:
-        cmd += ["-i", str(audio_path)]
+        if prenormalized_audio_path is not None:
+            # Cached artifact is HEADERLESS raw f32le PCM (rate/pitch + loudnorm
+            # already baked in) — declare its geometry so ffmpeg can read it.
+            cmd += ["-f", "f32le",
+                    "-ar", str(LOUDNORM_CACHE_SR),
+                    "-ac", str(LOUDNORM_CACHE_CH),
+                    "-i", str(prenormalized_audio_path)]
+        else:
+            cmd += ["-i", str(audio_path)]  # raw source (fused path)
         song_label = "1:a"
     if audio_path is not None and hitsound_path is not None:
         cmd += ["-i", str(hitsound_path)]
@@ -143,8 +174,14 @@ def build_ffmpeg_cmd(
 
     audio_out_label: str | None = None
     if audio_path is not None:
+        # `_prenorm` = we were handed a cached PCM file with rate/pitch AND
+        # loudnorm already applied. In that case the rate/pitch filters and the
+        # inline loudnorm are OMITTED (they are baked into the input); only the
+        # per-render lead-in / volume / fade remain. When `_prenorm` is False
+        # the chain below is byte-for-byte the original fused pipeline.
+        _prenorm = prenormalized_audio_path is not None
         song_chain: list[str] = []
-        if audio_rate != 1.0:
+        if not _prenorm and audio_rate != 1.0:
             if audio_pitch:
                 # Nightcore: rate change — pitch rises with speed (stable
                 # NC semantics; the resampled "nightcore" sound). Normalise
@@ -166,44 +203,40 @@ def build_ffmpeg_cmd(
                 song_chain.append(f"atempo={audio_rate}")
         if audio_lead_in_ms > 0:
             song_chain.append(f"adelay={audio_lead_in_ms}|{audio_lead_in_ms}")
-        # Apply music gain. 1.0 = no-op; ffmpeg accepts plain multipliers.
-        # We always emit the filter even at 1.0 so the chain length is
-        # deterministic — easier to follow when diffing logs.
+        # Apply music gain. 1.0 = no-op (filter omitted). ffmpeg accepts plain
+        # multipliers.
         if music_volume != 1.0:
             song_chain.append(f"volume={music_volume:.3f}")
-        # NB: `loudnorm=I=-16:LRA=11:TP=-1.5` would normalise across maps
-        # but one-pass loudnorm slows ffmpeg by ~6× and pushed our renders
-        # past the 600 s timeout, leaving truncated MP4s with no moov atom.
-        # Drop it for now; if cross-map consistency becomes an issue we'll
-        # use a quick ffprobe `volumedetect` pre-pass to set a fixed
-        # `volume=N dB` adjustment, which is cheap.
-        # Audio fade-out for the last 600 ms of the gameplay so the song
-        # tucks under the results overlay instead of cutting abruptly. The
-        # `-t` flag bounds the file overall, so we anchor on that length.
+        # Audio fade-out for the last 600 ms so the song tucks under the results
+        # overlay instead of cutting abruptly. The `-t` flag bounds the file
+        # overall, so we anchor on that length.
         if total_duration_ms is not None and total_duration_ms > 700:
             fade_dur = 0.6
             fade_start = (total_duration_ms / 1000.0) - fade_dur
             song_chain.append(f"afade=t=out:st={fade_start:.3f}:d={fade_dur:.3f}")
 
+        def _song_producer(out_label: str) -> str | None:
+            """`[song]`/`[aout]` producer for the song. Fuses ``LOUDNORM`` at
+            the tail ONLY when not using a pre-normalised cache file. Returns
+            ``None`` when there is nothing to apply (prenorm + no per-render
+            filters) so the caller can map the stream straight through."""
+            parts = list(song_chain)
+            if not _prenorm:
+                # LOUDNORM FIX (#17): normalise the SONG ALONE (before hits are
+                # mixed) so its gain never reacts to hitsound transients — the
+                # song+hits mix used to duck ~4 dB under every hit peak.
+                parts.append(LOUDNORM)
+            if parts:
+                return f"[{song_label}]{','.join(parts)}[{out_label}]"
+            return None
+
         if hit_label is not None:
-            # Pre-mixed hitsound track is already in the modded timeline (the
-            # renderer applied DT/HT to note positions before generating it),
-            # so it doesn't need asetrate. Just delay it by the same lead-in
-            # the song uses so the two stay in sync.
-            # LOUDNORM FIX (2026-07-12, #17): loudnorm the SONG ALONE, before
-            # mixing, so its gain never reacts to the hitsound transients.
-            # Loudnorm on the song+HITS mix (the old norm_chain) let its
-            # limiter/gain duck the whole mix -- song included -- ~4 dB under
-            # every hit peak ("song ducks to hitsounds"). Song target -10 LUFS
-            # (== the no-hit branches); hits are transient (~+0.2 dB to the
-            # integrated), so the mix still lands ~-10 with them on top.
-            song_chain_str = (
-                f"[{song_label}]{','.join(song_chain)},"
-                "loudnorm=I=-10:TP=-1.5:LRA=11[song]"
-                if song_chain
-                else f"[{song_label}]loudnorm=I=-10:TP=-1.5:LRA=11[song]"
-            )
-            # Build hit chain: optional adelay → optional volume → label.
+            # Song → [song]; if nothing to apply (prenorm, no per-render
+            # filters) still expose a labelled [song] for amix via anull.
+            song_chain_str = _song_producer("song") or f"[{song_label}]anull[song]"
+            # Build hit chain: optional adelay → optional volume → label. The
+            # premixed hitsound track is already in the modded timeline, so it
+            # needs no rate filter — just the same lead-in delay as the song.
             hit_filters: list[str] = []
             if audio_lead_in_ms > 0:
                 hit_filters.append(f"adelay={audio_lead_in_ms}|{audio_lead_in_ms}")
@@ -217,7 +250,6 @@ def build_ffmpeg_cmd(
             # Mix the hits ON TOP of the already-normalised song, then a gentle
             # true-peak limiter (level=disabled = clamp only, no makeup gain, no
             # re-normalisation) to catch summed peaks WITHOUT ducking the song.
-            # No loudnorm on the mix -- that was what ducked the song under hits.
             mix_chain = (
                 "[song][hits]amix=inputs=2:duration=first:"
                 "normalize=0:weights=1 1,"
@@ -226,23 +258,15 @@ def build_ffmpeg_cmd(
             filter_complex = ";".join([song_chain_str, hit_chain, mix_chain])
             cmd += ["-filter_complex", filter_complex]
             audio_out_label = "aout"
-        elif song_chain:
-            # LOUDNORM CONSOLIDATION (perf 2026-07-12): append the single
-            # surviving loudnorm (-10 LUFS) after song_chain.
-            filter_complex = (
-                f"[{song_label}]{','.join(song_chain)},loudnorm=I=-10:TP=-1.5:LRA=11[aout]"
-            )
-            cmd += ["-filter_complex", filter_complex]
-            audio_out_label = "aout"
         else:
-            # LOUDNORM CONSOLIDATION (perf 2026-07-12): a bare song with no
-            # song_chain and no hitsounds still needs the single surviving
-            # loudnorm (-10 LUFS), so give this branch its own filtergraph.
-            filter_complex = (
-                f"[{song_label}]loudnorm=I=-10:TP=-1.5:LRA=11[aout]"
-            )
-            cmd += ["-filter_complex", filter_complex]
-            audio_out_label = "aout"
+            sp = _song_producer("aout")
+            if sp is None:
+                # Pre-normalised audio with no per-render filters: map the
+                # cached stream straight through (already loudnorm'd).
+                audio_out_label = song_label
+            else:
+                cmd += ["-filter_complex", sp]
+                audio_out_label = "aout"
 
     # OpenGL's framebuffer has row 0 at the BOTTOM of the viewport, but MP4
     # (and PNG, and PIL) expect row 0 at the TOP. Without vflip the entire
