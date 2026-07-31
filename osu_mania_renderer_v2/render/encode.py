@@ -23,7 +23,7 @@ from osu_mania_renderer_v2.errors import EncoderError
 # shared loudnorm-cache key (loudnorm_cache.py). It MUST stay byte-identical to
 # the sibling engines' _LOUDNORM_FILTER (osu-std record/audio.py) or the shared
 # cache key diverges and cross-engine reuse silently stops.
-LOUDNORM = "loudnorm=I=-10:TP=-1.5:LRA=11"
+LOUDNORM = "loudnorm=I=-18:TP=-1.5:LRA=11"
 # Format of the shared loudnorm-cache artifact: raw headerless little-endian
 # float32 PCM, 48 kHz, stereo — IDENTICAL to the sibling engines so the
 # `{key}.f32le` files interoperate. build_ffmpeg_cmd must tell ffmpeg the raw
