@@ -399,12 +399,20 @@ class FfmpegPipe:
             item = q.get()
             if item is None:
                 return
-            if self._werr is not None:
-                continue
+            # A frame is either a plain bytes-like or a MappedFrame lease
+            # (readback.py): bytes live in mapped GL memory as `.mv`, and
+            # `.done` MUST be set once we're finished with them — even on
+            # error — or the GL thread waits forever to reuse the buffer.
+            data = getattr(item, "mv", item)
             try:
-                _blocking_write_all(fd, item)
+                if self._werr is None:
+                    _blocking_write_all(fd, data)
             except BaseException as e:  # noqa: BLE001 — must not kill thread
                 self._werr = e
+            finally:
+                done = getattr(item, "done", None)
+                if done is not None:
+                    done.set()
 
     async def write_frame(self, data: bytes) -> None:
         if self.proc is None:
