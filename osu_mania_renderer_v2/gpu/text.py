@@ -52,7 +52,15 @@ def text_to_texture(
     h = max(8, bbox[3] - bbox[1] + 8)
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     ImageDraw.Draw(img).text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=color)
-    tex = ctx.texture((w, h), 4, img.tobytes())
-    tex.build_mipmaps()
-    tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+    raw = img.tobytes()
+    tex = ctx.texture((w, h), 4, raw)
+    # No mipmaps: every text draw goes through _draw_external_texture, which
+    # samples the single-layer wrap ARRAY on `tex.extra` (plain LINEAR, no
+    # mip chain) — the old build_mipmaps() on the 2D texture was never
+    # sampled and cost ~0.3 ms per rasterised string (the rolling score
+    # counter re-rasterises nearly every frame). Building the wrap array
+    # here from the same CPU bytes also saves _draw_external_texture's
+    # first-draw tex.read() GPU→CPU roundtrip.
+    tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+    tex.extra = ctx.texture_array(size=(w, h, 1), components=4, data=raw)
     return tex, w, h
