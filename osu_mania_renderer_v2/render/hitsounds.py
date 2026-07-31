@@ -241,6 +241,7 @@ def build_hitsound_track(
     miss_hitsound: bool = True,
     nightcore: bool = False,
     nc_mod: bool = False,
+    gameplay_end_ms: float | None = None,
 ) -> Path | None:
     """Mix each non-miss note's resolved hitsound(s) at its press time into
     one stereo WAV at ``output_wav``. Returns the path or None on failure.
@@ -331,6 +332,7 @@ def build_hitsound_track(
         nc_layered = _layer_nightcore(
             track, beatmap.timing_points, cache, skin_dirs,
             target_sample_rate, duration_ms,
+            gameplay_end_ms=gameplay_end_ms,
         )
 
     # ModNightcore beat overlay — AUTOMATIC when the NC mod is active,
@@ -342,6 +344,7 @@ def build_hitsound_track(
         nc_mod_layered = _layer_nightcore_mod(
             track, beatmap.timing_points, cache, skin_dirs,
             target_sample_rate, duration_ms, audio_rate, play_hats=True,
+            gameplay_end_ms=gameplay_end_ms,
         )
 
     np.clip(track, -1.0, 1.0, out=track)
@@ -363,6 +366,7 @@ _NIGHTCORE_GAIN = 0.14      # lower than per-note hits so it doesn't dominate
 def _layer_nightcore(
     track: np.ndarray, timing_points: tuple, cache: "_SampleCache",
     skin_dirs: tuple[Path, ...], sample_rate: int, duration_ms: int,
+    gameplay_end_ms=None,
 ) -> int:
     """Layer NC-mod-style claps + finishes on each beat across the song.
     Mirrors lazer's mania NC behaviour: clap on every beat, with a finish
@@ -381,12 +385,16 @@ def _layer_nightcore(
         return 0
 
     laid = 0
+    # Beat overlay stops at gameplay end, not into the results outro the
+    # video appends (taiko fix ac73af2). horizon is in the same (video-ms)
+    # base as duration_ms.
+    horizon = duration_ms if gameplay_end_ms is None else min(duration_ms, float(gameplay_end_ms))
     for i, tp in enumerate(red_tps):
         beat_ms = max(60.0, tp.beat_length_ms)   # cap < 60ms (>1000 BPM) sanity
-        end_ms = red_tps[i + 1].time_ms if i + 1 < len(red_tps) else duration_ms
+        end_ms = red_tps[i + 1].time_ms if i + 1 < len(red_tps) else horizon
         t_ms = tp.time_ms
         beat_idx_in_measure = 0
-        while t_ms < end_ms and t_ms < duration_ms:
+        while t_ms < end_ms and t_ms < horizon:
             sample = finish if (beat_idx_in_measure == 0 and finish is not None) else clap
             if sample is not None:
                 start = int(t_ms / 1000 * sample_rate)
@@ -423,7 +431,7 @@ _NC_MOD_GAIN = 0.20      # nightcore-kick/clap/hat/finish drums
 def _layer_nightcore_mod(
     track: np.ndarray, timing_points: tuple, cache: "_SampleCache",
     skin_dirs: tuple[Path, ...], sample_rate: int, duration_ms: int,
-    audio_rate: float, *, play_hats: bool = True,
+    audio_rate: float, *, play_hats: bool = True, gameplay_end_ms=None,
 ) -> int:
     """osu! ModNightcore beat overlay — the drum pattern osu! plays on each
     beat AUTOMATICALLY while the Nightcore mod is active. NOT the general
@@ -454,7 +462,9 @@ def _layer_nightcore_mod(
     red_tps = [tp for tp in timing_points if tp.uninherited]
     if not red_tps:
         return 0
-    horizon_map = duration_ms * rate           # video horizon back to map time
+    # stop at gameplay end, not into the results outro (taiko fix ac73af2)
+    dur = duration_ms if gameplay_end_ms is None else min(duration_ms, float(gameplay_end_ms))
+    horizon_map = dur * rate                    # video horizon back to map time
     seg_len = 4 * 8                            # 4/4: beatsPerBar(4) * 2 * 4 bars
     laid = 0
     for i, tp in enumerate(red_tps):

@@ -440,6 +440,8 @@ async def build_render_plan(
                 miss_hitsound=options.miss_hitsound,
                 nightcore=options.nightcore_hitsounds,
                 nc_mod=_nc_mod,
+                # beat overlays stop at gameplay end, not into results (taiko ac73af2)
+                gameplay_end_ms=float(gameplay_end_ms),
             )
         except Exception as e:  # noqa: BLE001
             log.warning("hitsound_build_failed", extra={"err": str(e)})
