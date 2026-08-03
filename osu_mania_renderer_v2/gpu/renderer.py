@@ -8,6 +8,7 @@ This file is implemented incrementally:
 """
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,8 @@ from osu_mania_renderer_v2.gpu.text import text_to_texture
 from osu_mania_renderer_v2.beatmap.models import RenderOptions
 from osu_mania_renderer_v2.render.scene import SceneState
 from osu_mania_renderer_v2.beatmap.skin_ini import parse_skin_ini
+
+log = logging.getLogger("osu_mania_renderer_v2")
 
 # 6 vertices x 9 float32 attrs for the ad-hoc external-texture quads.
 # Little-endian f32 == the np.array(dtype="f4").tobytes() it replaces.
@@ -412,7 +415,12 @@ class FrameRenderer:
         if path is None or not path.exists():
             self._bg_tex = None
             return
-        img = Image.open(path).convert("RGBA")
+        try:
+            img = Image.open(path).convert("RGBA")
+        except Exception as exc:  # noqa: BLE001 -- corrupt/unsupported bg must not kill the render
+            log.warning("background image load failed (%s): %s", path, exc)
+            self._bg_tex = None
+            return
         # Resize to fit the canvas, preserving aspect (cover).
         canvas_aspect = self.rc.width / self.rc.height
         img_aspect = img.width / img.height
