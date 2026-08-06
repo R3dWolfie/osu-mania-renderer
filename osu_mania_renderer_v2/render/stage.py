@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
 from osu_mania_renderer_v2.gpu.renderer import LAZER_DEFAULT_COLUMN_LINE_WIDTH_REF
-from osu_mania_renderer_v2.wiki_elements._common import argon_accent, is_argon_default
+from osu_mania_renderer_v2.render.element_common import argon_accent, is_argon_default
 
 # Skins that ship 1×1 transparent placeholders register as "user" source
 # but contribute zero visible art; reject them by native pixel area.

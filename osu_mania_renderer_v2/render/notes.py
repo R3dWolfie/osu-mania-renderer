@@ -7,7 +7,7 @@ pending their own decouple. All byte-identical to FrameRenderer.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
-from osu_mania_renderer_v2.wiki_elements._common import (
+from osu_mania_renderer_v2.render.element_common import (
     HIT_LIGHT_DURATION_MS,
     JUDGMENT_LIGHT,
     RECEPTOR_HEIGHT_REL_COL,
@@ -530,7 +530,7 @@ def _argon_combo_and_judgment(ctx) -> None:
     argon-counter font (with wireframe backing), the judgement as Argon
     text below it. Positioned at the legacy stage combo line (ComboPosition,
     default 111 in 480-space) — where lazer's Argon mania combo sits."""
-    from osu_mania_renderer_v2.wiki_elements.hud import _argon_number, ARGON_OVERLAP
+    from osu_mania_renderer_v2.hud.elements import _argon_number, ARGON_OVERLAP
     fr = ctx.fr
     s = ctx.scene
     h = fr.rc.height
@@ -697,5 +697,5 @@ def receptors_over(*, element, skin, assets, variables, ctx) -> None:
         _receptors(ctx)
     # mania-stage-bottom is a foreground element: drawn ON TOP of the keys so
     # it covers their lower portion (lazer's keys look short for this reason).
-    from osu_mania_renderer_v2.wiki_elements.stage import stage_foreground
+    from osu_mania_renderer_v2.render.stage import stage_foreground
     stage_foreground(ctx)

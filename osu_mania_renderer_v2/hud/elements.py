@@ -7,7 +7,7 @@ is stripped to no-ops; the legacy render_mania keeps the R3D look as fallback.
 """
 from __future__ import annotations
 
-from osu_mania_renderer_v2.wiki_elements._common import (
+from osu_mania_renderer_v2.render.element_common import (
     is_argon_default,
     is_keycount_acronym,
     mod_fill_colour,

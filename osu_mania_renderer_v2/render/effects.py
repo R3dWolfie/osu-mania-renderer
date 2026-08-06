@@ -4,7 +4,7 @@ mirror FrameRenderer exactly (byte-identical).
 """
 from __future__ import annotations
 
-from osu_mania_renderer_v2.wiki_elements._common import (
+from osu_mania_renderer_v2.render.element_common import (
     STAGE_LIGHT_DURATION_MS,
     stage_light_fps,
     stage_light_tint,

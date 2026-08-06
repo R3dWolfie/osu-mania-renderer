@@ -1504,7 +1504,7 @@ class FrameRenderer:
         # Obtain / construct the FrameContext used for the argon glyph font.
         if ctx is None:
             try:
-                from osu_mania_renderer_v2.wiki_elements.context import (
+                from osu_mania_renderer_v2.render.frame_context import (
                     FrameContext,
                 )
                 ctx = FrameContext(
@@ -1522,7 +1522,7 @@ class FrameRenderer:
         _argon_overlap = 0
         if use_argon:
             try:
-                from osu_mania_renderer_v2.wiki_elements.hud import (
+                from osu_mania_renderer_v2.hud.elements import (
                     _argon_number as _an, ARGON_OVERLAP as _ao,
                 )
                 _argon_number = _an

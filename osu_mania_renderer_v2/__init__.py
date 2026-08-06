@@ -51,7 +51,7 @@ async def render_mania(
     convert_to_keys: int = 4,
 ) -> None:
     if USE_WIKI_RENDERER:
-        import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
+        import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
 
         from osu_mania_renderer_v2.wiki_renderer import render as _wiki_render
 

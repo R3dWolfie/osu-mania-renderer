@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from osu_mania_renderer_v2.wiki_renderer import ElementSpec, register_element
 
-from osu_mania_renderer_v2.wiki_elements import effects, hud, notes, stage
+from osu_mania_renderer_v2.render import effects, notes, stage
+from osu_mania_renderer_v2.hud import elements as hud
 
 # (name, render_fn) in canonical draw() order.
 _ORDER = [
