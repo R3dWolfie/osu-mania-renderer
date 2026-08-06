@@ -53,7 +53,7 @@ async def render_mania(
     if USE_WIKI_RENDERER:
         import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
 
-        from osu_mania_renderer_v2.wiki_renderer import render as _wiki_render
+        from osu_mania_renderer_v2.render.compositor import render as _wiki_render
 
         if skin_dir is None:
             raise RendererError(
