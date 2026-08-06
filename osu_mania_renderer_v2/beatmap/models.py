@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -254,3 +255,12 @@ class RenderOptions:
     # overlay draws the grey placeholder chip. Mirrors std's featured-avatar
     # threading (mania_ordr.std_renderer's ("featured-avatar-png", …) map).
     featured_avatar_png: str | None = None
+    # Results-screen map leaderboard (parity with the std/catch renderers —
+    # catch beatmap/models.py:203-210): the featured play flanked by compact
+    # ranked cards of the OTHER renders of this map. Default source = the
+    # local render DB; "osu" reads the bot-written osu! global scores JSON
+    # (falls back to the DB when absent). Default-on but a no-op when the map
+    # has no other renders, so existing renders are unchanged.
+    show_leaderboard: bool = True
+    leaderboard_source: str = "r3d"      # r3d | osu
+    leaderboard_json: Path | None = None

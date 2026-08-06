@@ -329,49 +329,14 @@ def _argon_number(ctx, text, *, x, center_y, glyph_h, align, alpha=1.0,
                     font="argon", tint=tint)
 
 
-def _draw_leaderboard(ctx) -> None:
-    """lazer's gameplay leaderboard — the player's own score card (rank #1):
-    a green rounded panel below the score wedge with rank, avatar, name, live
-    score, accuracy (top-right) and combo (bottom-right)."""
-    fr = ctx.fr
-    s = ctx.scene
-    rc = fr.rc
-    A = rc.height / 1080.0
-    cx0, cy0 = 28 * A, 84 * A
-    cw, ch = 372 * A, 52 * A
-
-    def _txt(x_left, y_top_centre, text, size, col, *, align="left", alpha=1.0):
-        tex, tw, th = fr._cached_text(text, size, col)   # size is 1080-ref
-        x = x_left - tw if align == "right" else x_left
-        gl_y = int(rc.height - y_top_centre - th / 2)
-        fr._draw_external_texture(tex, x=int(x), y=gl_y, w=tw, h=th, alpha=alpha)
-
-    # Green card (white sprite tinted grass-green, lazer's own-score highlight).
-    _draw_tl(ctx, "argon_card", cx0, cy0, cw, ch, (0.28, 0.43, 0.14, 0.95),
-             direct=True)
-    # Rank, vertically centred at the left.
-    _txt(cx0 + 12 * A, cy0 + ch / 2, "#1", 16, (235, 245, 225, 255))
-    # Avatar — a grey rounded square placeholder.
-    av = ch * 0.74
-    avx, avy = cx0 + 42 * A, cy0 + (ch - av) / 2
-    _draw_tl(ctx, "argon_card", avx, avy, av, av, (0.55, 0.57, 0.60, 1.0),
-             direct=True)
-    tx = avx + av + 12 * A
-    # Player name (parsed off the banner text "... [diff]   <player>").
-    bt = getattr(fr, "_banner_text", "") or ""
-    name = bt.rsplit("   ", 1)[-1].strip() if "   " in bt else (bt or "Player")
-    _txt(tx, cy0 + ch * 0.36, name[:18], 18, (255, 255, 255, 255))
-    # Live score (comma-grouped), under the name.
-    disp = (s.score if s.results_opacity > 0
-            else (s.score_smoothed if s.score_smoothed > 0 else s.score))
-    _txt(tx, cy0 + ch * 0.70, f"{int(disp):,}", 15, (225, 235, 215, 255),
-         alpha=0.95)
-    # Accuracy (top-right) + combo (bottom-right).
-    acc = s.accuracy if s.results_opacity > 0 else s.accuracy_smoothed
-    _txt(cx0 + cw - 12 * A, cy0 + ch * 0.36, f"{acc:.2f}%", 14,
-         (255, 255, 255, 255), align="right", alpha=0.95)
-    _txt(cx0 + cw - 12 * A, cy0 + ch * 0.70, f"{s.combo}x", 14,
-         (225, 235, 215, 255), align="right", alpha=0.9)
+# NOTE: the old _draw_leaderboard (a hardcoded fake "#1" own-score card —
+# grey placeholder avatar, name parsed off the banner string) was REMOVED
+# 2026-08: no sibling renderer draws a gameplay scoreboard (std's
+# render/scoreboard.py is an explicit accepted-but-no-op stub pending the
+# osu!API hand-off; catch has no gameplay leaderboard element at all). The
+# REAL per-map leaderboard now lives where the siblings put theirs: the
+# results screen's flank cards (hud/lb_cards.py + hud/leaderboard.py, drawn
+# by hud/lazer_results.py).
 
 
 def _draw_argon_hud(ctx) -> None:
@@ -454,9 +419,6 @@ def _draw_argon_hud(ctx) -> None:
 
     # Active mods (hexagon icons) under the accuracy/pp block, top-right.
     _draw_mod_icons(ctx, acc_right, 110 * A)
-
-    # Player leaderboard card below the score wedge.
-    _draw_leaderboard(ctx)
 
 
 def hud(*, element, skin, assets, variables, ctx) -> None:

@@ -850,13 +850,17 @@ class FrameRenderer:
         self._banner_tex, self._banner_w, self._banner_h = tex, w, h
         self._banner_text = text
 
-    def set_results_data(self, data) -> None:
+    def set_results_data(self, data, board=None) -> None:
         """Per-render data for the LAZER RESULTS SCREEN (hud/lazer_results.py
         — the osu!(lazer) ranking screen, parity with std/catch/taiko).
         Called by render.py / compositor.py right after set_banner_text with
         a ManiaResultsData (results_data_from_plan). None → the legacy argon
-        card keeps drawing (fail-soft)."""
+        card keeps drawing (fail-soft). `board` is the pre-baked flank
+        leaderboard (hud/lb_cards.py BakedBoard | None — built + baked ONCE
+        up front, exactly like catch render/render.py:580-588); None → the
+        plain results screen, unchanged."""
         self._results_data = data
+        self._results_board = board
         self._lazer_results = None          # (re)built on the first results frame
         self._lazer_results_token = None    # last-uploaded pose token
 
@@ -880,7 +884,9 @@ class FrameRenderer:
                 from osu_mania_renderer_v2.hud.lazer_results import (
                     ManiaLazerResults,
                 )
-                scr = ManiaLazerResults((self.rc.width, self.rc.height), data)
+                scr = ManiaLazerResults((self.rc.width, self.rc.height), data,
+                                        board=getattr(self, "_results_board",
+                                                      None))
                 self._lazer_results = scr
             # ms since results_start — drives the ported two-stage timeline
             # (catch render loop passes the same age; scene.t_ms is already

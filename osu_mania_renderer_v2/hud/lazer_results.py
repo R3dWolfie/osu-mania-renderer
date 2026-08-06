@@ -64,9 +64,12 @@ taiko port made, mania data):
     drives a full black wash, matching std/catch/taiko where the gameplay
     has already faded to black by results_start).
   * flank leaderboard cards: the catch draw code (board slide-in timing,
-    stage-2 tracking) is ported VERBATIM but mania has no lb_cards render-DB
-    board yet, so `board` stays None and nothing flanks the panel. A future
-    mania board plugs straight into the ported path.
+    stage-2 tracking) is ported VERBATIM; the board itself is mania's
+    hud/lb_cards.py (build_mania_board — the ported catch/std render-DB +
+    osu!-global board), built + baked once up front by render.py /
+    compositor.py and handed in via gpu/renderer.py set_results_data.
+    board=None (solo render / leaderboard off) → nothing flanks the panel,
+    unchanged.
   * GL delivery: mania composites frames on the GPU (no CPU rgb array like
     catch/taiko), so render_overlay() returns a full-frame RGBA layer
     (black wash + screen, straight alpha) plus a pose token;
@@ -971,7 +974,7 @@ class ManiaLazerResults:
         self.W, self.H = int(resolution[0]), int(resolution[1])
         self.k = self.H / UH
         self.data = data
-        self.board = board                 # future lb board; None today
+        self.board = board                 # lb_cards.BakedBoard | None
         self._settled = None               # cached final RGBA frame
         # pose-signature frame memo (catch :944-953): every animated
         # parameter of the screen is a CLAMPED pure function of (op, age_ms),
@@ -1513,7 +1516,7 @@ class ManiaLazerResults:
             row_h = max(row_h, label.height + 6 * k + value.height)
         return row_h
 
-    # -- flank leaderboard (catch :1455-1480 verbatim; mania board=None today) -----
+    # -- flank leaderboard (catch :1455-1480 verbatim; board = lb_cards) -----------
 
     def _lb_slide(self, i: int, age_ms: float) -> tuple[float, float]:
         """std's _lb_slide: card i eases in over LB_SLIDE_MS (OutQuint) from
