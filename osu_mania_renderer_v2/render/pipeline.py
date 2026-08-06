@@ -12,7 +12,7 @@ SkinPair, at which point the specs gain real basenames + VariableSpecs.
 """
 from __future__ import annotations
 
-from osu_mania_renderer_v2.wiki_renderer import ElementSpec, register_element
+from osu_mania_renderer_v2.render.compositor import ElementSpec, register_element
 
 from osu_mania_renderer_v2.render import effects, notes, stage
 from osu_mania_renderer_v2.hud import elements as hud
