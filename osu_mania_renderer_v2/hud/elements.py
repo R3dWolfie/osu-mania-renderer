@@ -524,11 +524,14 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
     _draw_mod_icons(ctx, right_x, mods_top)
 
     if ctx.options.show_pp_counter and s.max_pp > 0:
-        # Argon-style PP readout, right-aligned under the accuracy line.
+        # PP readout, right-aligned below the mod-icon row. (Was `y=ay - ph - 14`
+        # with `ay` undefined → NameError whenever a skin with no score font had
+        # --show-pp on; positioned relative to `mods_top` instead.)
         pp_tex, pw, ph = fr._cached_text(f"{s.pp:.0f}pp", 44, (255, 220, 140, 255))
+        pp_y = int(mods_top + max(28, int(rc.height * 0.045)))
         fr._draw_external_texture(
             pp_tex, x=rc.width - pw - right_pad,
-            y=ay - ph - 14, w=pw, h=ph, alpha=0.95,
+            y=pp_y, w=pw, h=ph, alpha=0.95,
         )
 
 
