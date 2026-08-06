@@ -24,6 +24,24 @@ LOGO_MAX_ALPHA = 0.92
 LOGO_UI_SIZE = 220.0           # tile edge in the 1080-space
 LOGO_TILE_RED = (216, 44, 54)
 
+# Where the render's timeline actually opens, in map time (ms). 0 for a
+# normal render; NEGATIVE when build_render_plan prepends the show_logo
+# pre-roll (render.py::LOGO_LEAD_IN_MS — the mania mirror of catch's
+# guaranteed lead-in, osu_catch_renderer/render/render.py:454-461 +
+# beatmap/models.py:136). gpu/renderer.py::draw_logo_splash hard-codes
+# t_start=0.0 (the pre-pre-roll timeline start), so logo_alpha/logo_scale
+# floor the passed t_start to this value — the same trick catch uses via
+# sim.logo_start_ms = start_ms. Reset by build_render_plan on EVERY plan
+# build, so a process rendering several maps never leaks a stale offset.
+_INTRO_START_MS = 0.0
+
+
+def set_intro_start_ms(ms: float) -> None:
+    """Record the timeline's true opening time (<= 0). Called once per
+    render from render.py::build_render_plan."""
+    global _INTRO_START_MS
+    _INTRO_START_MS = float(ms)
+
 
 def _clamp01(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
@@ -35,6 +53,12 @@ def logo_alpha(t: float, t_start: float, gameplay_in: float) -> float | None:
     note's spawn): fade in over LOGO_FADE_IN_MS, hold, fade out over
     LOGO_FADE_OUT_MS ENDING at gameplay_in. Windows too short to read
     (< LOGO_MIN_WINDOW_MS) show nothing."""
+    # Pre-roll: the timeline may open BEFORE map t=0 (show_logo lead-in,
+    # mirroring catch render/render.py:458-459 `start_ms = min(0, ...)`).
+    # Callers still pass t_start=0.0; floor it to the real opening time so
+    # the splash window covers the pre-roll. No pre-roll => min(x, 0.0)
+    # with x=0.0 is 0.0 — behaviour (and OFF output) unchanged.
+    t_start = min(t_start, _INTRO_START_MS)
     if gameplay_in - t_start < LOGO_MIN_WINDOW_MS:
         return None
     if t < t_start or t >= gameplay_in:
@@ -47,6 +71,7 @@ def logo_alpha(t: float, t_start: float, gameplay_in: float) -> float | None:
 
 def logo_scale(t: float, t_start: float) -> float:
     """Gentle settle: 1.06 -> 1.0 over the first 600 ms (quad-out)."""
+    t_start = min(t_start, _INTRO_START_MS)  # pre-roll floor, see logo_alpha
     p = _clamp01((t - t_start) / 600.0)
     ease = 1.0 - (1.0 - p) * (1.0 - p)
     return 1.06 - 0.06 * ease
