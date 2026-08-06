@@ -759,6 +759,23 @@ def build_frame_state(
     key_press_age_ms = tuple(key_press_age_ms_arr)
     key_press_counts = tuple(key_press_counts_arr)
 
+    # Falling-edge (release) ages per column. Cached on the plan — a pure
+    # function of the immutable replay.key_events, built on first use (same
+    # pattern as plan._je_times above). The Argon key counter's release
+    # tweens (hud/elements.key_counter: indicator 250 ms return + name
+    # 200 ms decay) key off this, mirroring STD's
+    # KeySeries.last_release_at (std render/hud.py:772-774).
+    release_iters = getattr(plan, "_release_iters", None)
+    if release_iters is None:
+        release_iters = _falling_edges_per_col(replay.key_events, key_count)
+        plan._release_iters = release_iters
+    key_release_age_ms_arr = []
+    for c in range(key_count):
+        times = release_iters[c]
+        idx = _br(times, t_ms) - 1
+        key_release_age_ms_arr.append(t_ms - times[idx] if idx >= 0 else 99999)
+    key_release_age_ms = tuple(key_release_age_ms_arr)
+
     miss_break_age = 99999
     for mt in reversed(plan.miss_break_times):
         if mt <= t_ms:
@@ -877,6 +894,7 @@ def build_frame_state(
         per_column_ur=plan.per_column_ur,
         key_press_age_ms=key_press_age_ms,
         key_press_counts=key_press_counts,
+        key_release_age_ms=key_release_age_ms,
         miss_break_age_ms=miss_break_age,
     )
     return scene_full, score_smoothed, accuracy_smoothed
@@ -1094,6 +1112,22 @@ def _rising_edges_per_col(events, key_count: int) -> list[list[int]]:
                 presses[c].append(e.time_ms)
         prev = e.keys_held
     return presses
+
+
+def _falling_edges_per_col(events, key_count: int) -> list[list[int]]:
+    """Falling-edge (key-UP) times per column — the mirror of
+    _rising_edges_per_col above. Feeds SceneState.key_release_age_ms,
+    which drives the Argon key counter's release tweens (indicator's
+    250 ms OutQuart return + the name's 200 ms OutQuart white decay)."""
+    releases: list[list[int]] = [[] for _ in range(key_count)]
+    prev = 0
+    for e in events:
+        released = prev & ~e.keys_held
+        for c in range(key_count):
+            if released & (1 << c):
+                releases[c].append(e.time_ms)
+        prev = e.keys_held
+    return releases
 
 
 def _per_column_ur(events, key_count: int) -> tuple[float, ...]:

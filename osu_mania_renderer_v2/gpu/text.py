@@ -42,6 +42,29 @@ def _font_bold(size: int) -> ImageFont.ImageFont:
 _MEASURE_DRAW = ImageDraw.Draw(Image.new("RGBA", (4, 4), (0, 0, 0, 0)))
 
 
+def pill_to_texture(
+    ctx: moderngl.Context, w: int, h: int,
+) -> tuple[moderngl.Texture, int, int]:
+    """White capsule (rounded rect, corner radius = h/2) baked at 4×
+    supersample for smooth edges. Used by the Argon key counter's
+    indicator (lazer draws it as a CircularContainer line; STD/catch use
+    their 'pill' sprite — std hud.py:2226-2229). Tint/alpha are applied
+    at draw time via _draw_external_texture."""
+    w, h = max(2, int(w)), max(2, int(h))
+    ss = 4
+    mask = Image.new("L", (w * ss, h * ss), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, w * ss - 1, h * ss - 1), radius=(h * ss) // 2, fill=255)
+    mask = mask.resize((w, h), Image.LANCZOS)
+    white = Image.new("L", (w, h), 255)
+    rgba = Image.merge("RGBA", (white, white, white, mask))
+    raw = rgba.tobytes()
+    tex = ctx.texture((w, h), 4, raw)
+    tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+    tex.extra = ctx.texture_array(size=(w, h, 1), components=4, data=raw)
+    return tex, w, h
+
+
 def text_to_texture(
     ctx: moderngl.Context,
     text: str,
