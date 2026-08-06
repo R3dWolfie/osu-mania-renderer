@@ -7,12 +7,11 @@ pending their own decouple. All byte-identical to FrameRenderer.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
+from osu_mania_renderer_v2.argon import argon_accent, is_argon_default
 from osu_mania_renderer_v2.render.element_common import (
     HIT_LIGHT_DURATION_MS,
     JUDGMENT_LIGHT,
     RECEPTOR_HEIGHT_REL_COL,
-    argon_accent,
-    is_argon_default,
     note_anim_fps,
     stage_light_fps,
     stage_light_tint,
