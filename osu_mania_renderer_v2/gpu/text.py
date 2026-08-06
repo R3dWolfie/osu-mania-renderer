@@ -6,6 +6,7 @@ re-rasterizes when the string changes.
 """
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 import moderngl
@@ -26,8 +27,31 @@ _FONT_CANDIDATES: tuple[str, ...] = (
 )
 
 
+# Bundled OFL Nunito — the lazer-Torus stand-in std/catch/taiko all use, so
+# mania's PIL text (labels, key counter, watermark, banner, results labels)
+# matches the siblings instead of a machine-dependent system font. Pinned to
+# wght 700 (mania's _font_bold was DejaVu-Bold, so stay bold). The DejaVu→Nunito
+# cap-fill scale keeps the VISIBLE cap-height unchanged for the existing
+# DejaVu-tuned sizes (std/catch: 0.7154 / 0.7025 ≈ 1.0184).
+_NUNITO_PATH = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "assets", "fonts", "Nunito[wght].ttf"))
+_NUNITO_WEIGHT = 700
+_DEJAVU_NUNITO_CAP_SCALE = 0.7154 / 0.7025
+
+
 @lru_cache(maxsize=32)
 def _font_bold(size: int) -> ImageFont.ImageFont:
+    try:
+        f = ImageFont.truetype(
+            _NUNITO_PATH, max(6, int(round(size * _DEJAVU_NUNITO_CAP_SCALE))))
+        try:
+            f.set_variation_by_axes([_NUNITO_WEIGHT])
+        except Exception:  # noqa: BLE001 — non-variable PIL build → default face
+            pass
+        return f
+    except OSError:
+        pass
+    # Fallback: system fonts (stripped checkout / no bundled Nunito).
     for name in _FONT_CANDIDATES:
         try:
             return ImageFont.truetype(name, size)
