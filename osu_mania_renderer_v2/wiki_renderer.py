@@ -312,7 +312,7 @@ async def render(
     `render_mania` is that each frame is composed by dispatching the
     RENDER_ORDER element registry through a `FrameContext` instead of one
     monolithic `FrameRenderer.draw()`."""
-    # Heavy GPU deps imported lazily so `import osu_mania_renderer_v2.wiki_elements`
+    # Heavy GPU deps imported lazily so `import osu_mania_renderer_v2.render.pipeline`
     # (to populate registries) stays cheap.
     import asyncio
     from osu_mania_renderer_v2.render.encode import FfmpegPipe
@@ -321,13 +321,13 @@ async def render(
     from osu_mania_renderer_v2.gpu.readback import FrameReader
     from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
     from osu_mania_renderer_v2.render.render import build_frame_state, build_render_plan
-    from osu_mania_renderer_v2.wiki_elements.context import FrameContext
+    from osu_mania_renderer_v2.render.frame_context import FrameContext
 
     if not RENDER_ORDER:
         raise RenderError(
             element="<pipeline>", variable="RENDER_ORDER",
             searched=["wiki_renderer.RENDER_ORDER"],
-            hint="import osu_mania_renderer_v2.wiki_elements to populate RENDER_ORDER",
+            hint="import osu_mania_renderer_v2.render.pipeline to populate RENDER_ORDER",
         )
 
     skin = SkinPair(user_dir=skin_dir, default_dir=default_skin_dir)
@@ -500,7 +500,7 @@ def _cli() -> None:
         import tempfile
         args.skin_dir = Path(tempfile.mkdtemp(prefix="argon-empty-"))
 
-    import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
+    import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
     from osu_mania_renderer_v2.beatmap.models import RenderOptions as _RO  # noqa: F811
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Stage-aware bg dim (cli.py's exact clamping/mapping): omitted flags

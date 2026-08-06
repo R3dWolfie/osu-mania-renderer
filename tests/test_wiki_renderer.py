@@ -25,7 +25,7 @@ EXPECTED_ORDER = [
 
 
 def test_registry_populates_in_canonical_order():
-    import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
+    import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
     from osu_mania_renderer_v2.wiki_renderer import ELEMENTS, RENDER_ORDER
 
     assert RENDER_ORDER == EXPECTED_ORDER
@@ -48,7 +48,7 @@ def test_wiki_path_renders_argon(tmp_path, fixtures_dir):
     import asyncio
 
     from osu_mania_renderer_v2.models import RenderOptions
-    import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
+    import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
     from osu_mania_renderer_v2.wiki_renderer import render as wiki
 
     osr = fixtures_dir / "ao_infinity_hard.osr"
