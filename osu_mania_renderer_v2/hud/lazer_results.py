@@ -1157,20 +1157,15 @@ class ManiaLazerResults:
             ts = datetime.now()
         self.date_img = bake_text(f"Played on {ts.strftime('%d %b %Y %H:%M')}",
                                   int(18 * k), (0.6, 0.63, 0.72))
-        # stage 2: the featured panel's slide-left target + the stats panels
-        # that unfold from the right (std geometry, mania data). Fail-soft:
-        # any bake problem disables stage 2 LOUDLY and the screen holds
-        # centred exactly as stage 1.
+        # SIBLING PARITY (Red, 2026-08-07): std / catch / taiko results screens
+        # are a single CENTRED card (+ catch's optional rank banner & right
+        # leaderboard flank) with NO extra graph panels. Mania's old two-stage
+        # design (card slides left + PERFORMANCE/COMBO/JUDGEMENTS panels unfold
+        # on the right) was the one visual divergence from the siblings, so it
+        # is disabled: _stage2 stays False, the card holds centred at cx_px, and
+        # the board (when present) draws as the right flank exactly like catch.
+        # The _bake_stage2 / _draw_stats_panels machinery is retained but dead.
         self._stage2 = False
-        try:
-            self._bake_stage2()
-        except Exception as e:  # noqa: BLE001 — stage 2 never breaks results
-            import sys
-            import traceback
-            print("[mania-renderer] !!! RESULTS STAGE-2 BAKE FAILED — "
-                  f"holding the stage-1 screen: {e}", file=sys.stderr)
-            traceback.print_exc()
-            self._stage2 = False
 
     def _grid_cell(self, label, value, color):
         # std's STAT_LABEL_VPX=15 / STAT_VALUE_VPX=28 (std :122-123) — the
