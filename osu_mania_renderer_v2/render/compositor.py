@@ -230,6 +230,20 @@ async def render(
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
             fr.set_banner_text(plan.banner_text)
+            # LAZER RESULTS SCREEN data (hud/lazer_results.py — the ported
+            # osu!(lazer) ranking screen; the results_overlay element draws
+            # it via fr._draw_results_overlay). Fail-soft: unset data keeps
+            # the legacy argon card — loudly.
+            try:
+                from osu_mania_renderer_v2.hud.lazer_results import (
+                    results_data_from_plan,
+                )
+                fr.set_results_data(results_data_from_plan(plan))
+            except Exception:  # noqa: BLE001 — results data never kills a render
+                import traceback
+                print("[mania-renderer] !!! lazer results data plumbing "
+                      "failed — legacy results card this render:")
+                traceback.print_exc()
             reader = FrameReader(gl.ctx, gl.fbo, components=3)
             fctx = FrameContext(
                 fr=fr, skin=skin, gl=gl.ctx, fbo=gl.fbo,

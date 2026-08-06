@@ -850,6 +850,91 @@ class FrameRenderer:
         self._banner_tex, self._banner_w, self._banner_h = tex, w, h
         self._banner_text = text
 
+    def set_results_data(self, data) -> None:
+        """Per-render data for the LAZER RESULTS SCREEN (hud/lazer_results.py
+        — the osu!(lazer) ranking screen, parity with std/catch/taiko).
+        Called by render.py / compositor.py right after set_banner_text with
+        a ManiaResultsData (results_data_from_plan). None → the legacy argon
+        card keeps drawing (fail-soft)."""
+        self._results_data = data
+        self._lazer_results = None          # (re)built on the first results frame
+        self._lazer_results_token = None    # last-uploaded pose token
+
+    def _try_draw_lazer_results(self, scene: SceneState) -> bool:
+        """Draw the ported lazer ranking screen (hud/lazer_results.py). The
+        screen composites itself as a full-frame RGBA layer on the CPU
+        (exactly like catch's hud.draw_results path — see
+        osu_catch_renderer/hud/hud.py:1828-1865 for the wiring this mirrors);
+        this method uploads the layer and blends it over the GL frame as one
+        fullscreen quad. Returns False (→ the caller falls back to the
+        legacy argon card, LOUDLY) when no data was plumbed or the screen
+        failed once this render."""
+        data = getattr(self, "_results_data", None)
+        if data is None:
+            return False
+        scr = getattr(self, "_lazer_results", None)
+        if scr is False:                    # earlier failure → legacy card
+            return False
+        try:
+            if scr is None:
+                from osu_mania_renderer_v2.hud.lazer_results import (
+                    ManiaLazerResults,
+                )
+                scr = ManiaLazerResults((self.rc.width, self.rc.height), data)
+                self._lazer_results = scr
+            # ms since results_start — drives the ported two-stage timeline
+            # (catch render loop passes the same age; scene.t_ms is already
+            # the video clock the results_opacity ramp runs on).
+            age_ms = max(0.0, float(scene.t_ms - data.results_start_ms))
+            arr, token = scr.render_overlay(scene.results_opacity, age_ms)
+            self._blit_results_overlay(arr, token)
+            return True
+        except Exception as e:  # noqa: BLE001 — results must never kill a render
+            import sys
+            import traceback
+            print("[mania-renderer] !!! LAZER RESULTS SCREEN FAILED — "
+                  f"falling back to the legacy results card: {e}",
+                  file=sys.stderr)
+            traceback.print_exc()
+            self._lazer_results = False
+            return False
+
+    def _blit_results_overlay(self, arr, token) -> None:
+        """Upload the CPU-composited results layer (full-frame RGBA, straight
+        alpha, PIL row order) and draw it as one fullscreen quad through the
+        sprite program. The quad flips v exactly like _draw_external_texture
+        so the layer's top row lands at the top of the GL frame; the frame's
+        blend state (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) makes this the same
+        OVER composite catch performs on its CPU rgb array. The texture is
+        re-written only when the pose token changes — the settled tail of
+        the outro re-uploads nothing."""
+        self._flush_sprite_batch()
+        ctx = self.rc.ctx
+        w, h = self.rc.width, self.rc.height
+        tex = getattr(self, "_lazer_results_tex", None)
+        if tex is None:
+            tex = ctx.texture_array((w, h, 1), 4)
+            tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            self._lazer_results_tex = tex
+            self._lazer_results_token = None
+        if token != self._lazer_results_token:
+            tex.write(np.ascontiguousarray(arr).tobytes())
+            self._lazer_results_token = token
+        prog = self.programs["sprite"]
+        tex.use(0)
+        self._set_sprite_prog_uniforms(prog, h)
+        verts = _EXT_QUAD_PACK(
+            -1.0, -1.0, 0, 1, 0, 1.0, 1.0, 1.0, 1.0,
+            1.0, -1.0, 1, 1, 0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1, 0, 0, 1.0, 1.0, 1.0, 1.0,
+            -1.0, -1.0, 0, 1, 0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1, 0, 0, 1.0, 1.0, 1.0, 1.0,
+            -1.0, 1.0, 0, 0, 0, 1.0, 1.0, 1.0, 1.0,
+        )
+        vbo, vao = self._ext_quad_buffers()
+        vbo.write(verts)
+        vao.render(moderngl.TRIANGLES)
+
     def _draw_banner(self) -> None:
         if not hasattr(self, "_banner_tex"):
             return
@@ -1498,7 +1583,15 @@ class FrameRenderer:
         `results_overlay` element passes the live gameplay ctx, and the legacy
         monolithic `draw()` path (ctx=None) constructs an equivalent one so the
         Argon look is identical regardless of render path.
+
+        DEFAULT PATH (2026-08): the osu!(lazer) RANKING SCREEN ported from
+        the catch renderer (hud/lazer_results.py — parity with std/catch/
+        taiko). The argon card below is the FAIL-SOFT FALLBACK only: it draws
+        when no results data was plumbed (legacy callers) or the lazer
+        screen failed once this render (loud stderr trace either way).
         """
+        if self._try_draw_lazer_results(scene):
+            return
         rc = self.rc
         a = max(0.0, min(1.0, scene.results_opacity))
         # Obtain / construct the FrameContext used for the argon glyph font.
