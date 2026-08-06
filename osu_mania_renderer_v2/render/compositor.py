@@ -289,112 +289,41 @@ async def render(
 
 
 def _cli() -> None:
-    """Admin test CLI: `python -m osu_mania_renderer_v2.wiki_renderer OSR BEATMAP_DIR
-    -o OUT --skin-dir DIR [--default-skin DIR] [legacy flags]`. Builds a
-    RenderOptions from the flags and drives the async `render`."""
-    import asyncio
-    from osu_mania_renderer_v2.beatmap.models import RenderOptions
+    """Prod/worker CLI: `python -m osu_mania_renderer_v2.wiki_renderer OSR
+    BEATMAP_DIR -o OUT --skin-dir DIR [--default-skin DIR] [flags]`.
 
-    p = argparse.ArgumentParser(description="wiki-driven renderer (admin test path)")
-    p.add_argument("osr", type=Path, help=".osr replay file")
-    p.add_argument("beatmap_dir", type=Path,
-                   help="dir containing the matching .osu and assets")
-    p.add_argument("-o", "--output", type=Path, required=True)
-    p.add_argument("--skin-dir", type=Path, default=None,
-                   help="user skin dir (extracted .osk)")
-    p.add_argument("--default-skin", type=Path, default=None,
-                   help="default skin dir; auto-detects assets/default_skin "
-                        "relative to the package when omitted")
-    p.add_argument("--resolution", default="1920x1080")
-    p.add_argument("--fps", type=int, default=60)
-    p.add_argument("--encoder", default="auto")
-    p.add_argument("--timeout", type=int, default=0)
-    p.add_argument("--allow-converted", action="store_true")
-    p.add_argument("--convert-to-keys", type=int, default=4)
-    p.add_argument("--no-combo", action="store_true", help="hide combo counter")
-    p.add_argument("--no-judgment", action="store_true",
-                   help="hide hit-judgement text/sprite")
-    p.add_argument("--no-key-counter", action="store_true",
-                   help="hide bottom-right key counter")
-    # Background dim (same names/mapping as cli.py — the bot's
-    # mania_ordr/renderer.py has ALWAYS sent these four flags, but only
-    # cli.py declared them, so this prod path silently dropped them via
-    # parse_known_args and every render used the 0.70 background_dim
-    # default). ints are 0-100 preset values → RenderOptions fractions;
-    # --bg-dim is the legacy single float 0-1.
-    p.add_argument("--bg-dim",          type=float, default=None,
-                   help="background dim 0.0 - 1.0 (legacy single-value)")
-    p.add_argument("--bg-dim-intro",    type=int, default=None,
-                   help="background dim during intro 0-100 (overrides --bg-dim)")
-    p.add_argument("--bg-dim-game",     type=int, default=None,
-                   help="background dim during gameplay 0-100")
-    p.add_argument("--bg-dim-breaks",   type=int, default=None,
-                   help="background dim during breaks 0-100")
-    # NB: must be declared HERE (not only in cli.py) — parse_known_args
-    # silently drops unknown flags, so an undeclared --logo would no-op.
-    p.add_argument("--logo", action="store_true",
-                   help="show_logo: the R3D 'R' tile splash during the "
-                        "intro, fading out as the first note spawns "
-                        "(parity with std/catch)")
-    p.add_argument("--featured-avatar-png", type=Path, default=None,
-                   help="featured player's osu! avatar PNG → results-screen "
-                        "header (parity with std). Absent ⇒ grey placeholder")
-    # Exact official-PP override (parity with the taiko renderer). When the
-    # caller supplies the authoritative passed pp, the results card + live
-    # counter show it exactly instead of the rosu-pp estimate. Must be
-    # declared HERE - parse_known_args silently drops undeclared flags.
-    p.add_argument("--pp", type=float, default=None,
-                   help="exact official PP for the results card / live "
-                        "counter (overrides the rosu-pp estimate); "
-                        "omit to use rosu")
-    # --sr (parity with taiko/std/catch). Must be declared HERE too -
-    # parse_known_args silently drops undeclared flags. Shown as the 'X.XX★'
-    # pill on the results card (rosu estimate when omitted).
-    p.add_argument("--sr", type=float, default=None,
-                   help="exact official star rating (parity with taiko/std/"
-                        "catch); shown as the 'X.XX★' results-card pill "
-                        "(omit to use the rosu estimate)")
-    args, _unknown = p.parse_known_args()
+    Reuses cli.py's FULL parser + ``build_render_options`` so this entrypoint
+    (what the bot/worker actually invokes) and the monolith CLI can never drift
+    on which flags they honour. Previously this had its own ~20-flag parser +
+    ``parse_known_args``, silently dropping ~22 bot-sent flags (--watermark,
+    --scroll-speed, volumes, every visibility toggle, --show-pp, ...), so users'
+    settings and the free-tier watermark were thrown away. Now every declared
+    flag is honoured; genuinely-unknown flags are WARN-logged, not silently
+    eaten.
+    """
+    import asyncio
+    import logging
+    import tempfile
+    # Lazy import breaks the compositor <-> cli <-> __init__ module cycle.
+    from osu_mania_renderer_v2.cli import _build_parser, build_render_options
+
+    args, unknown = _build_parser().parse_known_args()
+    if unknown:
+        logging.getLogger("osu_mania_renderer_v2").warning(
+            "wiki CLI ignored unknown flag(s) — declare them in cli.py "
+            "_build_parser to honour them: %s", " ".join(unknown))
 
     default_skin = args.default_skin
     if default_skin is None:
-        default_skin = Path(__file__).resolve().parent / "assets" / "default_skin"
-
+        default_skin = Path(__file__).resolve().parent.parent / "assets" / "default_skin"
     if args.skin_dir is None:
-        import tempfile
         args.skin_dir = Path(tempfile.mkdtemp(prefix="argon-empty-"))
 
     import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
-    from osu_mania_renderer_v2.beatmap.models import RenderOptions as _RO  # noqa: F811
-    w, h = (int(x) for x in args.resolution.lower().split("x"))
-    # Stage-aware bg dim (cli.py's exact clamping/mapping): omitted flags
-    # keep the RenderOptions defaults (background_dim 0.70 fallback).
-    dim_kwargs: dict = {}
-    if args.bg_dim is not None:
-        dim_kwargs["background_dim"] = max(0.0, min(1.0, args.bg_dim))
-    if args.bg_dim_intro is not None:
-        dim_kwargs["bg_dim_intro"] = max(0, min(100, args.bg_dim_intro)) / 100.0
-    if args.bg_dim_game is not None:
-        dim_kwargs["bg_dim_game"] = max(0, min(100, args.bg_dim_game)) / 100.0
-    if args.bg_dim_breaks is not None:
-        dim_kwargs["bg_dim_breaks"] = max(0, min(100, args.bg_dim_breaks)) / 100.0
-    options = RenderOptions(
-        resolution=(w, h), fps=args.fps, encoder=args.encoder,
-        timeout_seconds=(args.timeout or 600),
-        show_combo=not args.no_combo,
-        show_judgment=not args.no_judgment,
-        show_key_counter=not args.no_key_counter,
-        show_logo=args.logo,
-        featured_avatar_png=(str(args.featured_avatar_png)
-                             if args.featured_avatar_png else None),
-        pp_override=args.pp,
-        sr_override=args.sr,
-        **dim_kwargs,
-    )
+    options = build_render_options(args)
+
     async def _print_progress(fraction: float) -> None:
-        # Same line shape the bot's _PROGRESS_RE parses from the subprocess
-        # stdout (mania_ordr/renderer.py). Without this the wiki path emitted
-        # no progress and the UI sat at 0% for the entire render.
+        # Same line shape the bot's _PROGRESS_RE parses from subprocess stdout.
         print(f"\rrendering… {fraction:.0%}", end="", flush=True)
 
     asyncio.run(render(

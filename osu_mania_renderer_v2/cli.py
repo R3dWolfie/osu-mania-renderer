@@ -45,6 +45,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skin-dir", type=Path, default=None,
         help="path to an extracted .osk directory (overrides bundled sprites)",
     )
+    p.add_argument(
+        "--default-skin", type=Path, default=None,
+        help="default/bundled skin dir used by the wiki compositor; "
+             "auto-detected relative to the package when omitted",
+    )
     # Settings-page surface. Each flag maps 1:1 to a RenderOptions field;
     # `store_true` flips a default-on toggle off. Defaults match
     # RenderOptions' own defaults so omitting a flag preserves prior behaviour.
@@ -80,6 +85,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-grade",        action="store_true", help="hide grade letter")
     p.add_argument("--no-key-overlay",  action="store_true", help="hide receptor key flash")
     p.add_argument("--no-key-counter",  action="store_true", help="hide bottom-right key-press counter")
+    p.add_argument("--no-combo",        action="store_true", help="hide the centred combo counter")
+    p.add_argument("--no-judgment",     action="store_true", help="hide the hit-judgement text/sprite burst")
     p.add_argument("--no-result-screen",action="store_true", help="cut the results card")
     p.add_argument("--show-pp",         action="store_true", help="show live PP counter")
     p.add_argument("--pp",              type=float, default=None,
@@ -126,12 +133,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+def build_render_options(args) -> RenderOptions:
+    """Map parsed CLI args -> RenderOptions. SHARED by main() (monolith
+    path) and render/compositor.py::_cli (the prod wiki path) so the two
+    CLIs can never drift on which flags they honour."""
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Build RenderOptions kwargs, only overriding fields where a flag was
     # given. RenderOptions defaults stay authoritative.
@@ -174,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_grade:           opts_kwargs["show_grade"]        = False
     if args.no_key_overlay:     opts_kwargs["show_key_overlay"]  = False
     if args.no_key_counter:     opts_kwargs["show_key_counter"]  = False
+    if args.no_combo:           opts_kwargs["show_combo"]        = False
+    if args.no_judgment:        opts_kwargs["show_judgment"]     = False
     if args.no_result_screen:   opts_kwargs["show_result_screen"]= False
     if args.show_pp:            opts_kwargs["show_pp_counter"]   = True
     if args.pp is not None:     opts_kwargs["pp_override"]       = args.pp
@@ -191,7 +198,16 @@ def main(argv: list[str] | None = None) -> int:
         opts_kwargs["featured_avatar_png"] = str(args.featured_avatar_png)
     if args.watermark is not None:
         opts_kwargs["watermark_text"] = args.watermark[:64]
-    options = RenderOptions(**opts_kwargs)
+    return RenderOptions(**opts_kwargs)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    options = build_render_options(args)
 
     async def _run() -> None:
         await render_mania(
