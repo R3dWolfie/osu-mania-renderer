@@ -947,6 +947,17 @@ async def render_mania(
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
             fr.set_banner_text(plan.banner_text)
+            # LAZER RESULTS SCREEN data (hud/lazer_results.py — the ported
+            # osu!(lazer) ranking screen, parity with std/catch/taiko).
+            # Fail-soft: any problem leaves the data unset and the renderer
+            # stays on the legacy argon card — loudly.
+            try:
+                from osu_mania_renderer_v2.hud.lazer_results import (
+                    results_data_from_plan,
+                )
+                fr.set_results_data(results_data_from_plan(plan))
+            except Exception:  # noqa: BLE001 — results data never kills a render
+                log.warning("lazer_results_data_failed", exc_info=True)
             reader = FrameReader(gl.ctx, gl.fbo, components=3)
 
             last_progress_t = 0.0
