@@ -34,6 +34,7 @@ _ORDER = [
     ("hp_bar", hud.hp_bar),
     ("banner", hud.banner),
     ("hud", hud.hud),
+    ("key_counter", hud.key_counter),
     ("top_chrome", hud.top_chrome),
     ("flashlight", effects.flashlight),
     ("ur_summary", hud.ur_summary),
