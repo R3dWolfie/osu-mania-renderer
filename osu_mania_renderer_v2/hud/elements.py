@@ -190,9 +190,10 @@ def _argon_hit_error(ctx) -> None:
 
 
 def fail_overlay(*, element, skin, assets, variables, ctx) -> None:
-    s = ctx.scene
-    if s.hp <= 0.001 and s.results_opacity <= 0:
-        ctx.fr._draw_fail_overlay()
+    # No-op: std/catch/taiko paint no "FAILED" wash. A failed/quit play is
+    # handled by truncating the video at the death point (build_render_plan),
+    # then the results card shows the death-point tally — sibling parity.
+    return
 
 
 def hp_bar(*, element, skin, assets, variables, ctx) -> None:
@@ -511,6 +512,33 @@ _AKEY_POS = (-60.0, -66.0)           # BottomRight (hitError.Width+10, 66)
 _BLUE0 = (0x99 / 255.0, 0xDD / 255.0, 0xFF / 255.0)   # OsuColour.Blue0
 
 
+# osu!(lazer) default mania stage key bindings — the labels the in-game key
+# counter shows (Red, 2026-08-07: "like the game", not generic B1..Bn).
+# lazer's VariantMappingGenerator fills columns from the CENTRE outward:
+#   LeftKeys = A S D F   (nearest-centre last),  RightKeys = J K L ;,
+#   SpecialKey = Space in the middle when the column count is odd.
+# → 4K = D F J K, 5K = D F Space J K, 7K = S D F Space J K L, etc.
+_MANIA_LEFT_KEYS = ("A", "S", "D", "F")
+_MANIA_RIGHT_KEYS = ("J", "K", "L", ";")
+
+
+def mania_key_labels(n: int) -> list[str]:
+    """Per-column key labels for an `n`-key mania stage, matching lazer's
+    default bindings. Falls back to generic B1..Bn only past the built-in
+    key pool (10K+ single-stage), which the default generator doesn't cover."""
+    if n <= 0:
+        return []
+    half = n // 2
+    if half > len(_MANIA_LEFT_KEYS):        # 10K+ — outside the default pool
+        return [f"B{i + 1}" for i in range(n)]
+    left = list(_MANIA_LEFT_KEYS[len(_MANIA_LEFT_KEYS) - half:])
+    right = list(_MANIA_RIGHT_KEYS[:half])
+    labels = left
+    if n % 2 == 1:                          # odd → Space in the centre column
+        labels = labels + ["Space"]
+    return labels + right
+
+
 # Easings (osu!framework Easing.*) — STD render/hud.py:483-499 verbatim.
 def _clamp01(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
@@ -553,6 +581,9 @@ def key_counter(*, element, skin, assets, variables, ctx) -> None:
     n = len(counts)
     press_ages = getattr(s, "key_press_age_ms", ()) or ()
     release_ages = getattr(s, "key_release_age_ms", ()) or ()
+    # lazer default per-column key labels (D F J K … / Space centre) — the
+    # in-game key counter, not generic B1..Bn.
+    key_labels = mania_key_labels(n)
 
     total_w = n * _AKEY_W + (n - 1) * _AKEY_SPACING
     right = ui_w_l + _AKEY_POS[0]
@@ -608,7 +639,12 @@ def key_counter(*, element, skin, assets, variables, ctx) -> None:
         pad_top = ind_h + _AKEY_PRESS_OFFSET
         # text_to_texture pads 4 px of transparent border around the ink;
         # +4 / −4 below anchor the INK edge, not the texture edge.
-        ntex, nw, nh = fr._cached_text(f"B{c + 1}", name_size, (*name_col, 255))
+        label = key_labels[c] if c < len(key_labels) else f"B{c + 1}"
+        # Single-glyph binds (D/F/J/K/;) use the full name size; the wide
+        # "Space" centre label is scaled down so it stays inside its cell.
+        lbl_size = name_size if len(label) <= 2 else max(
+            10, int(round(name_size * 2.0 / len(label))))
+        ntex, nw, nh = fr._cached_text(label, lbl_size, (*name_col, 255))
         name_top_px = (top + pad_top + 2.0) * lk
         fr._draw_external_texture(
             ntex, x=x_px, y=int(round(rc.height - name_top_px - nh + 4)),

@@ -694,8 +694,9 @@ class FrameRenderer:
             self._draw_hit_strip(scene)
         if self.options.show_progress_bar:
             self._draw_progress_bar(scene)
-        if scene.hp <= 0.001 and scene.results_opacity <= 0:
-            self._draw_fail_overlay()
+        # No "FAILED" wash — std/catch/taiko don't paint one; a failed/quit
+        # play truncates the video at the death point instead (see
+        # build_render_plan). _draw_fail_overlay is retained but unused.
         if self.options.show_hp_bar:
             self._draw_hp_bar(scene)
         self._draw_banner()
