@@ -238,7 +238,27 @@ async def render(
                 from osu_mania_renderer_v2.hud.lazer_results import (
                     results_data_from_plan,
                 )
-                fr.set_results_data(results_data_from_plan(plan))
+                results_data = results_data_from_plan(plan)
+                # results-screen map leaderboard (parity with std/catch —
+                # catch render/render.py:580-588): build + bake ONCE, up
+                # front, so the outro just composites the pre-baked cards
+                # each frame. Fully fail-soft — any problem leaves the plain
+                # results screen (renders unchanged).
+                results_board = None
+                if (results_data is not None
+                        and options.show_result_screen
+                        and getattr(options, "show_leaderboard", True)):
+                    try:
+                        from osu_mania_renderer_v2.hud.lb_cards import (
+                            build_mania_board,
+                        )
+                        results_board = build_mania_board(
+                            options, plan.replay, plan.modded,
+                            getattr(plan.replay, "replay_md5", "") or "")
+                    except Exception as e:  # noqa: BLE001 — a board must
+                        # never break a render
+                        print(f"[mania-renderer] leaderboard skipped: {e}")
+                fr.set_results_data(results_data, results_board)
             except Exception:  # noqa: BLE001 — results data never kills a render
                 import traceback
                 print("[mania-renderer] !!! lazer results data plumbing "

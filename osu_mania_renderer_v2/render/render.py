@@ -50,6 +50,7 @@ APPROACH_MS = 600
 SCROLL_SPEED_BASELINE = 17
 RESULTS_DURATION_MS = 6000   # how long the post-game results card shows
 RESULTS_GAP_MS = 800         # quiet gap between last note and results fade-in
+_FAIL_TAIL_MS = 700          # video tail after a fail/quit before results (taiko parity)
 START_FADE_MS = 1600         # opening fade-in from black at song start
 END_FADE_MS = 600            # gameplay → results transition fade
 HIT_LIGHT_DURATION_MS = 320  # how long a receptor flash lingers
@@ -408,7 +409,19 @@ async def build_render_plan(
             log.warning("audio_missing", extra={"expected": str(cand)})
 
     # End-of-song layout: brief silent gap → results card.
+    # SIBLING PARITY (Red, 2026-08-07): a failed/quit replay stops recording at
+    # death and cuts straight to results — catch/taiko truncate the video at the
+    # death point (taiko: fail_time_ms + 700) rather than playing the rest of the
+    # map, and NONE of them paint a "FAILED" wash (see the removed fail overlay).
+    # mania's signal is the same "where the replay frames stop": a play that
+    # judged fewer objects than the map has is incomplete (the player died or
+    # quit — every completed object yields a hit/miss event, so a short count
+    # means the replay ended early). Truncate to the last judged object + tail.
     gameplay_end_ms = modded.total_duration_ms
+    if len(judgments.events) < len(modded.notes) and judgment_timeline:
+        last_play_ms = max(eff_t for eff_t, _ in judgment_timeline)
+        gameplay_end_ms = min(gameplay_end_ms,
+                              int(last_play_ms + _FAIL_TAIL_MS))
     results_start_ms = gameplay_end_ms + RESULTS_GAP_MS
     total_video_ms = results_start_ms + RESULTS_DURATION_MS
     total_frames = math.ceil(total_video_ms / 1000 * options.fps)
@@ -955,7 +968,27 @@ async def render_mania(
                 from osu_mania_renderer_v2.hud.lazer_results import (
                     results_data_from_plan,
                 )
-                fr.set_results_data(results_data_from_plan(plan))
+                results_data = results_data_from_plan(plan)
+                # results-screen map leaderboard (parity with std/catch —
+                # catch render/render.py:580-588): build + bake ONCE, up
+                # front, so the outro just composites the pre-baked cards
+                # each frame. Fully fail-soft — any problem leaves the plain
+                # results screen (renders unchanged).
+                results_board = None
+                if (results_data is not None
+                        and options.show_result_screen
+                        and getattr(options, "show_leaderboard", True)):
+                    try:
+                        from osu_mania_renderer_v2.hud.lb_cards import (
+                            build_mania_board,
+                        )
+                        results_board = build_mania_board(
+                            options, plan.replay, plan.modded,
+                            getattr(plan.replay, "replay_md5", "") or "")
+                    except Exception:  # noqa: BLE001 — a board must never
+                        # break a render
+                        log.warning("leaderboard_skipped", exc_info=True)
+                fr.set_results_data(results_data, results_board)
             except Exception:  # noqa: BLE001 — results data never kills a render
                 log.warning("lazer_results_data_failed", exc_info=True)
             reader = FrameReader(gl.ctx, gl.fbo, components=3)

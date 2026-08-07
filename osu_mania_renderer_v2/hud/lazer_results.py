@@ -64,9 +64,12 @@ taiko port made, mania data):
     drives a full black wash, matching std/catch/taiko where the gameplay
     has already faded to black by results_start).
   * flank leaderboard cards: the catch draw code (board slide-in timing,
-    stage-2 tracking) is ported VERBATIM but mania has no lb_cards render-DB
-    board yet, so `board` stays None and nothing flanks the panel. A future
-    mania board plugs straight into the ported path.
+    stage-2 tracking) is ported VERBATIM; the board itself is mania's
+    hud/lb_cards.py (build_mania_board — the ported catch/std render-DB +
+    osu!-global board), built + baked once up front by render.py /
+    compositor.py and handed in via gpu/renderer.py set_results_data.
+    board=None (solo render / leaderboard off) → nothing flanks the panel,
+    unchanged.
   * GL delivery: mania composites frames on the GPU (no CPU rgb array like
     catch/taiko), so render_overlay() returns a full-frame RGBA layer
     (black wash + screen, straight alpha) plus a pose token;
@@ -971,7 +974,7 @@ class ManiaLazerResults:
         self.W, self.H = int(resolution[0]), int(resolution[1])
         self.k = self.H / UH
         self.data = data
-        self.board = board                 # future lb board; None today
+        self.board = board                 # lb_cards.BakedBoard | None
         self._settled = None               # cached final RGBA frame
         # pose-signature frame memo (catch :944-953): every animated
         # parameter of the screen is a CLAMPED pure function of (op, age_ms),
@@ -1154,20 +1157,15 @@ class ManiaLazerResults:
             ts = datetime.now()
         self.date_img = bake_text(f"Played on {ts.strftime('%d %b %Y %H:%M')}",
                                   int(18 * k), (0.6, 0.63, 0.72))
-        # stage 2: the featured panel's slide-left target + the stats panels
-        # that unfold from the right (std geometry, mania data). Fail-soft:
-        # any bake problem disables stage 2 LOUDLY and the screen holds
-        # centred exactly as stage 1.
+        # SIBLING PARITY (Red, 2026-08-07): std / catch / taiko results screens
+        # are a single CENTRED card (+ catch's optional rank banner & right
+        # leaderboard flank) with NO extra graph panels. Mania's old two-stage
+        # design (card slides left + PERFORMANCE/COMBO/JUDGEMENTS panels unfold
+        # on the right) was the one visual divergence from the siblings, so it
+        # is disabled: _stage2 stays False, the card holds centred at cx_px, and
+        # the board (when present) draws as the right flank exactly like catch.
+        # The _bake_stage2 / _draw_stats_panels machinery is retained but dead.
         self._stage2 = False
-        try:
-            self._bake_stage2()
-        except Exception as e:  # noqa: BLE001 — stage 2 never breaks results
-            import sys
-            import traceback
-            print("[mania-renderer] !!! RESULTS STAGE-2 BAKE FAILED — "
-                  f"holding the stage-1 screen: {e}", file=sys.stderr)
-            traceback.print_exc()
-            self._stage2 = False
 
     def _grid_cell(self, label, value, color):
         # std's STAT_LABEL_VPX=15 / STAT_VALUE_VPX=28 (std :122-123) — the
@@ -1513,7 +1511,7 @@ class ManiaLazerResults:
             row_h = max(row_h, label.height + 6 * k + value.height)
         return row_h
 
-    # -- flank leaderboard (catch :1455-1480 verbatim; mania board=None today) -----
+    # -- flank leaderboard (catch :1455-1480 verbatim; board = lb_cards) -----------
 
     def _lb_slide(self, i: int, age_ms: float) -> tuple[float, float]:
         """std's _lb_slide: card i eases in over LB_SLIDE_MS (OutQuint) from

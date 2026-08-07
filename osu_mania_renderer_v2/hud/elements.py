@@ -190,9 +190,10 @@ def _argon_hit_error(ctx) -> None:
 
 
 def fail_overlay(*, element, skin, assets, variables, ctx) -> None:
-    s = ctx.scene
-    if s.hp <= 0.001 and s.results_opacity <= 0:
-        ctx.fr._draw_fail_overlay()
+    # No-op: std/catch/taiko paint no "FAILED" wash. A failed/quit play is
+    # handled by truncating the video at the death point (build_render_plan),
+    # then the results card shows the death-point tally — sibling parity.
+    return
 
 
 def hp_bar(*, element, skin, assets, variables, ctx) -> None:
@@ -329,49 +330,14 @@ def _argon_number(ctx, text, *, x, center_y, glyph_h, align, alpha=1.0,
                     font="argon", tint=tint)
 
 
-def _draw_leaderboard(ctx) -> None:
-    """lazer's gameplay leaderboard — the player's own score card (rank #1):
-    a green rounded panel below the score wedge with rank, avatar, name, live
-    score, accuracy (top-right) and combo (bottom-right)."""
-    fr = ctx.fr
-    s = ctx.scene
-    rc = fr.rc
-    A = rc.height / 1080.0
-    cx0, cy0 = 28 * A, 84 * A
-    cw, ch = 372 * A, 52 * A
-
-    def _txt(x_left, y_top_centre, text, size, col, *, align="left", alpha=1.0):
-        tex, tw, th = fr._cached_text(text, size, col)   # size is 1080-ref
-        x = x_left - tw if align == "right" else x_left
-        gl_y = int(rc.height - y_top_centre - th / 2)
-        fr._draw_external_texture(tex, x=int(x), y=gl_y, w=tw, h=th, alpha=alpha)
-
-    # Green card (white sprite tinted grass-green, lazer's own-score highlight).
-    _draw_tl(ctx, "argon_card", cx0, cy0, cw, ch, (0.28, 0.43, 0.14, 0.95),
-             direct=True)
-    # Rank, vertically centred at the left.
-    _txt(cx0 + 12 * A, cy0 + ch / 2, "#1", 16, (235, 245, 225, 255))
-    # Avatar — a grey rounded square placeholder.
-    av = ch * 0.74
-    avx, avy = cx0 + 42 * A, cy0 + (ch - av) / 2
-    _draw_tl(ctx, "argon_card", avx, avy, av, av, (0.55, 0.57, 0.60, 1.0),
-             direct=True)
-    tx = avx + av + 12 * A
-    # Player name (parsed off the banner text "... [diff]   <player>").
-    bt = getattr(fr, "_banner_text", "") or ""
-    name = bt.rsplit("   ", 1)[-1].strip() if "   " in bt else (bt or "Player")
-    _txt(tx, cy0 + ch * 0.36, name[:18], 18, (255, 255, 255, 255))
-    # Live score (comma-grouped), under the name.
-    disp = (s.score if s.results_opacity > 0
-            else (s.score_smoothed if s.score_smoothed > 0 else s.score))
-    _txt(tx, cy0 + ch * 0.70, f"{int(disp):,}", 15, (225, 235, 215, 255),
-         alpha=0.95)
-    # Accuracy (top-right) + combo (bottom-right).
-    acc = s.accuracy if s.results_opacity > 0 else s.accuracy_smoothed
-    _txt(cx0 + cw - 12 * A, cy0 + ch * 0.36, f"{acc:.2f}%", 14,
-         (255, 255, 255, 255), align="right", alpha=0.95)
-    _txt(cx0 + cw - 12 * A, cy0 + ch * 0.70, f"{s.combo}x", 14,
-         (225, 235, 215, 255), align="right", alpha=0.9)
+# NOTE: the old _draw_leaderboard (a hardcoded fake "#1" own-score card —
+# grey placeholder avatar, name parsed off the banner string) was REMOVED
+# 2026-08: no sibling renderer draws a gameplay scoreboard (std's
+# render/scoreboard.py is an explicit accepted-but-no-op stub pending the
+# osu!API hand-off; catch has no gameplay leaderboard element at all). The
+# REAL per-map leaderboard now lives where the siblings put theirs: the
+# results screen's flank cards (hud/lb_cards.py + hud/leaderboard.py, drawn
+# by hud/lazer_results.py).
 
 
 def _draw_argon_hud(ctx) -> None:
@@ -454,9 +420,6 @@ def _draw_argon_hud(ctx) -> None:
 
     # Active mods (hexagon icons) under the accuracy/pp block, top-right.
     _draw_mod_icons(ctx, acc_right, 110 * A)
-
-    # Player leaderboard card below the score wedge.
-    _draw_leaderboard(ctx)
 
 
 def hud(*, element, skin, assets, variables, ctx) -> None:
@@ -549,6 +512,33 @@ _AKEY_POS = (-60.0, -66.0)           # BottomRight (hitError.Width+10, 66)
 _BLUE0 = (0x99 / 255.0, 0xDD / 255.0, 0xFF / 255.0)   # OsuColour.Blue0
 
 
+# osu!(lazer) default mania stage key bindings — the labels the in-game key
+# counter shows (Red, 2026-08-07: "like the game", not generic B1..Bn).
+# lazer's VariantMappingGenerator fills columns from the CENTRE outward:
+#   LeftKeys = A S D F   (nearest-centre last),  RightKeys = J K L ;,
+#   SpecialKey = Space in the middle when the column count is odd.
+# → 4K = D F J K, 5K = D F Space J K, 7K = S D F Space J K L, etc.
+_MANIA_LEFT_KEYS = ("A", "S", "D", "F")
+_MANIA_RIGHT_KEYS = ("J", "K", "L", ";")
+
+
+def mania_key_labels(n: int) -> list[str]:
+    """Per-column key labels for an `n`-key mania stage, matching lazer's
+    default bindings. Falls back to generic B1..Bn only past the built-in
+    key pool (10K+ single-stage), which the default generator doesn't cover."""
+    if n <= 0:
+        return []
+    half = n // 2
+    if half > len(_MANIA_LEFT_KEYS):        # 10K+ — outside the default pool
+        return [f"B{i + 1}" for i in range(n)]
+    left = list(_MANIA_LEFT_KEYS[len(_MANIA_LEFT_KEYS) - half:])
+    right = list(_MANIA_RIGHT_KEYS[:half])
+    labels = left
+    if n % 2 == 1:                          # odd → Space in the centre column
+        labels = labels + ["Space"]
+    return labels + right
+
+
 # Easings (osu!framework Easing.*) — STD render/hud.py:483-499 verbatim.
 def _clamp01(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
@@ -591,6 +581,9 @@ def key_counter(*, element, skin, assets, variables, ctx) -> None:
     n = len(counts)
     press_ages = getattr(s, "key_press_age_ms", ()) or ()
     release_ages = getattr(s, "key_release_age_ms", ()) or ()
+    # lazer default per-column key labels (D F J K … / Space centre) — the
+    # in-game key counter, not generic B1..Bn.
+    key_labels = mania_key_labels(n)
 
     total_w = n * _AKEY_W + (n - 1) * _AKEY_SPACING
     right = ui_w_l + _AKEY_POS[0]
@@ -646,7 +639,12 @@ def key_counter(*, element, skin, assets, variables, ctx) -> None:
         pad_top = ind_h + _AKEY_PRESS_OFFSET
         # text_to_texture pads 4 px of transparent border around the ink;
         # +4 / −4 below anchor the INK edge, not the texture edge.
-        ntex, nw, nh = fr._cached_text(f"B{c + 1}", name_size, (*name_col, 255))
+        label = key_labels[c] if c < len(key_labels) else f"B{c + 1}"
+        # Single-glyph binds (D/F/J/K/;) use the full name size; the wide
+        # "Space" centre label is scaled down so it stays inside its cell.
+        lbl_size = name_size if len(label) <= 2 else max(
+            10, int(round(name_size * 2.0 / len(label))))
+        ntex, nw, nh = fr._cached_text(label, lbl_size, (*name_col, 255))
         name_top_px = (top + pad_top + 2.0) * lk
         fr._draw_external_texture(
             ntex, x=x_px, y=int(round(rc.height - name_top_px - nh + 4)),
