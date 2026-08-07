@@ -95,4 +95,8 @@ def intro_logo(*, element, skin, assets, variables, ctx) -> None:
     out exactly as the first note spawns — parity with std/catch. Delegates
     to the engine so the legacy and wiki paths draw identical pixels; no-op
     unless options.show_logo is on."""
-    ctx.fr.draw_logo_splash(ctx.t_ms)
+    # scene.t_ms is the gameplay/map clock the splash envelope is authored
+    # against (fade-out ends at first_note − approach). ctx.t_ms is the raw
+    # VIDEO clock, which on the pre-roll leads map-time by logo_preroll_ms —
+    # using it makes the splash fade ~preroll early on the wiki/prod path.
+    ctx.fr.draw_logo_splash(ctx.scene.t_ms)
