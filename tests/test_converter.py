@@ -12,11 +12,11 @@ project_std_to_mania_slider_columns.md in memory for the full story.
 """
 from __future__ import annotations
 
-from osu_mania_renderer_v2.converter import (
+from osu_mania_renderer_v2.beatmap.converter import (
     DEFAULT_CONVERTED_KEY_COUNT,
     convert_standard_to_mania,
 )
-from osu_mania_renderer_v2.models import HoldNote, KeyEvent, TimingPoint
+from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, TimingPoint
 
 
 def _kev(t: int, mask: int) -> KeyEvent:

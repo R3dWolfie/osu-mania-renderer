@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from osu_mania_renderer_v2.beatmap.replay import _recover_leadin_offset, parse_replay
 from osu_mania_renderer_v2.errors import NotAManiaError
-from osu_mania_renderer_v2.replay import _recover_leadin_offset, parse_replay
 
 
 def test_parse_mania_replay(fixtures_dir: Path):
