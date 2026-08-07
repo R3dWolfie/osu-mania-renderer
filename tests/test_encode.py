@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from osu_mania_renderer_v2.encode import build_ffmpeg_cmd, probe_encoder
+from osu_mania_renderer_v2.render.encode import build_ffmpeg_cmd, probe_encoder
 
 
 def test_build_cmd_vaapi():

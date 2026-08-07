@@ -13,14 +13,19 @@ from pathlib import Path
 
 import pytest
 
-# Canonical painter order — must match gpu/renderer.py::FrameRenderer.draw().
+# Canonical painter order — must match render/pipeline.py::_ORDER, which
+# mirrors gpu/renderer.py::FrameRenderer.draw() plus the lazer BreakOverlay
+# and R3D intro-splash elements registered on top of that draw order.
 EXPECTED_ORDER = [
     "background", "stage_decorations", "columns", "stage_lights",
     "receptors_under", "notes", "combo_and_judgment", "receptors_over",
     "hit_error_popups", "hit_strip", "progress_bar", "fail_overlay",
     "hp_bar", "banner", "hud", "key_counter", "top_chrome", "flashlight",
     "ur_summary",
-    "miss_break_wash", "fade_to_black", "results_overlay", "watermark",
+    "break_overlay",
+    "miss_break_wash", "fade_to_black",
+    "intro_logo",
+    "results_overlay", "watermark",
 ]
 
 
@@ -47,7 +52,7 @@ def test_wiki_path_renders_argon(tmp_path, fixtures_dir):
         pytest.skip("RUN_SLOW=1 required (GL + ffmpeg)")
     import asyncio
 
-    from osu_mania_renderer_v2.models import RenderOptions
+    from osu_mania_renderer_v2.beatmap.models import RenderOptions
     import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
     from osu_mania_renderer_v2.render.compositor import render as wiki
 

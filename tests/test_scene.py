@@ -1,5 +1,5 @@
-from osu_mania_renderer_v2.models import HoldNote, KeyEvent, Note, VisualMods
-from osu_mania_renderer_v2.scene import snapshot
+from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, Note, VisualMods
+from osu_mania_renderer_v2.render.scene import snapshot
 
 # Playfield occupies the bottom 1000ms of approach time at the receptors.
 APPROACH_MS = 600

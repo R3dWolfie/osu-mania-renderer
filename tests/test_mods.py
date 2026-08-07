@@ -1,5 +1,5 @@
-from osu_mania_renderer_v2.models import BeatmapInfo, HoldNote, Note, ReplayInfo
-from osu_mania_renderer_v2.mods import Mod, apply_mods
+from osu_mania_renderer_v2.beatmap.models import BeatmapInfo, HoldNote, Note, ReplayInfo
+from osu_mania_renderer_v2.beatmap.mods import Mod, apply_mods
 
 
 def _mk_beatmap(notes=None, key_count=4) -> BeatmapInfo:

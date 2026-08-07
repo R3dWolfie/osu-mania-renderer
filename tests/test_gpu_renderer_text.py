@@ -2,11 +2,11 @@ import os
 
 import pytest
 
+from osu_mania_renderer_v2.beatmap.models import VisualMods
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
 from osu_mania_renderer_v2.gpu.text import text_to_texture
-from osu_mania_renderer_v2.models import VisualMods
-from osu_mania_renderer_v2.scene import SceneState
+from osu_mania_renderer_v2.render.scene import SceneState
 
 
 @pytest.mark.slow
