@@ -36,6 +36,7 @@ from osu_mania_renderer_v2.beatmap.judgments import compute_judgments, reconcile
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
+from osu_mania_renderer_v2.render.logo import set_intro_start_ms
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
 from osu_mania_renderer_v2.render.scene import JudgmentPopup, snapshot
@@ -55,6 +56,14 @@ START_FADE_MS = 1600         # opening fade-in from black at song start
 END_FADE_MS = 600            # gameplay → results transition fade
 HIT_LIGHT_DURATION_MS = 320  # how long a receptor flash lingers
 COMBO_POP_DURATION_MS = 180  # how long the combo number stays scaled up
+# show_logo guaranteed pre-roll — the mania mirror of catch's
+# RenderConfig.lead_in_ms = 1500 (osu_catch_renderer/beatmap/models.py:136,
+# "blank/approach before first object"). When the R3D intro splash is on and
+# the map's first note comes too early for the splash window
+# (< logo.LOGO_MIN_WINDOW_MS before its approach), the timeline is opened
+# THIS much before the first note's spawn — catch render/render.py:454-461
+# (`start_ms = min(0, int(first - preempt - cfg.lead_in_ms))`).
+LOGO_LEAD_IN_MS = 1500
 
 # osu!mania HP deltas per judgment. The osu! stable HP drain formula is
 # complex; these values approximate the visible behaviour — geki/300 fully
@@ -175,6 +184,14 @@ class RenderPlan:
     # scaling carried in score_scale.
     score_scale: float = 1.0
     score_final: int | None = None
+    # show_logo pre-roll (ms) prepended BEFORE map t=0 — the mania mirror of
+    # catch's guaranteed lead-in (catch render/render.py:458-459
+    # `start_ms = min(0, int(first - preempt - cfg.lead_in_ms))`): the video
+    # opens at map time -logo_preroll_ms, the audio (song + hitsound WAV) is
+    # adelay'd by the same amount, and build_frame_state maps the loop's
+    # 0-based frame clock back to map time by subtracting it. 0 (the default,
+    # and always 0 with show_logo off) => timeline identical to before.
+    logo_preroll_ms: int = 0
 
 
 async def build_render_plan(
@@ -408,7 +425,36 @@ async def build_render_plan(
         else:
             log.warning("audio_missing", extra={"expected": str(cand)})
 
-    # End-of-song layout: brief silent gap → results card.
+    # show_logo pre-roll — mirror of catch render/render.py:454-461: catch
+    # guarantees `start_ms = min(0, int(first - preempt - cfg.lead_in_ms))`
+    # (lead_in_ms=1500, catch beatmap/models.py:136) so the intro splash
+    # always has a full lead-in window before the first object's approach.
+    # Mania's timeline always opened at map t=0, so a map whose first note
+    # comes < LOGO_MIN_WINDOW_MS after its approach start never showed the
+    # splash at all. When the splash is on, open the timeline at start_ms
+    # (map time, <= 0) instead: prepend -start_ms of video and delay the
+    # audio by the same amount. show_logo off keeps start_ms pinned to 0 —
+    # the whole pipeline is byte-identical to before.
+    first_note_ms = min((n.time_ms for n in modded.notes), default=0)
+    logo_preroll_ms = 0
+    if options.show_logo:
+        _logo_start_ms = min(
+            0, int(first_note_ms - effective_approach_ms - LOGO_LEAD_IN_MS))
+        logo_preroll_ms = -_logo_start_ms
+        if logo_preroll_ms > 0:
+            log.info("logo_preroll", extra={
+                "ms": logo_preroll_ms, "first_note_ms": first_note_ms,
+                "approach_ms": effective_approach_ms,
+            })
+    # Tell the splash envelope where the timeline really opens (gpu/renderer
+    # hard-codes t_start=0.0). Unconditional so a long-lived process never
+    # carries a previous render's offset.
+    set_intro_start_ms(-logo_preroll_ms)
+
+    # End-of-song layout: brief silent gap → results card. gameplay_end /
+    # results_start stay MAP-time (build_frame_state compares them against
+    # the remapped map clock); total_video_ms is VIDEO-domain, so it alone
+    # grows by the pre-roll.
     # SIBLING PARITY (Red, 2026-08-07): a failed/quit replay stops recording at
     # death and cuts straight to results — catch/taiko truncate the video at the
     # death point (taiko: fail_time_ms + 700) rather than playing the rest of the
@@ -423,7 +469,7 @@ async def build_render_plan(
         gameplay_end_ms = min(gameplay_end_ms,
                               int(last_play_ms + _FAIL_TAIL_MS))
     results_start_ms = gameplay_end_ms + RESULTS_GAP_MS
-    total_video_ms = results_start_ms + RESULTS_DURATION_MS
+    total_video_ms = results_start_ms + RESULTS_DURATION_MS + logo_preroll_ms
     total_frames = math.ceil(total_video_ms / 1000 * options.fps)
 
     # Hitsound track — a temp WAV pre-mixed with one sample at every non-miss
@@ -491,7 +537,13 @@ async def build_render_plan(
         audio_rate=mod_res.audio_rate,
         audio_pitch=mod_res.audio_pitch,
         prenormalized_audio_path=prenormalized_audio,
-        audio_lead_in_ms=effective_lead_in_ms,
+        # adelay = the AudioLeadIn intro silence PLUS the show_logo pre-roll:
+        # the video now opens logo_preroll_ms before map t=0, so the song AND
+        # the hitsound WAV (both adelay'd by this value in encode.py) start
+        # exactly when the remapped clock crosses map t=0 — audio sync is
+        # unchanged, just translated with the video. 0 pre-roll => identical
+        # command line to before.
+        audio_lead_in_ms=effective_lead_in_ms + logo_preroll_ms,
         video_bitrate=options.video_bitrate,
         audio_bitrate=options.audio_bitrate,
         output_path=output_path,
@@ -504,7 +556,7 @@ async def build_render_plan(
 
     bg_filename = modded.background_filename
     bg_path = (beatmap_dir / bg_filename) if bg_filename else None
-    first_note_ms = min((n.time_ms for n in modded.notes), default=0)
+    # first_note_ms computed above (pre-roll needs it before the ffmpeg cmd).
     banner_text = (
         f"{modded.artist} - {modded.title} [{modded.difficulty}]   "
         f"{replay.player_name}"
@@ -545,6 +597,7 @@ async def build_render_plan(
         n_scoring=_n_scoring, max_combo_portion=_max_combo_portion,
         mod_mult=_mod_mult, mania_mw=_mania_mw,
         score_scale=_score_scale, score_final=_score_final,
+        logo_preroll_ms=logo_preroll_ms,
     )
 
 
@@ -557,6 +610,18 @@ def build_frame_state(
     """Compute the full per-frame SceneState. Pure given (plan, t_ms,
     smoothing carriers). Returns (scene_full, score_smoothed, accuracy_smoothed)
     so the caller threads the two single-pole low-pass accumulators forward."""
+    # show_logo pre-roll remap — both frame loops (render_mania below and the
+    # compositor path) hand in the 0-based video clock frame_n*1000/fps;
+    # subtracting the pre-roll converts it to MAP time (the axis every plan
+    # quantity — notes, judgments, kiai, gameplay_end, results_start — lives
+    # on), so the first logo_preroll_ms of video sits at negative map time:
+    # no notes, no judgments, audio not yet started (it is adelay'd by the
+    # same amount in build_render_plan). This is catch's negative start_ms
+    # (catch render/render.py:458-459) expressed as a clock translation
+    # instead of a loop-start change. logo_preroll_ms is 0 unless show_logo
+    # opened the timeline early, so the subtraction is exact-identity for
+    # every existing render.
+    t_ms = t_ms - plan.logo_preroll_ms
     replay = plan.replay
     key_count = plan.key_count
     gameplay_end_ms = plan.gameplay_end_ms
@@ -1006,6 +1071,9 @@ async def render_mania(
                     raise RenderTimeoutError(
                         f"render exceeded {options.timeout_seconds}s"
                     )
+                # 0-based VIDEO clock; build_frame_state subtracts
+                # plan.logo_preroll_ms to land on the map-time axis (the
+                # show_logo pre-roll, 0 for every other render).
                 t_ms = int(frame_n * 1000 / options.fps)
                 scene_full, score_smoothed, accuracy_smoothed = build_frame_state(
                     plan, t_ms, score_smoothed, accuracy_smoothed,
