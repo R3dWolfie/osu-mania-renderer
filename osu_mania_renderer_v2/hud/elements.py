@@ -8,6 +8,7 @@ is stripped to no-ops; the legacy render_mania keeps the R3D look as fallback.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.argon import is_argon_default
+from osu_mania_renderer_v2.gpu.text import pill_to_texture
 from osu_mania_renderer_v2.render.element_common import (
     is_keycount_acronym,
     mod_fill_colour,
@@ -498,6 +499,46 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
         )
 
 
+# --- lazer ArgonKeyCounterDisplay geometry, in LAZER px (768-high UI space,
+# scale_factor 1.5 already applied). Constants verbatim from STD's
+# render/hud.py:255-261 (ARGON_KEY_* / ARGON_KEYS_POS) and :236 (BLUE0).
+_AKEY_W, _AKEY_H = 52.5, 45.0        # cell 35×30 × scale_factor 1.5
+_AKEY_SPACING = 2.0
+_AKEY_LINE_H = 4.5                   # indicator line_height 3 × 1.5
+_AKEY_PRESS_OFFSET = 4.0             # indicator drop on press (px)
+_AKEY_NAME_H = 15.0                  # name 10 × 1.5
+_AKEY_COUNT_H = 21.0                 # count 14 × 1.5
+_AKEY_POS = (-60.0, -66.0)           # BottomRight (hitError.Width+10, 66)
+_BLUE0 = (0x99 / 255.0, 0xDD / 255.0, 0xFF / 255.0)   # OsuColour.Blue0
+
+
+# osu!(lazer) default mania stage key bindings — the labels the in-game key
+# counter shows (Red, 2026-08-07: "like the game", not generic B1..Bn).
+# lazer's VariantMappingGenerator fills columns from the CENTRE outward:
+#   LeftKeys = A S D F   (nearest-centre last),  RightKeys = J K L ;,
+#   SpecialKey = Space in the middle when the column count is odd.
+# → 4K = D F J K, 5K = D F Space J K, 7K = S D F Space J K L, etc.
+_MANIA_LEFT_KEYS = ("A", "S", "D", "F")
+_MANIA_RIGHT_KEYS = ("J", "K", "L", ";")
+
+
+def mania_key_labels(n: int) -> list[str]:
+    """Per-column key labels for an `n`-key mania stage, matching lazer's
+    default bindings. Falls back to generic B1..Bn only past the built-in
+    key pool (10K+ single-stage), which the default generator doesn't cover."""
+    if n <= 0:
+        return []
+    half = n // 2
+    if half > len(_MANIA_LEFT_KEYS):        # 10K+ — outside the default pool
+        return [f"B{i + 1}" for i in range(n)]
+    left = list(_MANIA_LEFT_KEYS[len(_MANIA_LEFT_KEYS) - half:])
+    right = list(_MANIA_RIGHT_KEYS[:half])
+    labels = left
+    if n % 2 == 1:                          # odd → Space in the centre column
+        labels = labels + ["Space"]
+    return labels + right
+
+
 # Easings (osu!framework Easing.*) — STD render/hud.py:483-499 verbatim.
 def _clamp01(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
@@ -513,14 +554,108 @@ def _ease_out_quint(p: float) -> float:
     return 1.0 - (1.0 - p) ** 5
 
 
-# NOTE (Red, 2026-08-07): mania has NO bottom-right key counter. osu!mania
-# shows key presses via the PER-COLUMN key area at the bottom of the stage
-# (mania-key1/2/S + pressed …D, or the Argon ArgonKeyArea) — a skinnable,
-# per-column element already drawn by render/notes.py (receptors_under/over)
-# for every skin. std/catch/taiko use the corner ArgonKeyCounterDisplay only
-# because they have no columns; porting it onto mania was wrong (it looked
-# unlike the game and ignored non-Argon skins), so the `key_counter` element
-# is removed from the pipeline. The per-column key area is the real display.
+def key_counter(*, element, skin, assets, variables, ctx) -> None:
+    """lazer's ArgonKeyCounterDisplay, bottom-right — 1:1 port of STD's
+    _argon_key_overlay (std render/hud.py:2186-2240): one 52.5×45 lazer-px
+    cell per column (spacing 2), row anchored BottomRight at (−60, −66)
+    just above the song-progress strip. Per cell: the white indicator pill
+    drops 4 px on press (60 ms OutQuint, alpha 0.5→1 over 10 ms) and
+    returns over 250 ms OutQuart (alpha back to 0.5); the 'B{n}' name
+    (lazer's generic KeyCounterActionTrigger label) flashes white while
+    held and decays to Blue0 over 200 ms OutQuart; the comma-grouped press
+    count sits below, bottom-anchored. Name + count are LEFT-aligned at
+    x+3. Press/release edge ages come from scene.key_press_age_ms /
+    key_release_age_ms (rising/falling edges of the replay's per-column
+    key events — the same sourcing as STD's KeySeries.last_press_at /
+    last_release_at, std render/hud.py:719-774)."""
+    if not getattr(ctx.options, "show_key_counter", True):
+        return
+    fr = ctx.fr
+    s = ctx.scene
+    counts = getattr(s, "key_press_counts", ()) or ()
+    if not counts:
+        return
+    rc = fr.rc
+    lk = rc.height / 768.0             # lazer px → device px (std hud.py:184-185)
+    ui_w_l = rc.width / lk             # screen width in lazer px
+    n = len(counts)
+    press_ages = getattr(s, "key_press_age_ms", ()) or ()
+    release_ages = getattr(s, "key_release_age_ms", ()) or ()
+    # lazer default per-column key labels (D F J K … / Space centre) — the
+    # in-game key counter, not generic B1..Bn.
+    key_labels = mania_key_labels(n)
+
+    total_w = n * _AKEY_W + (n - 1) * _AKEY_SPACING
+    right = ui_w_l + _AKEY_POS[0]
+    bottom = 768.0 + _AKEY_POS[1]
+    x0 = right - total_w
+    top = bottom - _AKEY_H
+    ind_h = _AKEY_LINE_H
+
+    # White indicator capsule — size-constant per render, baked once.
+    pill_w_px = max(2, int(round(_AKEY_W * lk)))
+    pill_h_px = max(2, int(round(ind_h * lk)))
+    pill = getattr(fr, "_key_pill_tex", None)
+    if pill is None or pill[1] != pill_w_px or pill[2] != pill_h_px:
+        pill = pill_to_texture(rc.ctx, pill_w_px, pill_h_px)
+        fr._key_pill_tex = pill
+    ptex = pill[0]
+
+    # _cached_text sizes are 1080-reference (it rescales by height/1080);
+    # lazer px → 1080-ref is ×(1080/768) = 1.40625.
+    name_size = round(_AKEY_NAME_H * 1080.0 / 768.0)     # 15 → 21
+    count_size = round(_AKEY_COUNT_H * 1080.0 / 768.0)   # 21 → 30
+
+    for c in range(n):
+        cx0 = x0 + c * (_AKEY_W + _AKEY_SPACING)
+        pressed = c < len(s.keys_held) and s.keys_held[c]
+        press_age = press_ages[c] if c < len(press_ages) else 99999
+        release_age = release_ages[c] if c < len(release_ages) else 99999
+        # Indicator pill y-offset + alpha, name whiteness — STD's tween
+        # expressions verbatim (std render/hud.py:2212-2224). The 99999
+        # "never" sentinel lands on the settled state through the clamped
+        # easings, matching STD's age=inf branch.
+        if pressed:
+            dy = _AKEY_PRESS_OFFSET * _ease_out_quint(press_age / 60.0)
+            ind_alpha = 0.5 + 0.5 * _clamp01(press_age / 10.0)
+            name_white = _clamp01(press_age / 10.0)
+        else:
+            p = _ease_out_quart(release_age / 250.0)
+            dy = _AKEY_PRESS_OFFSET * (1.0 - p)
+            ind_alpha = 1.0 - 0.5 * p
+            name_white = 1.0 - _ease_out_quart(release_age / 200.0)
+        fr._draw_external_texture(
+            ptex, x=int(round(cx0 * lk)),
+            y=int(round(rc.height - (top + dy) * lk - pill_h_px)),
+            w=pill_w_px, h=pill_h_px, alpha=ind_alpha)
+        # Name: Blue0 → white lerp by name_white (quantized to 1/32 steps
+        # so the text-texture cache isn't churned every frame; visually
+        # identical to the continuous lerp).
+        name_white = round(name_white * 32.0) / 32.0
+        name_col = tuple(
+            int(round((_BLUE0[i] + (1.0 - _BLUE0[i]) * name_white) * 255))
+            for i in range(3))
+        x_px = int(round((cx0 + 3.0) * lk))
+        pad_top = ind_h + _AKEY_PRESS_OFFSET
+        # text_to_texture pads 4 px of transparent border around the ink;
+        # +4 / −4 below anchor the INK edge, not the texture edge.
+        label = key_labels[c] if c < len(key_labels) else f"B{c + 1}"
+        # Single-glyph binds (D/F/J/K/;) use the full name size; the wide
+        # "Space" centre label is scaled down so it stays inside its cell.
+        lbl_size = name_size if len(label) <= 2 else max(
+            10, int(round(name_size * 2.0 / len(label))))
+        ntex, nw, nh = fr._cached_text(label, lbl_size, (*name_col, 255))
+        name_top_px = (top + pad_top + 2.0) * lk
+        fr._draw_external_texture(
+            ntex, x=x_px, y=int(round(rc.height - name_top_px - nh + 4)),
+            w=nw, h=nh, alpha=0.95)
+        # Count: white, comma-grouped, ink bottom-anchored at bottom−1.
+        ctex, cw, ch = fr._cached_text(
+            f"{counts[c]:,}", count_size, (255, 255, 255, 255))
+        count_bottom_px = (bottom - 1.0) * lk
+        fr._draw_external_texture(
+            ctex, x=x_px, y=int(round(rc.height - count_bottom_px - 4)),
+            w=cw, h=ch, alpha=0.95)
 
 
 def top_chrome(*, element, skin, assets, variables, ctx) -> None:
