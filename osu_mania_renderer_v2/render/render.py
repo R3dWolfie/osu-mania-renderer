@@ -1,44 +1,36 @@
-"""The public render_mania orchestrator: parse → mod → render → encode.
+"""Shared render-plan and per-frame gameplay-state generation.
 
 The per-render setup (parse/mods/judgments/timelines/encoder/ffmpeg) and the
-per-frame gameplay-state computation are extracted into `build_render_plan`
-and `build_frame_state` so an alternative draw path (the wiki-driven renderer)
-can reuse identical gameplay semantics — the only thing that differs between
-paths is HOW each frame is drawn.
+per-frame gameplay-state computation live in ``build_render_plan`` and
+``build_frame_state``. Frame composition is owned by ``render.compositor``.
+The compatibility-shaped ``render_mania`` name at the bottom of this module
+forwards there and contains no drawing loop.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import math
 import os
-import time as _t
+import pathlib
 from bisect import bisect_right as _br
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace as _dc_replace
+from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
-import pathlib
 from typing import Any
 
 from osu_mania_renderer_v2.beatmap.beatmap import build_sv_distance_table, parse_beatmap
-from osu_mania_renderer_v2.render import loudnorm_cache
-from osu_mania_renderer_v2.render.encode import FfmpegPipe, build_ffmpeg_cmd, probe_encoder
-from osu_mania_renderer_v2.errors import (
-    BeatmapParseError,
-    MissingAudioError,
-    RenderTimeoutError,
-)
-from osu_mania_renderer_v2.gpu.context import HeadlessGl
-from osu_mania_renderer_v2.gpu.readback import FrameReader
-from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
 from osu_mania_renderer_v2.beatmap.judgments import compute_judgments, reconcile_to_counts
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
-from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
-from osu_mania_renderer_v2.render.logo import set_intro_start_ms
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
+from osu_mania_renderer_v2.errors import BeatmapParseError, MissingAudioError
+from osu_mania_renderer_v2.render import loudnorm_cache
+from osu_mania_renderer_v2.render.encode import build_ffmpeg_cmd, probe_encoder
+from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
+from osu_mania_renderer_v2.render.logo import set_intro_start_ms
 from osu_mania_renderer_v2.render.scene import JudgmentPopup, snapshot
 
 log = logging.getLogger("osu_mania_renderer_v2")
@@ -122,10 +114,9 @@ _DEFAULT_SKIN_DIRS = (
 class RenderPlan:
     """Everything computed once per render, before the per-frame loop.
 
-    Shared by `render_mania` (legacy draw) and the wiki-driven renderer so
-    both compute identical gameplay numbers. Holds pure data only — no GL
-    context, ffmpeg pipe, or other live resource (those are owned by the
-    loop function so their lifecycle stays in one try/finally)."""
+    Consumed by the canonical compositor to compute identical gameplay
+    numbers for every frame. Holds pure data only — no GL context, ffmpeg
+    pipe, or other live resource."""
 
     # inputs / context
     options: RenderOptions
@@ -379,7 +370,8 @@ async def build_render_plan(
     if _osr_score > 0 and _gv < 30_000_000 and not (_mods & (1 << 29)):
         try:
             from osu_mania_renderer_v2.beatmap.score_fidelity import (
-                mania_lazer_accuracy, stable_to_standardised,
+                mania_lazer_accuracy,
+                stable_to_standardised,
             )
             _lz_acc = mania_lazer_accuracy(
                 replay.count_geki, replay.count_300, replay.count_katu,
@@ -610,8 +602,8 @@ def build_frame_state(
     """Compute the full per-frame SceneState. Pure given (plan, t_ms,
     smoothing carriers). Returns (scene_full, score_smoothed, accuracy_smoothed)
     so the caller threads the two single-pole low-pass accumulators forward."""
-    # show_logo pre-roll remap — both frame loops (render_mania below and the
-    # compositor path) hand in the 0-based video clock frame_n*1000/fps;
+    # show_logo pre-roll remap — the compositor hands in the 0-based video
+    # clock frame_n*1000/fps;
     # subtracting the pre-roll converts it to MAP time (the axis every plan
     # quantity — notes, judgments, kiai, gameplay_end, results_start — lives
     # on), so the first logo_preroll_ms of video sits at negative map time:
@@ -990,136 +982,20 @@ async def render_mania(
     allow_converted: bool = False,
     convert_to_keys: int = 4,
 ) -> None:
-    log.info("render_start", extra={"osr": str(osr_path), "out": str(output_path)})
+    """Compatibility import path forwarding to the canonical compositor."""
+    from osu_mania_renderer_v2.render.compositor import render_mania as _render
 
-    plan = await build_render_plan(
-        osr_path=osr_path, beatmap_dir=beatmap_dir, output_path=output_path,
-        options=options, skin_dir=skin_dir, allow_converted=allow_converted,
+    await _render(
+        osr_path=osr_path,
+        beatmap_dir=beatmap_dir,
+        output_path=output_path,
+        options=options,
+        progress_callback=progress_callback,
+        log_path=log_path,
+        skin_dir=skin_dir,
+        allow_converted=allow_converted,
         convert_to_keys=convert_to_keys,
     )
-
-    pipe = FfmpegPipe(plan.ffmpeg_cmd, fifo_path=plan.fifo_path)
-    await pipe.start()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + options.timeout_seconds
-
-    try:
-        with HeadlessGl(width=options.resolution[0], height=options.resolution[1]) as gl:
-            rc = RenderContext(
-                ctx=gl.ctx, fbo=gl.fbo,
-                width=options.resolution[0], height=options.resolution[1],
-                key_count=plan.key_count,
-            )
-            fr = FrameRenderer(
-                rc, options, skin_dir=skin_dir,
-                beatmap_dir=beatmap_dir,
-                first_note_ms=plan.first_note_ms,
-                # bg dim envelope inputs (dim.py): modded-time note starts +
-                # break periods, and the scroll-speed-scaled approach window.
-                note_starts=plan.note_times,
-                breaks=getattr(plan.modded, "breaks", ()),
-                approach_ms=plan.effective_approach_ms,
-                # break overlay clock: real/video time -> map time
-                rate=plan.audio_rate,
-            )
-            if plan.bg_path and plan.bg_path.exists():
-                fr.set_background(plan.bg_path)
-            fr.set_banner_text(plan.banner_text)
-            # LAZER RESULTS SCREEN data (hud/lazer_results.py — the ported
-            # osu!(lazer) ranking screen, parity with std/catch/taiko).
-            # Fail-soft: any problem leaves the data unset and the renderer
-            # stays on the legacy argon card — loudly.
-            try:
-                from osu_mania_renderer_v2.hud.lazer_results import (
-                    results_data_from_plan,
-                )
-                results_data = results_data_from_plan(plan)
-                # results-screen map leaderboard (parity with std/catch —
-                # catch render/render.py:580-588): build + bake ONCE, up
-                # front, so the outro just composites the pre-baked cards
-                # each frame. Fully fail-soft — any problem leaves the plain
-                # results screen (renders unchanged).
-                results_board = None
-                if (results_data is not None
-                        and options.show_result_screen
-                        and getattr(options, "show_leaderboard", True)):
-                    try:
-                        from osu_mania_renderer_v2.hud.lb_cards import (
-                            build_mania_board,
-                        )
-                        results_board = build_mania_board(
-                            options, plan.replay, plan.modded,
-                            getattr(plan.replay, "replay_md5", "") or "")
-                    except Exception:  # noqa: BLE001 — a board must never
-                        # break a render
-                        log.warning("leaderboard_skipped", exc_info=True)
-                fr.set_results_data(results_data, results_board)
-            except Exception:  # noqa: BLE001 — results data never kills a render
-                log.warning("lazer_results_data_failed", exc_info=True)
-            reader = FrameReader(gl.ctx, gl.fbo, components=3)
-
-            last_progress_t = 0.0
-            score_smoothed = 0.0
-            accuracy_smoothed = 100.0
-            # Per-phase accumulators (pre-draw Python / GPU draw / readback).
-            _phase_pre_draw_s = 0.0
-            _phase_draw_s = 0.0
-            _phase_read_write_s = 0.0
-            for frame_n in range(plan.total_frames):
-                _phase_t0 = _t.perf_counter()
-                if loop.time() > deadline:
-                    raise RenderTimeoutError(
-                        f"render exceeded {options.timeout_seconds}s"
-                    )
-                # 0-based VIDEO clock; build_frame_state subtracts
-                # plan.logo_preroll_ms to land on the map-time axis (the
-                # show_logo pre-roll, 0 for every other render).
-                t_ms = int(frame_n * 1000 / options.fps)
-                scene_full, score_smoothed, accuracy_smoothed = build_frame_state(
-                    plan, t_ms, score_smoothed, accuracy_smoothed,
-                )
-                _phase_pre_draw_s += _t.perf_counter() - _phase_t0
-                _phase_t1 = _t.perf_counter()
-                fr.draw(scene_full)
-                _phase_draw_s += _t.perf_counter() - _phase_t1
-                _phase_t2 = _t.perf_counter()
-                frame = reader.read()
-                await pipe.write_frame(frame)
-                _phase_read_write_s += _t.perf_counter() - _phase_t2
-
-                if progress_callback and (loop.time() - last_progress_t > 0.5):
-                    await progress_callback(frame_n / plan.total_frames)
-                    last_progress_t = loop.time()
-
-            # Flush any frames still in flight in the readback PBO ring.
-            for tail_frame in reader.drain():
-                await pipe.write_frame(tail_frame)
-            log.info(
-                "phase_timing pre_draw=%.2fs draw=%.2fs read_write=%.2fs frames=%d",
-                _phase_pre_draw_s, _phase_draw_s, _phase_read_write_s,
-                plan.total_frames,
-            )
-
-            if progress_callback:
-                await progress_callback(1.0)
-        await pipe.close(output_path)
-    except BaseException:
-        # Kill ffmpeg on any error
-        if pipe.proc and pipe.proc.returncode is None:
-            try:
-                pipe.proc.kill()
-            except ProcessLookupError:
-                pass
-        raise
-    finally:
-        # Drop the temp hitsound WAV regardless of success / failure.
-        if plan.hitsound_wav is not None:
-            try:
-                plan.hitsound_wav.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    log.info("render_done", extra={"out": str(output_path)})
 
 
 def _find_osu(beatmap_dir: Path, expected_md5: str) -> Path:

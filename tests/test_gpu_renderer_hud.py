@@ -9,7 +9,7 @@ from osu_mania_renderer_v2.render.scene import JudgmentPopup, SceneState
 
 
 @pytest.mark.slow
-def test_receptors_drawn_at_bottom():
+def test_receptors_drawn_at_bottom(compose_scene):
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
     W, H = 320, 240
@@ -21,13 +21,13 @@ def test_receptors_drawn_at_bottom():
             keys_held=(True, False, True, False),
             visual_mods=VisualMods(),
         )
-        fr.draw(scene)
+        compose_scene(fr, gl, scene)
         data = gl.fbo.read(components=3)
         assert max(data) > 50
 
 
 @pytest.mark.slow
-def test_judgment_popup_drawn():
+def test_judgment_popup_drawn(compose_scene):
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
     W, H = 320, 240
@@ -39,6 +39,6 @@ def test_judgment_popup_drawn():
             visual_mods=VisualMods(),
             active_judgments=(JudgmentPopup(column=2, judgment="300", age_ms=100),),
         )
-        fr.draw(scene)
+        compose_scene(fr, gl, scene)
         data = gl.fbo.read(components=3)
         assert max(data) > 50

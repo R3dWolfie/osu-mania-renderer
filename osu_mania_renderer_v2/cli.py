@@ -147,9 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def build_render_options(args) -> RenderOptions:
-    """Map parsed CLI args -> RenderOptions. SHARED by main() (monolith
-    path) and render/compositor.py::_cli (the prod wiki path) so the two
-    CLIs can never drift on which flags they honour."""
+    """Map parsed CLI args to the options shared by both CLI module names."""
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Build RenderOptions kwargs, only overriding fields where a flag was
     # given. RenderOptions defaults stay authoritative.

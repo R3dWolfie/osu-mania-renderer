@@ -3,7 +3,7 @@
 Health = the legacy scorebar (scorebar-bg/colour/marker, top-left) when the
 skin ships it, else the Argon procedural health capsule. Score/accuracy use
 the skin score font. R3D web-viewer chrome (title, side UR bars, vertical HP)
-is stripped to no-ops; the legacy render_mania keeps the R3D look as fallback.
+is stripped to no-ops in the canonical compositor.
 """
 from __future__ import annotations
 
@@ -81,9 +81,7 @@ def _scorebar_fill_colour(hp: float) -> tuple[float, float, float]:
     return (t, 0.0, 0.0)
 
 
-# --- R3D web-viewer chrome: not part of lazer. The wiki path reproduces
-# lazer exactly (per r3drenderer_lazer_fidelity), so these are no-ops here.
-# The legacy render_mania keeps the R3D look as the fallback renderer.
+# --- R3D web-viewer chrome: not part of lazer, so these are no-ops here.
 def hit_error_popups(*, element, skin, assets, variables, ctx) -> None:
     return  # lazer mania has no per-column hit-error number popups
 
@@ -187,13 +185,6 @@ def _argon_hit_error(ctx) -> None:
         ay = cy + int(max(-1.0, min(1.0, s.avg_hit_offset_ms / rng)) * half)
         fr._draw_sprite("column_bg", cx + int(13 * A), ay - int(3 * A),
                         int(6 * A), int(6 * A), (1, 1, 1, 0.95))
-
-
-def fail_overlay(*, element, skin, assets, variables, ctx) -> None:
-    # No-op: std/catch/taiko paint no "FAILED" wash. A failed/quit play is
-    # handled by truncating the video at the death point (build_render_plan),
-    # then the results card shows the death-point tally — sibling parity.
-    return
 
 
 def hp_bar(*, element, skin, assets, variables, ctx) -> None:

@@ -1,4 +1,4 @@
-"""Wiki-driven osu! renderer.
+"""Canonical element-registry compositor for the osu!mania renderer.
 
 Every visible pixel traces to one of: a user-skin asset, a default-skin
 asset, or a wiki-documented default value. Nothing else is allowed —
@@ -30,17 +30,15 @@ Wiki references that should drive the populated registries:
 
 from __future__ import annotations
 
-import argparse
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 
 from osu_mania_renderer_v2.skin.mania_skin import (  # skin provider + primitives
     MISSING,
-    ManiaSkin,
     RenderError,
-    SkinIni,
+    SkinIni,  # noqa: F401 — compatibility re-exported by wiki_renderer
     SkinPair,
 )
 
@@ -91,8 +89,8 @@ class ElementSpec:
 # drawn first (back layer), each later entry covers earlier ones.
 #
 # ELEMENTS maps each name in RENDER_ORDER to its spec. Both are empty
-# until the wiki is wired in — populate them via register_element() or
-# directly from wiki_elements/ modules.
+# until ``render.pipeline`` is imported — populate them via
+# ``register_element()``.
 
 RENDER_ORDER: list[str] = []
 
@@ -116,7 +114,7 @@ def _stub(
     variables: dict[str, Any],
     ctx: Any,
 ) -> None:
-    """Default render_fn until the wiki defines the real one. Prints what
+    """Default render_fn until the registry defines the real one. Prints what
     the pipeline resolved so you can verify the lookup chain end-to-end
     before any drawing exists."""
     asset_str = {k: (str(v) if v else None) for k, v in assets.items()}
@@ -129,7 +127,7 @@ def _stub(
 # ---- entry point -------------------------------------------------------
 
 
-def _resolve_element(skin: "SkinPair", name: str, key_count: int):
+def _resolve_element(skin: SkinPair, name: str, key_count: int):
     """Resolve one element's assets + variables once (cached for the run).
     Returns (spec, assets, variables) or (spec, None, None) if the element
     declares sprite assets and NONE resolve (wiki rule: drop the element).
@@ -140,7 +138,7 @@ def _resolve_element(skin: "SkinPair", name: str, key_count: int):
     if spec is None:
         raise RenderError(
             element=name, variable="<spec>",
-            searched=["wiki_renderer.ELEMENTS"],
+            searched=["render.compositor.ELEMENTS"],
             hint=f"add ElementSpec for '{name}' or remove it from RENDER_ORDER",
         )
     assets: dict[str, Path | None] = {
@@ -158,6 +156,31 @@ def _resolve_element(skin: "SkinPair", name: str, key_count: int):
     return spec, assets, variables
 
 
+def resolve_elements(skin: SkinPair, key_count: int) -> dict[str, tuple]:
+    """Resolve and cache the registered element inputs for one render."""
+    return {
+        name: _resolve_element(skin, name, key_count)
+        for name in RENDER_ORDER
+    }
+
+
+def compose_frame(ctx: Any, resolved: dict[str, tuple]) -> None:
+    """Compose one frame in the canonical ``RENDER_ORDER`` painter order."""
+    ctx.begin_frame()
+    for name in RENDER_ORDER:
+        spec, assets, variables = resolved[name]
+        if assets is None:  # skipped (no asset resolved anywhere)
+            continue
+        spec.render_fn(
+            element=name,
+            skin=ctx.skin,
+            assets=assets,
+            variables=variables,
+            ctx=ctx,
+        )
+    ctx.flush()
+
+
 async def render(
     *,
     osr_path: Path,
@@ -170,27 +193,27 @@ async def render(
     allow_converted: bool = False,
     convert_to_keys: int = 4,
 ) -> None:
-    """Wiki-driven render. Reuses the proven gameplay/setup core
-    (`build_render_plan` + `build_frame_state`) and the GPU engine
-    (`FrameRenderer`/`FrameReader`/`FfmpegPipe`); the ONLY difference from
-    `render_mania` is that each frame is composed by dispatching the
-    RENDER_ORDER element registry through a `FrameContext` instead of one
-    monolithic `FrameRenderer.draw()`."""
+    """Render through the canonical element registry.
+
+    Gameplay setup/state remains in ``build_render_plan`` and
+    ``build_frame_state``; this module exclusively owns frame composition.
+    """
     # Heavy GPU deps imported lazily so `import osu_mania_renderer_v2.render.pipeline`
     # (to populate registries) stays cheap.
     import asyncio
-    from osu_mania_renderer_v2.render.encode import FfmpegPipe
+
     from osu_mania_renderer_v2.errors import RenderTimeoutError
     from osu_mania_renderer_v2.gpu.context import HeadlessGl
     from osu_mania_renderer_v2.gpu.readback import FrameReader
     from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-    from osu_mania_renderer_v2.render.render import build_frame_state, build_render_plan
+    from osu_mania_renderer_v2.render.encode import FfmpegPipe
     from osu_mania_renderer_v2.render.frame_context import FrameContext
+    from osu_mania_renderer_v2.render.render import build_frame_state, build_render_plan
 
     if not RENDER_ORDER:
         raise RenderError(
             element="<pipeline>", variable="RENDER_ORDER",
-            searched=["wiki_renderer.RENDER_ORDER"],
+            searched=["render.compositor.RENDER_ORDER"],
             hint="import osu_mania_renderer_v2.render.pipeline to populate RENDER_ORDER",
         )
 
@@ -202,8 +225,7 @@ async def render(
     )
 
     # Resolve each element's assets + variables ONCE (cached for the run).
-    resolved = {name: _resolve_element(skin, name, plan.key_count)
-                for name in RENDER_ORDER}
+    resolved = resolve_elements(skin, plan.key_count)
 
     pipe = FfmpegPipe(plan.ffmpeg_cmd, fifo_path=plan.fifo_path)
     await pipe.start()
@@ -229,7 +251,6 @@ async def render(
             )
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
-            fr.set_banner_text(plan.banner_text)
             # LAZER RESULTS SCREEN data (hud/lazer_results.py — the ported
             # osu!(lazer) ranking screen; the results_overlay element draws
             # it via fr._draw_results_overlay). Fail-soft: unset data keeps
@@ -286,16 +307,7 @@ async def render(
                 fctx.scene = scene_full
                 fctx.t_ms = t_ms
                 fctx.frame_n = frame_n
-                fctx.begin_frame()
-                for name in RENDER_ORDER:
-                    spec, assets, variables = resolved[name]
-                    if assets is None:  # skipped (no asset resolved anywhere)
-                        continue
-                    spec.render_fn(
-                        element=name, skin=skin, assets=assets,
-                        variables=variables, ctx=fctx,
-                    )
-                fctx.flush()
+                compose_frame(fctx, resolved)
                 frame = reader.read()
                 await pipe.write_frame(frame)
                 if progress_callback and (loop.time() - last_progress_t > 0.5):
@@ -322,12 +334,62 @@ async def render(
                 pass
 
 
+async def render_mania(
+    *,
+    osr_path: Path,
+    beatmap_dir: Path,
+    output_path: Path,
+    options,
+    progress_callback=None,
+    log_path: Path | None = None,
+    skin_dir: Path | None = None,
+    allow_converted: bool = False,
+    convert_to_keys: int = 4,
+) -> None:
+    """Compatibility-shaped public API backed only by the compositor.
+
+    ``log_path`` remains accepted for ABI compatibility; the renderer's
+    existing structured logging configuration controls log destinations.
+    When no user skin is supplied, an empty temporary skin provides the same
+    successful fallback used by the worker compatibility CLI.
+    """
+    del log_path
+    import logging
+    import tempfile
+
+    import osu_mania_renderer_v2.render.pipeline  # noqa: F401 — populate registries
+
+    default_skin_dir = Path(__file__).resolve().parent.parent / "assets" / "default_skin"
+    log = logging.getLogger("osu_mania_renderer_v2")
+    log.info("render_start", extra={"osr": str(osr_path), "out": str(output_path)})
+
+    async def _run(selected_skin_dir: Path) -> None:
+        await render(
+            osr_path=osr_path,
+            beatmap_dir=beatmap_dir,
+            output_path=output_path,
+            options=options,
+            skin_dir=selected_skin_dir,
+            default_skin_dir=default_skin_dir,
+            progress_callback=progress_callback,
+            allow_converted=allow_converted,
+            convert_to_keys=convert_to_keys,
+        )
+
+    if skin_dir is not None:
+        await _run(skin_dir)
+    else:
+        with tempfile.TemporaryDirectory(prefix="argon-empty-") as empty_skin:
+            await _run(Path(empty_skin))
+    log.info("render_done", extra={"out": str(output_path)})
+
+
 def _cli() -> None:
     """Prod/worker CLI: `python -m osu_mania_renderer_v2.wiki_renderer OSR
     BEATMAP_DIR -o OUT --skin-dir DIR [--default-skin DIR] [flags]`.
 
     Reuses cli.py's FULL parser + ``build_render_options`` so this entrypoint
-    (what the bot/worker actually invokes) and the monolith CLI can never drift
+    (what the bot/worker actually invokes) and the package CLI can never drift
     on which flags they honour. Previously this had its own ~20-flag parser +
     ``parse_known_args``, silently dropping ~22 bot-sent flags (--watermark,
     --scroll-speed, volumes, every visibility toggle, --show-pp, ...), so users'
@@ -338,6 +400,7 @@ def _cli() -> None:
     import asyncio
     import logging
     import tempfile
+
     # Lazy import breaks the compositor <-> cli <-> __init__ module cycle.
     from osu_mania_renderer_v2.cli import _build_parser, build_render_options
 
