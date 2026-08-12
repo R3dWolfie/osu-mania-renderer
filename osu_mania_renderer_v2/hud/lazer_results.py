@@ -22,11 +22,9 @@ osu_catch_renderer/hud/lazer_results.py:86-224 constants/helpers,
     star-rating pill (ForStarDifficulty colour + procedural star) + diff
     name + "mapped by", the ACCURACY / MAX COMBO / PP row, the judgment
     rows, the "Played on <date>" footer.
-  * the two-stage timeline: panel fade (320ms), arc sweep (260ms delay,
-    1150ms OutCubic), grade punch (340ms, 1.42->1.0), score roll, the flank
-    cards' staggered slide-in; then the featured panel slides LEFT while
-    three stats panels unfold from the right (STAGE1_MS=2000, OPEN_MS=900
-    OutQuint, STAGGER_MS=160).
+  * the centred-card timeline: panel fade (320ms), arc sweep (260ms delay,
+    1150ms OutCubic), grade punch (340ms, 1.42->1.0), score roll, and the
+    flank cards' staggered slide-in.
 
 MANIA ADAPTATIONS (owner spec, honest + documented — the same deltas the
 taiko port made, mania data):
@@ -54,17 +52,11 @@ taiko port made, mania data):
   * the player name comes from replay.player_name (the .osr header), NOT
     parsed off the banner string (the old card split the banner on a
     triple-space — fragile; removed with the old card).
-  * stage-2 panels: PERFORMANCE (accuracy / combo-vs-map-max / pp bars),
-    COMBO (the judgment timeline's combo-over-time area chart with red
-    break ticks, falling back to the rosu mania strain curve, then to
-    "timeline unavailable"), and JUDGEMENTS (all six tiers as
-    share-of-judged bars, with the play's real UR + avg offset in the
-    footer — the old card's headline timing stats, kept).
   * the scene under the screen goes to BLACK (the results-fade opacity
     drives a full black wash, matching std/catch/taiko where the gameplay
     has already faded to black by results_start).
   * flank leaderboard cards: the catch draw code (board slide-in timing,
-    stage-2 tracking) is ported VERBATIM; the board itself is mania's
+    centred-card tracking) is ported VERBATIM; the board itself is mania's
     hud/lb_cards.py (build_mania_board — the ported catch/std render-DB +
     osu!-global board), built + baked once up front by render.py /
     compositor.py and handed in via gpu/renderer.py set_results_data.
@@ -107,13 +99,8 @@ LB_SLIDE_START_MS = 300.0      # flank-card entrance begins
 LB_SLIDE_STAGGER_MS = 80.0     # per-rank stagger (outer cards arrive later)
 LB_SLIDE_MS = 460.0            # per-card slide-in duration (OutQuint)
 LB_SLIDE_OFFSET = 96.0         # virtual px each card travels inward
-# stage 2 (std lazer_results values): the featured panel slides LEFT while
-# the stats panels unfold from the right, staggered
-STAGE1_MS = 2000.0             # panel settles + holds until here, then opens
-OPEN_MS = 900.0                # panel slide + stats unfold (OutQuint)
-STAGGER_MS = 160.0             # per-stats-panel unfold stagger
 SETTLE_MS = 3800.0             # everything at rest → the frame is cached
-                               # (std MIN_TOTAL_MS; last unfold ends ~3340)
+                               # (kept to preserve the established hold timing)
 
 # featured panel geometry (virtual px) — catch lazer_results.py:106-111
 PANEL_W = 560.0
@@ -548,7 +535,8 @@ def bake_avatar(px: int, name: str, avatar_bytes: bytes | None = None
     try:
         x0, y0, x1, y1 = font.getbbox(ini)
     except AttributeError:
-        x1, y1 = font.getsize(ini); x0 = y0 = 0     # type: ignore
+        x1, y1 = font.getsize(ini)
+        x0 = y0 = 0  # type: ignore
     d.text(((px - (x1 - x0)) / 2 - x0, (px - (y1 - y0)) / 2 - y0), ini,
            font=font, fill=(255, 255, 255, 240))
     return img
@@ -565,7 +553,8 @@ def bake_grade_letter(text: str, px: int, fill, glow, loader=_font_body,
     try:
         x0, y0, x1, y1 = font.getbbox(text)
     except AttributeError:
-        x1, y1 = font.getsize(text); x0 = y0 = 0     # type: ignore
+        x1, y1 = font.getsize(text)
+        x0 = y0 = 0  # type: ignore
     tw = max(x1 - x0, 1)
     th = max(y1 - y0, 1)
     pad = max(int(px * 0.42), 8)
@@ -576,7 +565,8 @@ def bake_grade_letter(text: str, px: int, fill, glow, loader=_font_body,
     try:
         bx0, by0, bx1, by1 = fb.getbbox(text)
     except AttributeError:
-        bx1, by1 = fb.getsize(text); bx0 = by0 = 0   # type: ignore
+        bx1, by1 = fb.getsize(text)
+        bx0 = by0 = 0  # type: ignore
     btw = max(bx1 - bx0, 1)
     bth = max(by1 - by0, 1)
     padb = pad * ss
@@ -704,7 +694,8 @@ def _badge_pill(img, cx, cy, S, grade) -> None:
     try:
         x0, y0, x1, y1 = font.getbbox(label)
     except AttributeError:
-        x1, y1 = font.getsize(label); x0 = y0 = 0    # type: ignore
+        x1, y1 = font.getsize(label)
+        x0 = y0 = 0  # type: ignore
     d.text((cx - (x1 - x0) / 2 - x0, cy - (y1 - y0) / 2 - y0), label,
            font=font, fill=(255, 255, 255, 245))
 
@@ -772,7 +763,8 @@ def bake_star_pill(stars: float | None, k: float) -> Image.Image:
     try:
         x0, y0, x1, y1 = font.getbbox(txt)
     except AttributeError:
-        x1, y1 = font.getsize(txt); x0 = y0 = 0     # type: ignore
+        x1, y1 = font.getsize(txt)
+        x0 = y0 = 0  # type: ignore
     tw, th = x1 - x0, y1 - y0
     star_sz = int(fpx * 0.92)
     padx = int(fpx * 0.5)
@@ -786,7 +778,8 @@ def bake_star_pill(stars: float | None, k: float) -> Image.Image:
     try:
         bx0, by0, bx1, by1 = fb.getbbox(txt)
     except AttributeError:
-        bx1, by1 = fb.getsize(txt); bx0 = by0 = 0   # type: ignore
+        bx1, by1 = fb.getsize(txt)
+        bx0 = by0 = 0  # type: ignore
     twb, thb = bx1 - bx0, by1 - by0
     star_szb = star_sz * ss
     padxb, padyb, gapb = padx * ss, pady * ss, gap * ss
@@ -818,7 +811,8 @@ def bake_mod_pill(text: str, color, k: float) -> Image.Image:
     try:
         bx0, by0, bx1, by1 = fb.getbbox(text)
     except AttributeError:
-        bx1, by1 = fb.getsize(text); bx0 = by0 = 0    # type: ignore
+        bx1, by1 = fb.getsize(text)
+        bx0 = by0 = 0  # type: ignore
     twb, thb = bx1 - bx0, by1 - by0
     padxb = padx * ss
     Wb = twb + 2 * padxb
@@ -831,56 +825,6 @@ def bake_mod_pill(text: str, color, k: float) -> Image.Image:
     ty = (Hb - thb) // 2 - by0
     dd.text((padxb - bx0, ty), text, font=fb, fill=(255, 255, 255, 255))
     return img.resize((W, H), Image.LANCZOS)
-
-
-def _bake_area_chart(values: list, w: int, h: int,
-                     tick_fracs: list[float] | None = None) -> Image.Image:
-    """A filled area chart of `values` (left→right) for the stage-2 COMBO /
-    DIFFICULTY panel (catch :773-821, verbatim): the area under the curve
-    wears the results screen's cyan→green accent gradient (the accuracy
-    arc's), a brighter line rides the top, a dim baseline sits underneath,
-    and optional red ticks mark combo breaks at the given x fractions.
-    Supersampled 2× then LANCZOS-downscaled. Returns a PIL RGBA image."""
-    w = max(int(w), 32)
-    h = max(int(h), 24)
-    ss = 2
-    W, H = w * ss, h * ss
-    vals = [max(float(v), 0.0) for v in values] or [0.0]
-    # peak-preserving resample so short combo spikes / strain peaks survive
-    cols = min(len(vals), max(w // 3, 60))
-    step = len(vals) / cols
-    res = [max(vals[int(i * step): max(int((i + 1) * step),
-                                       int(i * step) + 1)] or [0.0])
-           for i in range(cols)]
-    peak = max(res) or 1.0
-    inset = max(int(H * 0.04), 2)              # headroom above the peak
-    base_y = H - max(int(2 * ss), 2)           # baseline (bottom)
-    span_h = base_y - inset
-    pts = [(i * (W - 1) / max(cols - 1, 1),
-            base_y - span_h * (v / peak)) for i, v in enumerate(res)]
-    # gradient-filled area under the curve
-    mask = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(mask).polygon(
-        [(0, base_y)] + pts + [(W - 1, base_y)], fill=255)
-    ys = np.linspace(0.0, 1.0, H).reshape(H, 1, 1)
-    grad = (np.array(ARC_GRAD_TOP) + (np.array(ARC_GRAD_BOT)
-                                      - np.array(ARC_GRAD_TOP)) * ys)
-    rgb = np.clip(np.round(np.repeat(grad, W, axis=1) * 255), 0,
-                  255).astype("u1")
-    alpha = (np.asarray(mask, dtype="f4") * (0.62 / 255.0) * 255) \
-        .astype("u1")
-    img = Image.fromarray(np.dstack([rgb, alpha]), "RGBA")
-    d = ImageDraw.Draw(img)
-    # dim baseline + the brighter curve line on top
-    d.line([(0, base_y), (W - 1, base_y)], fill=(255, 255, 255, 90),
-           width=max(ss, 1))
-    d.line(pts, fill=(232, 255, 245, 235), width=2 * ss, joint="curve")
-    # red combo-break ticks
-    for f in tick_fracs or []:
-        x = _clamp01(f) * (W - 1)
-        d.line([(x, inset), (x, base_y)], fill=(255, 90, 90, 150),
-               width=max(ss, 1))
-    return img.resize((w, h), Image.LANCZOS)
 
 
 # --- data plumbing -------------------------------------------------------------------
@@ -898,35 +842,15 @@ class ManiaResultsData:
     pp: float                            # plan.player_pp (--pp already applied)
     max_pp: float                        # plan.max_pp; <=0 hides the PP cells
     results_start_ms: int                # plan.results_start_ms (drives age_ms)
-    combo_values: tuple[int, ...]        # combo after each judgment, press order
-    map_max_combo: int                   # total judgment events (combo ceiling)
-    ur: float                            # final unstable rate (10·σ of offsets)
-    avg_offset_ms: float                 # final mean signed hit offset
     featured_avatar_png: str | None = None   # options.featured_avatar_png
 
 
 def results_data_from_plan(plan) -> ManiaResultsData | None:
     """Snapshot a RenderPlan into ManiaResultsData (called once per render by
-    render.py / compositor.py, right after set_banner_text). The combo series
-    folds plan.judgment_timeline with EXACTLY build_frame_state's combo rule
-    (miss → 0, anything else +1 — render.py) so the stage-2 COMBO chart is
-    the curve the gameplay HUD showed; UR/avg use render.py's own formula
-    over the full offset list. Fail-soft: any problem returns None and the
-    renderer stays on the legacy argon card (loudly, at the call site)."""
+    compositor.py, right after set_banner_text). Fail-soft: any problem
+    returns None and the renderer stays on the legacy argon card (loudly, at
+    the call site)."""
     try:
-        combo_vals: list[int] = []
-        c = 0
-        for _eff_t, j in plan.judgment_timeline:
-            c = 0 if j.judgment == "miss" else c + 1
-            combo_vals.append(c)
-        offs = [j.hit_offset_ms for j in plan.judgment_events
-                if j.hit_offset_ms is not None]
-        if offs:
-            avg = sum(offs) / len(offs)
-            var = sum((x - avg) ** 2 for x in offs) / len(offs)
-            ur = 10.0 * (var ** 0.5)
-        else:
-            avg, ur = 0.0, 0.0
         score = (plan.score_final if plan.score_final is not None
                  else int(getattr(plan.replay, "score", 0) or 0))
         return ManiaResultsData(
@@ -937,10 +861,6 @@ def results_data_from_plan(plan) -> ManiaResultsData | None:
             pp=float(plan.player_pp or 0.0),
             max_pp=float(plan.max_pp or 0.0),
             results_start_ms=int(plan.results_start_ms),
-            combo_values=tuple(combo_vals),
-            map_max_combo=len(combo_vals),
-            ur=float(ur),
-            avg_offset_ms=float(avg),
             featured_avatar_png=getattr(plan.options, "featured_avatar_png",
                                         None),
         )
@@ -964,8 +884,8 @@ def _paste(base: Image.Image, img: Image.Image, cx: float, cy: float,
 # --- the screen ----------------------------------------------------------------------
 
 class ManiaLazerResults:
-    """Bakes the lazer ranking screen once, animates the two-stage reveal per
-    frame, then caches the settled frame (catch lazer_results.py:933-1583,
+    """Bakes the lazer ranking screen once, animates the centred-card reveal
+    per frame, then caches the settled frame (catch lazer_results.py:933-1583,
     CatchLazerResults — adapted from catch's CPU rgb-array compositor to a
     full-frame RGBA overlay layer the GL renderer uploads; see module
     docstring)."""
@@ -1042,15 +962,6 @@ class ManiaLazerResults:
         except OSError:
             self._avatar_bytes = None
 
-        # --- stage-2 source data (real mania data; never faked) -------------
-        # combo-over-time from the judgment timeline (the running combo the
-        # HUD showed) + the play's final UR/avg offset for the JUDGEMENTS
-        # footer. Fail-soft: an empty series → the COMBO panel falls back to
-        # "timeline unavailable" at bake time.
-        self._combo_values = list(data.combo_values)
-        self._map_max_combo = int(data.map_max_combo)
-        self._ur = float(data.ur)
-        self._avg_offset = float(data.avg_offset_ms)
         self._bake_static()
 
     # -- baking ------------------------------------------------------------------
@@ -1157,16 +1068,6 @@ class ManiaLazerResults:
             ts = datetime.now()
         self.date_img = bake_text(f"Played on {ts.strftime('%d %b %Y %H:%M')}",
                                   int(18 * k), (0.6, 0.63, 0.72))
-        # SIBLING PARITY (Red, 2026-08-07): std / catch / taiko results screens
-        # are a single CENTRED card (+ catch's optional rank banner & right
-        # leaderboard flank) with NO extra graph panels. Mania's old two-stage
-        # design (card slides left + PERFORMANCE/COMBO/JUDGEMENTS panels unfold
-        # on the right) was the one visual divergence from the siblings, so it
-        # is disabled: _stage2 stays False, the card holds centred at cx_px, and
-        # the board (when present) draws as the right flank exactly like catch.
-        # The _bake_stage2 / _draw_stats_panels machinery is retained but dead.
-        self._stage2 = False
-
     def _grid_cell(self, label, value, color):
         # std's STAT_LABEL_VPX=15 / STAT_VALUE_VPX=28 (std :122-123) — the
         # three-grid-row sizes; catch's 16/32 fits only its two rows.
@@ -1177,120 +1078,6 @@ class ManiaLazerResults:
         self._score_img = bake_text(f"{value:,}", int(64 * self.k), (1, 1, 1),
                                     loader=_font_score)
         self._score_val = value
-
-    # -- stage-2 bake ------------------------------------------------------------
-
-    def _bake_stage2(self) -> None:
-        """Stage-2 geometry + content (catch :1124-1243 — std's exact layout,
-        mania's real data).
-
-        std geometry: the panel slides from the screen centre to left_cx =
-        PANEL_W/2 + 70; the three stats panels live at STATS_X0 = left_cx +
-        PANEL_W/2 + 40, filling the rest of the width minus a 64-virtual-px
-        right margin, each (PANEL_H − 2·24)/3 tall with 24 vpx gaps. Content
-        is baked ONCE here; only the panel squash + alpha animate per frame."""
-        k = self.k
-        self.uw = self.W / k                       # virtual width
-        self.center_cx_v = self.uw / 2.0
-        self.left_cx_v = PANEL_W / 2.0 + 70.0
-        self.STATS_X0 = self.left_cx_v + PANEL_W / 2.0 + 40.0
-        self.STATS_W = self.uw - self.STATS_X0 - 64.0
-        self.STATS_H = (PANEL_H - 2 * 24.0) / 3.0
-        if self.STATS_W < 200.0:      # too narrow (portrait render) → stage 1 only
-            return
-        self.stats_panel_img = bake_round_panel(
-            int(self.STATS_W * k), int(self.STATS_H * k), int(20 * k),
-            (0.11, 0.12, 0.16), (0.05, 0.05, 0.07), 0.93,
-            border=(0.28, 0.31, 0.38))
-        title_col = (0.8, 0.83, 0.92)
-        label_col = (0.85, 0.88, 0.95)
-        foot_col = (0.62, 0.66, 0.76)
-        geki, n300, katu, n100, n50, miss = self.counts
-        judged_total = geki + n300 + katu + n100 + n50 + miss
-
-        # --- panel 1: PERFORMANCE (acc / combo / pp bars, all real) ---------
-        self.perf_title = bake_text("PERFORMANCE", int(22 * k), title_col)
-        self._perf_rows = []           # (label_img, pct_img, pct, colour)
-
-        def _perf_row(label, pct, colour, fmt=".0f"):
-            self._perf_rows.append((
-                bake_text(label, int(20 * k), label_col),
-                bake_text(f"{pct * 100:{fmt}}%", int(20 * k), (1, 1, 1)),
-                _clamp01(pct), colour))
-
-        # accuracy keeps 2 decimals — .0f would round 99.55% up to "100%"
-        # right next to the main panel's exact figure
-        _perf_row("Accuracy", self.acc_frac, MANIA_RESULT_COLORS["320"],
-                  fmt=".2f")
-        # mania combo ceiling = every judgment event in the timeline (the
-        # engine's own combo model: each judged head/tail increments, miss
-        # resets — render.py build_frame_state), so the bar compares the
-        # play's peak against the chart's full-combo value.
-        if self._map_max_combo > 0:
-            _perf_row("Combo", self.max_combo / self._map_max_combo,
-                      MANIA_RESULT_COLORS["300"])
-        if self.pp is not None and self.max_pp:
-            _perf_row("PP", self.pp / self.max_pp, (0.6, 0.86, 1.0))
-        if self.pp is not None and self.max_pp is not None:
-            foot = (f"Achieved {self.pp:.0f}pp  /  "
-                    f"Maximum {self.max_pp:.0f}pp")
-        else:
-            foot = "performance unavailable (no rosu)"
-        self.perf_foot = bake_text(foot, int(18 * k), foot_col)
-
-        # --- panel 2: COMBO progression (the judgment timeline's series) ----
-        pad = 26.0 * k
-        th = self.perf_title.height
-        chart_w = int(self.STATS_W * k - 2 * pad)
-        chart_h = int(self.STATS_H * k - (22 * k + th) - 54 * k)
-        vals = self._combo_values
-        self.combo_chart = None
-        if len(vals) >= 8:
-            self.combo_title = bake_text("COMBO", int(22 * k), title_col)
-            # combo breaks: a reset to 0 after a positive run (a mania MISS
-            # is the only thing that zeroes combo, so every 0 here is a real
-            # break)
-            breaks = [i for i in range(1, len(vals))
-                      if vals[i] == 0 and vals[i - 1] > 0]
-            tick_fr = [i / max(len(vals) - 1, 1) for i in breaks]
-            self.combo_chart = _bake_area_chart(vals, chart_w, chart_h,
-                                                tick_fracs=tick_fr)
-            self.combo_foot = bake_text(
-                f"peak {self.max_combo}x   ·   {len(breaks)} combo "
-                f"break{'' if len(breaks) == 1 else 's'}",
-                int(18 * k), foot_col)
-        else:                           # honest: nothing graphable
-            self.combo_title = bake_text("COMBO", int(22 * k), title_col)
-            self.combo_foot = bake_text("timeline unavailable",
-                                        int(18 * k), foot_col)
-
-        # --- panel 3: JUDGEMENTS (all six tiers as a share of the judged
-        # notes — the same bar widget as catch's CATCHES / taiko's
-        # JUDGEMENTS panel, mania data) + the play's real timing stats in
-        # the footer (the old card's headline UR/avg readout, kept). --------
-        self.judge_title = bake_text("JUDGEMENTS", int(22 * k), title_col)
-        self._judge_rows = []          # (label_img, count_img, frac, colour)
-        for label, cnt, ckey in (
-                ("320", geki, "320"),
-                ("300", n300, "300"),
-                ("200", katu, "200"),
-                ("100", n100, "100"),
-                ("50", n50, "50"),
-                ("Miss", miss, "MISS")):
-            frac = _clamp01(cnt / judged_total) if judged_total > 0 else \
-                (1.0 if cnt > 0 else 0.0)
-            self._judge_rows.append((
-                bake_text(label, int(20 * k), label_col),
-                bake_text(f"{cnt}/{judged_total}" if judged_total > 0
-                          else str(cnt), int(20 * k), (1, 1, 1)),
-                frac, MANIA_RESULT_COLORS[ckey]))
-        if self._ur > 0.0 or self._avg_offset != 0.0:
-            foot = (f"UR {self._ur:.1f}   ·   "
-                    f"avg {self._avg_offset:+.1f} ms")
-        else:
-            foot = "no timing data"
-        self.judge_foot = bake_text(foot, int(18 * k), foot_col)
-        self._stage2 = True
 
     # -- per-frame draw ----------------------------------------------------------
 
@@ -1321,24 +1108,9 @@ class ManiaLazerResults:
 
         fade = _clamp01(age_ms / FADE_MS) * op
         if fade > 0.003:
-            # stage-2 open: the featured panel slides from centre to left
-            # while the stats panels unfold from the right (std timeline)
-            stage2 = getattr(self, "_stage2", False)
-            open_p = ease_out_quint((age_ms - STAGE1_MS) / OPEN_MS) \
-                if (stage2 and age_ms > STAGE1_MS) else 0.0
-            panel_cx = _lerp(self.center_cx_v, self.left_cx_v, open_p) \
-                * self.k if stage2 else self.cx_px
-            # stage-1 flanks: the ranked cards unfurl outward (std timing),
-            # then fade out with the panel slide as stage 2 opens
-            stage1_a = fade * (1.0 - _clamp01((age_ms - STAGE1_MS)
-                                              / (OPEN_MS * 0.6))) \
-                if stage2 else fade
-            if self.board is not None and stage1_a > 0.003:
-                self._draw_board(base, age_ms, stage1_a,
-                                 dx=panel_cx - self.cx_px)
-            if stage2 and age_ms > STAGE1_MS:
-                self._draw_stats_panels(base, age_ms, op)
-            self._draw_panel(base, age_ms, fade, panel_cx)
+            if self.board is not None:
+                self._draw_board(base, age_ms, fade)
+            self._draw_panel(base, age_ms, fade, self.cx_px)
 
         out = np.asarray(base)             # HxWx4 uint8, straight alpha
         if settled:
@@ -1356,14 +1128,8 @@ class ManiaLazerResults:
         try:
             op = _clamp01(op)
             fade = _clamp01(age_ms / FADE_MS) * op
-            stage2 = getattr(self, "_stage2", False)
-            open_p = ease_out_quint((age_ms - STAGE1_MS) / OPEN_MS) \
-                if (stage2 and age_ms > STAGE1_MS) else 0.0
-            stage1_a = fade * (1.0 - _clamp01((age_ms - STAGE1_MS)
-                                              / (OPEN_MS * 0.6))) \
-                if stage2 else fade
             lb = None
-            if self.board is not None and fade > 0.003 and stage1_a > 0.003:
+            if self.board is not None and fade > 0.003:
                 lb = tuple(self._lb_slide(c.stagger, age_ms)
                            for c in (getattr(self.board, "cards", []) or []))
             # featured panel internals (arc sweep / grade punch / score roll)
@@ -1374,10 +1140,7 @@ class ManiaLazerResults:
             badge_start = SWEEP_DELAY_MS + SWEEP_MS - 130.0
             grade_p = ease_out_cubic((age_ms - badge_start) / BADGE_MS) \
                 if age_ms >= badge_start else None
-            unfold = tuple(self._panel_unfold(age_ms, i) for i in range(3)) \
-                if (stage2 and age_ms > STAGE1_MS) else None
-            return (op, fade, open_p, stage1_a, lb, arc_bucket, score_val,
-                    grade_p, unfold)
+            return (op, fade, lb, arc_bucket, score_val, grade_p)
         except Exception:  # noqa: BLE001 — memo is best-effort, never breaks
             return None
 
@@ -1521,122 +1284,17 @@ class ManiaLazerResults:
         p = ease_out_quint(t / LB_SLIDE_MS)
         return (1.0 - p) * LB_SLIDE_OFFSET, p
 
-    def _draw_board(self, base, age_ms, a, dx: float = 0.0) -> None:
-        """`dx` (px) shifts the whole board with the featured panel during
-        the stage-2 slide — std positions its flanks off the moving panel
-        edges, so the cards + banner track the panel while fading out."""
+    def _draw_board(self, base, age_ms, a) -> None:
+        """Draw the optional leaderboard flank around the centred card."""
         board = self.board
         for c in getattr(board, "cards", []) or []:
             off, ca = self._lb_slide(c.stagger, age_ms)
             if ca <= 0.003:
                 continue
-            x = c.cx + c.out_dir * off * self.k + dx
+            x = c.cx + c.out_dir * off * self.k
             _paste(base, c.img, x, c.cy, a * ca)
         banner = getattr(board, "banner", None)
         if banner is not None:
             bimg, _bx, _by = banner
-            _paste(base, bimg, self.cx_px + dx,
+            _paste(base, bimg, self.cx_px,
                    self.panel_top_px - bimg.height / 2.0 - 6 * self.k, a)
-
-    # -- stats panels (stage 2) ----------------------------------------------------
-
-    def _panel_unfold(self, age_ms: float, idx: int) -> float:
-        """std's _panel_unfold: panel `idx` starts at STAGE1_MS + 120 +
-        idx·STAGGER_MS and eases open over OPEN_MS (OutQuint)."""
-        start = STAGE1_MS + 120.0 + idx * STAGGER_MS
-        return ease_out_quint((age_ms - start) / OPEN_MS) \
-            if age_ms > start else 0.0
-
-    def _draw_stats_panels(self, base, age_ms, op) -> None:
-        """The three stats panels unfolding from the right, staggered (catch
-        :1491-1515, verbatim): each panel bg is width-squashed by its unfold
-        progress, anchored at STATS_X0 (growing rightward), the content
-        fading in at full-width position once the panel is ~55% open."""
-        k = self.k
-        top0 = self.panel_cy_v - PANEL_H / 2.0
-        drawers = (self._draw_perf, self._draw_combo, self._draw_judgements)
-        for idx, drawer in enumerate(drawers):
-            s = self._panel_unfold(age_ms, idx)
-            if s <= 0.003:
-                continue
-            pcy = (top0 + self.STATS_H * (idx + 0.5) + idx * 24.0) * k
-            left = self.STATS_X0 * k
-            pw, ph = self.stats_panel_img.size
-            drawn_w = max(int(pw * s), 1)
-            img = self.stats_panel_img if drawn_w >= pw else \
-                self.stats_panel_img.resize((drawn_w, ph), Image.BILINEAR)
-            _paste(base, img, left + drawn_w / 2.0, pcy,
-                   min(s * 1.3, 1.0) * op)
-            content_a = _clamp01((s - 0.55) / 0.45) * op
-            if content_a > 0.01:
-                full_cx = (self.STATS_X0 + self.STATS_W / 2.0) * k
-                drawer(base, full_cx,
-                       (top0 + idx * (self.STATS_H + 24.0)) * k, content_a)
-
-    def _draw_bar_rows(self, base, d, cx, top_y, a, title_img, rows,
-                       foot_img, bar_x_off: float, right_reserve: float
-                       ) -> None:
-        """Shared std perf-panel layout (catch :1517-1548, verbatim): title
-        top-left, label + track + fill + right-aligned value per row, footer
-        centred at the bottom. `rows` = (label_img, value_img, frac, colour)."""
-        k = self.k
-        pad = 26 * k
-        left = cx - self.STATS_W * k / 2.0 + pad
-        right = cx + self.STATS_W * k / 2.0 - pad
-        _paste(base, title_img, left + title_img.width / 2.0,
-               top_y + 22 * k + title_img.height / 2.0, a)
-        th = title_img.height
-        y = top_y + 22 * k + th + 20 * k
-        bar_x = left + bar_x_off * k
-        bar_w = right - bar_x - right_reserve * k
-        bar_h = 16 * k
-        row_gap = (self.STATS_H * k - 22 * k - th - 20 * k - 40 * k) / \
-            max(len(rows), 1)
-        for i, (label, val, frac, col) in enumerate(rows):
-            ry = y + i * row_gap
-            cyy = ry + bar_h / 2.0
-            _paste(base, label, left + label.width / 2.0, cyy, a)
-            rc = tuple(int(round(c * 255)) for c in col)
-            d.rectangle([bar_x, ry, bar_x + bar_w, ry + bar_h],
-                        fill=(51, 56, 71, int(0.7 * a * 255)))
-            fw = max(bar_w * _clamp01(frac), 2.0)
-            d.rectangle([bar_x, ry, bar_x + fw, ry + bar_h],
-                        fill=(*rc, int(0.95 * a * 255)))
-            _paste(base, val, right - val.width / 2.0, cyy, a)
-        _paste(base, foot_img, cx,
-               top_y + self.STATS_H * k - 20 * k - foot_img.height / 2.0, a)
-
-    def _draw_perf(self, base, cx, top_y, a) -> None:
-        """PERFORMANCE: accuracy / combo-vs-map-max / achieved-vs-SS-pp bars
-        (std's perf-bar layout, mania's real numbers)."""
-        d = ImageDraw.Draw(base, "RGBA")
-        self._draw_bar_rows(base, d, cx, top_y, a, self.perf_title,
-                            self._perf_rows, self.perf_foot,
-                            bar_x_off=130.0, right_reserve=60.0)
-
-    def _draw_combo(self, base, cx, top_y, a) -> None:
-        """COMBO progression (the judgment timeline's series) — the pre-baked
-        area chart in std's timing-panel slot (title top-left, chart body,
-        stat footer)."""
-        k = self.k
-        pad = 26 * k
-        left = cx - self.STATS_W * k / 2.0 + pad
-        _paste(base, self.combo_title, left + self.combo_title.width / 2.0,
-               top_y + 22 * k + self.combo_title.height / 2.0, a)
-        th = self.combo_title.height
-        chart = self.combo_chart
-        if chart is not None:
-            _paste(base, chart, cx,
-                   top_y + 22 * k + th + 16 * k + chart.height / 2.0, a)
-            foot_cy = top_y + 22 * k + th + 16 * k + chart.height + 22 * k
-        else:
-            foot_cy = top_y + self.STATS_H * k / 2.0
-        _paste(base, self.combo_foot, cx, foot_cy, a)
-
-    def _draw_judgements(self, base, cx, top_y, a) -> None:
-        """JUDGEMENTS: all six mania tiers as share-of-judged bars in the
-        engine's judgment palette + the UR/avg-offset footer."""
-        d = ImageDraw.Draw(base, "RGBA")
-        self._draw_bar_rows(base, d, cx, top_y, a, self.judge_title,
-                            self._judge_rows, self.judge_foot,
-                            bar_x_off=130.0, right_reserve=110.0)

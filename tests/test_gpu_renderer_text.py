@@ -20,19 +20,18 @@ def test_text_to_texture_returns_real_dimensions():
 
 
 @pytest.mark.slow
-def test_full_hud_renders():
+def test_full_hud_renders(compose_scene):
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
     W, H = 480, 270
     with HeadlessGl(width=W, height=H) as gl:
         rc = RenderContext(ctx=gl.ctx, fbo=gl.fbo, width=W, height=H, key_count=4)
         fr = FrameRenderer(rc)
-        fr.set_banner_text("Seiryu - AO-INFINITY [Hard]   R3D")
         scene = SceneState(
             t_ms=0, visible_notes=(), keys_held=(False,)*4,
             visual_mods=VisualMods(),
             score=865_612, combo=1305, max_combo=1305, accuracy=98.45,
         )
-        fr.draw(scene)
+        compose_scene(fr, gl, scene)
         data = gl.fbo.read(components=3)
         assert max(data) > 50

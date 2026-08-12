@@ -11,7 +11,7 @@ from osu_mania_renderer_v2.render.scene import SceneState
 
 
 @pytest.mark.slow
-def test_background_image_visible(tmp_path: Path):
+def test_background_image_visible(tmp_path: Path, compose_scene):
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
     bg_path = tmp_path / "bg.png"
@@ -25,7 +25,7 @@ def test_background_image_visible(tmp_path: Path):
             t_ms=0, visible_notes=(), keys_held=(False,)*4,
             visual_mods=VisualMods(),
         )
-        fr.draw(scene)
+        compose_scene(fr, gl, scene)
         data = gl.fbo.read(components=3)
         # Background is dimmed, so red channel should dominate but be reduced.
         r, g, b = data[0], data[1], data[2]

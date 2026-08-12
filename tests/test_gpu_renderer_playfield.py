@@ -9,7 +9,7 @@ from osu_mania_renderer_v2.render.scene import SceneState, VisibleNote
 
 
 @pytest.mark.slow
-def test_renders_a_single_note():
+def test_renders_a_single_note(compose_scene):
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 to run GL smoke tests")
     W, H = 256, 256
@@ -25,7 +25,7 @@ def test_renders_a_single_note():
             keys_held=(False, False, False, False),
             visual_mods=VisualMods(),
         )
-        fr.draw(scene)
+        compose_scene(fr, gl, scene)
         data = gl.fbo.read(components=3)
         # At least one pixel should be brighter than the background.
         assert max(data) > 50

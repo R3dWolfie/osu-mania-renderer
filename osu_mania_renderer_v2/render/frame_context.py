@@ -96,8 +96,7 @@ class FrameContext:
 
     # ---- frame lifecycle ----
     def begin_frame(self) -> None:
-        """Clear the FBO and set the standard alpha blend — mirrors the head
-        of FrameRenderer.draw()."""
+        """Clear the FBO and set the compositor's standard alpha blend."""
         self.fbo.use()
         self.fbo.clear(0.03, 0.03, 0.05, 1.0)
         self.gl.enable(moderngl.BLEND)
@@ -129,7 +128,7 @@ class FrameContext:
 
     def set_note_fx(self, hidden: bool, fade_in: bool, combo: int = 0) -> None:
         # Delegate to the shared cover computation so Hidden/FadeIn scale
-        # with combo here exactly as in the monolithic draw path.
+        # with combo consistently across note elements.
         self.fr.apply_note_cover(hidden, fade_in, combo)
 
     def flush(self) -> None:

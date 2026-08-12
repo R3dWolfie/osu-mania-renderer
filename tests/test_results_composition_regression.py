@@ -2,7 +2,7 @@
 output for the post-game results period.
 
 ``build_frame_state()`` is the shared simulation/draw-state truth behind the
-canonical wiki pipeline registered by ``osu_mania_renderer_v2.render.pipeline``
+canonical pipeline registered by ``osu_mania_renderer_v2.render.pipeline``
 (see that module's ``_ORDER``) -- it is the intended anchor for regressions
 like this one, independent of any GPU/ffmpeg output.
 
@@ -22,9 +22,8 @@ from pathlib import Path
 
 import pytest
 
-# Read-only import: populates the canonical wiki pipeline's element
-# registry so this test targets the accepted production composition path
-# (render/pipeline.py), not the retiring monolithic FrameRenderer.draw().
+# Read-only import: populates the canonical element registry so this test
+# targets the production composition architecture in render/pipeline.py.
 # build_frame_state() itself doesn't require the registry to be populated,
 # but importing it here documents and pins the intended architecture.
 import osu_mania_renderer_v2.render.pipeline  # noqa: F401

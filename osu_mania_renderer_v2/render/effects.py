@@ -73,10 +73,9 @@ def break_overlay(*, element, skin, assets, variables, ctx) -> None:
     """lazer's BreakOverlay (gpu/break_overlay.py, the catch d8ccb60
     rollout) — a LATER overlay-component child than HUDOverlay in lazer's
     Player, so it draws above every HUD element and under the
-    miss-flash/fade/results/watermark layers, mirroring
-    FrameRenderer.draw(). Delegates to the engine so the legacy and wiki
-    paths draw identical pixels; None on no-break maps and zero GL calls
-    outside break windows."""
+    miss-flash/fade/results/watermark layers. Delegates to the engine's
+    stateful lower-level overlay primitive; None on no-break maps and zero GL
+    calls outside break windows."""
     if ctx.fr._break_overlay is not None:
         ctx.fr._break_overlay.draw(ctx.scene)
 
@@ -93,8 +92,8 @@ def fade_to_black(*, element, skin, assets, variables, ctx) -> None:
 def intro_logo(*, element, skin, assets, variables, ctx) -> None:
     """R3D intro splash (show_logo): the shared 'R' tile + red glow, fading
     out exactly as the first note spawns — parity with std/catch. Delegates
-    to the engine so the legacy and wiki paths draw identical pixels; no-op
-    unless options.show_logo is on."""
+    to the engine's lower-level texture primitive; no-op unless
+    options.show_logo is on."""
     # scene.t_ms is the gameplay/map clock the splash envelope is authored
     # against (fade-out ends at first_note − approach). ctx.t_ms is the raw
     # VIDEO clock, which on the pre-roll leads map-time by logo_preroll_ms —
