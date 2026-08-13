@@ -490,6 +490,11 @@ def _cli() -> None:
                    help="exact official star rating (parity with taiko/std/"
                         "catch); shown as the 'X.XX★' results-card pill "
                         "(omit to use the rosu estimate)")
+    # renderer.py always emits --scroll-speed from the preset; it MUST be
+    # declared here or parse_known_args silently drops it, so mania renders
+    # ignored the saved scroll speed and fell back to the baseline 17.
+    p.add_argument("--scroll-speed", type=int, default=None,
+                   help="osu!mania scroll-speed 1-40 (lazer default 17, higher = faster)")
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -525,6 +530,8 @@ def _cli() -> None:
                              if args.featured_avatar_png else None),
         pp_override=args.pp,
         sr_override=args.sr,
+        scroll_speed=(max(1, min(40, args.scroll_speed))
+                      if args.scroll_speed is not None else None),
         **dim_kwargs,
     )
     async def _print_progress(fraction: float) -> None:
