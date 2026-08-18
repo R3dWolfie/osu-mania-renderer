@@ -409,6 +409,19 @@ async def render(
             if progress_callback:
                 await progress_callback(1.0)
         await pipe.close(output_path)
+        # Gameplay-start anchor for the YT versus HUD (all-mode sync).
+        # The frame clock (t_ms = frame_n*1000/fps) is the RATE-MODDED
+        # timebase whose 0 IS original map-time 0 — note times were divided
+        # by audio_rate up front (build_render_plan) and t_ms is compared
+        # against them directly, with no lead-in shift on the video clock.
+        # So original map-time 0 lands at video-time 0; rate = audio_rate.
+        try:
+            import json as _json
+            Path(str(output_path) + ".score.json").write_text(_json.dumps(
+                {"schema": 1, "mode": 3, "map0_video_s": 0.0,
+                 "rate": float(plan.audio_rate)}, default=str))
+        except Exception:  # noqa: BLE001 — sidecar is best-effort
+            pass
     except BaseException:
         if pipe.proc and pipe.proc.returncode is None:
             try:
