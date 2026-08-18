@@ -465,6 +465,8 @@ def _cli() -> None:
                    help="hide hit-judgement text/sprite")
     p.add_argument("--no-key-counter", action="store_true",
                    help="hide bottom-right key counter")
+    p.add_argument("--hud-opacity", type=float, default=1.0,
+                   help="0 = hide the ENTIRE engine HUD (score/acc/grade/combo/judgment/key-counter/pp/progress/hp/ur bars); matches std")
     # Background dim (same names/mapping as cli.py — the bot's
     # mania_ordr/renderer.py has ALWAYS sent these four flags, but only
     # cli.py declared them, so this prod path silently dropped them via
@@ -532,12 +534,22 @@ def _cli() -> None:
         dim_kwargs["bg_dim_game"] = max(0, min(100, args.bg_dim_game)) / 100.0
     if args.bg_dim_breaks is not None:
         dim_kwargs["bg_dim_breaks"] = max(0, min(100, args.bg_dim_breaks)) / 100.0
+    # hud_opacity 0 blanks the whole engine HUD so the field is gameplay-only
+    # (the YT overlay is the sole HUD). Gameplay stays: notes, receptors, the
+    # key-press flash (show_key_overlay), hit lighting, stage/kiai effects.
+    _hud_on = args.hud_opacity > 0.0
     options = RenderOptions(
         resolution=(w, h), fps=args.fps, encoder=args.encoder,
         timeout_seconds=(args.timeout or 600),
-        show_combo=not args.no_combo,
-        show_judgment=not args.no_judgment,
-        show_key_counter=not args.no_key_counter,
+        show_combo=_hud_on and not args.no_combo,
+        show_judgment=_hud_on and not args.no_judgment,
+        show_key_counter=_hud_on and not args.no_key_counter,
+        show_score=_hud_on,
+        show_grade=_hud_on,
+        show_progress_bar=_hud_on,
+        show_hp_bar=_hud_on,
+        show_ur_bar=_hud_on,
+        hud_opacity=args.hud_opacity,
         show_logo=args.logo,
         featured_avatar_png=(str(args.featured_avatar_png)
                              if args.featured_avatar_png else None),

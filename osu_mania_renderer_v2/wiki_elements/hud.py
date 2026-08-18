@@ -467,6 +467,11 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
     overlap = skin.ini `[Fonts] ScoreOverlap` (default 0). When NO user skin
     is selected (Argon default), use lazer's Argon HUD (argon-counter font,
     score wedge top-left). Otherwise fall back to the clean PIL readout."""
+    # hud_opacity 0: skip the whole score/accuracy/pp/mods/leaderboard HUD
+    # element (accuracy + the leaderboard card draw here, ungated by
+    # show_score) so the field is gameplay-only for the YT overlay.
+    if ctx.options.hud_opacity <= 0.0:
+        return
     fr = ctx.fr
     s = ctx.scene
     if is_argon_default(ctx, 0) and ctx.has_argon_font():

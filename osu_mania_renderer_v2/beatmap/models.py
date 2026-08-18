@@ -173,6 +173,8 @@ class RenderOptions:
     # one optional element off; defaults keep current behaviour.
     show_score: bool = True
     show_grade: bool = True
+    # 0.0 hides the entire engine HUD (YT overlay is the sole HUD); >0 = on.
+    hud_opacity: float = 1.0
     show_key_overlay: bool = True       # the receptor key-press flash
     show_key_counter: bool = True       # bottom-right per-column press counter
     show_combo: bool = True             # the centred combo counter
