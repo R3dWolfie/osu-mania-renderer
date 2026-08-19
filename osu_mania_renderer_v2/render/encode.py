@@ -105,6 +105,7 @@ def build_ffmpeg_cmd(
     prenormalized_audio_path: Path | None = None,
     audio_lead_in_ms: int,
     video_bitrate: str,
+    video_bitrate_override: int | None = None,
     audio_bitrate: str,
     output_path: Path,
     total_duration_ms: int | None = None,
@@ -290,11 +291,12 @@ def build_ffmpeg_cmd(
         # NVENC now targets nvenc_target_bps(w, h, fps) with maxrate=1.5x /
         # bufsize=2x. Non-NVENC encoders keep the caller's video_bitrate
         # exactly as before.
-        _tgt = nvenc_target_bps(w, h, fps)
+        _tgt = video_bitrate_override or nvenc_target_bps(w, h, fps)
         cmd += ["-c:v", encoder, "-b:v", str(_tgt),
                 "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
     else:
-        cmd += ["-c:v", encoder, "-b:v", video_bitrate]
+        cmd += ["-c:v", encoder, "-b:v",
+                (str(video_bitrate_override) if video_bitrate_override else video_bitrate)]
     # Pin BT.709 + limited-range tags on the SPS so downstream players
     # don't have to guess. (Limited range matches the scale=out_range
     # conversion above; both must agree or you get a brightness shift.)

@@ -480,6 +480,7 @@ async def build_render_plan(
         prenormalized_audio_path=prenormalized_audio,
         audio_lead_in_ms=effective_lead_in_ms,
         video_bitrate=options.video_bitrate,
+        video_bitrate_override=options.video_bitrate_override,
         audio_bitrate=options.audio_bitrate,
         output_path=output_path,
         total_duration_ms=total_video_ms,

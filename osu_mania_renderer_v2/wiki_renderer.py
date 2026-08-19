@@ -457,6 +457,9 @@ def _cli() -> None:
     p.add_argument("--resolution", default="1920x1080")
     p.add_argument("--fps", type=int, default=60)
     p.add_argument("--encoder", default="auto")
+    p.add_argument("--video-bitrate", default=None,
+                   help="override the auto resolution-scaled bitrate, e.g. "
+                        "16M / 24M / 30000k. Default: the built-in ladder.")
     p.add_argument("--timeout", type=int, default=0)
     p.add_argument("--allow-converted", action="store_true")
     p.add_argument("--convert-to-keys", type=int, default=4)
@@ -538,6 +541,11 @@ def _cli() -> None:
     # (the YT overlay is the sole HUD). Gameplay stays: notes, receptors, the
     # key-press flash (show_key_overlay), hit lighting, stage/kiai effects.
     _hud_on = args.hud_opacity > 0.0
+    _vbo = None
+    if args.video_bitrate:
+        _b = str(args.video_bitrate).strip().lower()
+        _mult = 1_000_000 if _b.endswith("m") else (1_000 if _b.endswith("k") else 1)
+        _vbo = int(float(_b.rstrip("mk")) * _mult)
     options = RenderOptions(
         resolution=(w, h), fps=args.fps, encoder=args.encoder,
         timeout_seconds=(args.timeout or 600),
@@ -549,6 +557,7 @@ def _cli() -> None:
         show_progress_bar=_hud_on,
         show_hp_bar=_hud_on,
         show_ur_bar=_hud_on,
+        video_bitrate_override=_vbo,
         hud_opacity=args.hud_opacity,
         show_logo=args.logo,
         featured_avatar_png=(str(args.featured_avatar_png)

@@ -149,6 +149,7 @@ class RenderOptions:
     # gets file size to ~30 MB for a 3-minute song so Discord's inline embed
     # player can buffer it instead of timing out on large downloads.
     video_bitrate: str = "2500k"
+    video_bitrate_override: int | None = None   # explicit bps; overrides the nvenc ladder
     audio_bitrate: str = "160k"
     # Visual toggles — every "feel like lazer" feature is gated by one of
     # these so the future settings page can map each to a checkbox. Defaults
