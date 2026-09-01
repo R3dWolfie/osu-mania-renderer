@@ -1048,18 +1048,27 @@ class FrameRenderer:
         # from the skin's [Mania] block when set.
         combo_baseline_y = self.combo_baseline_y_gl
         # Judgment sprites (Night05's mania-hit300g etc.) are 384×384 square
-        # with the value text centred in transparent padding. Drawing them at
-        # square aspect (not stretched to a wide rect) keeps text proportions
-        # right; pf_w * 0.55 makes the visible text comparable in size to the
-        # combo number above it without dwarfing the playfield.
+        # with the value text centred in transparent padding. pf_w * 0.55
+        # makes the visible text comparable in size to the combo number above
+        # it without dwarfing the playfield. Width is the anchor; the HEIGHT
+        # follows the sprite's native aspect (computed per-sprite below) so a
+        # custom skin's non-square hit sprite renders proportionally instead
+        # of stretched into a square. Default skins ship 384x384 squares, so
+        # aspect is 1.0 and jud_h == jud_w (unchanged).
         jud_w = int(pf_w * 0.55)
-        jud_h = jud_w
 
         # Judgment popup — uses the latest judgment event (most recent hit).
         if scene.active_judgments:
             j = scene.active_judgments[-1]
             alpha = max(0.0, 1.0 - j.age_ms / 500.0)
             sprite_name = f"judgment_{j.judgment}"
+            # Height from the ACTUAL sprite native aspect (width / height),
+            # mirroring the stage_left/right global_aspect handling: a wide
+            # sprite (aspect > 1) gives jud_h < jud_w; a tall one gives
+            # jud_h > jud_w; square gives jud_h == jud_w. Un-distorts the
+            # _fit_stretch'd atlas tile so custom skins are not squished.
+            jud_asp = self.atlas.global_aspect(sprite_name) or 1.0
+            jud_h = int(jud_w / jud_asp)
             # Animated hit-burst: skin can ship `mania-hit300-0.png`,
             # `mania-hit300-1.png`, … per the wiki. Spec says 60 fps,
             # plays once, holds the last frame during fade-out.
