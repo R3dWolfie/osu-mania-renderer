@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
+import sys
 import threading
 from pathlib import Path
 
@@ -37,6 +38,15 @@ def _ffmpeg_prefix() -> list[str]:
     toolbox/distrobox container; empty list otherwise."""
     if Path("/run/host/etc/os-release").exists() and Path("/usr/bin/flatpak-spawn").exists():
         return ["/usr/bin/flatpak-spawn", "--host", "/usr/bin/ffmpeg"]
+    if sys.platform == "win32":
+        # Windows: asyncio.create_subprocess_exec goes straight to
+        # CreateProcess, which does NOT do the shell's PATH/.exe resolution --
+        # a bare "ffmpeg" raised FileNotFoundError [WinError 2]. Resolve
+        # ffmpeg.exe explicitly (the installer adds the bundled ffmpeg dir to
+        # the user PATH). Fall back to the bare name so a missing-ffmpeg case
+        # still surfaces a clear error.
+        import shutil
+        return [shutil.which("ffmpeg") or "ffmpeg"]
     return ["ffmpeg"]
 
 
@@ -67,6 +77,13 @@ async def probe_encoder(encoder: str, device: str | None) -> str:
     # dropped R3D_ENCODER env silently fell to vaapi/libx264 (5-10x slower).
     if "h264_nvenc" in text:
         return "h264_nvenc"
+    if sys.platform == "win32":
+        # Windows has no VAAPI; offer AMD (AMF) then Intel (QSV) hardware
+        # H.264 before the libx264 software fallback.
+        if "h264_amf" in text:
+            return "h264_amf"
+        if "h264_qsv" in text:
+            return "h264_qsv"
     if device is None and Path("/dev/dri/renderD128").exists():
         device = "/dev/dri/renderD128"
     if device is not None and "h264_vaapi" in text:
@@ -294,14 +311,23 @@ def build_ffmpeg_cmd(
         _tgt = video_bitrate_override or nvenc_target_bps(w, h, fps)
         cmd += ["-c:v", encoder, "-b:v", str(_tgt),
                 "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
+    elif encoder in ("h264_amf", "h264_qsv"):
+        # Windows AMD (AMF) / Intel (QSV) hardware H.264. Mirror the NVENC
+        # VBR ladder (target = nvenc_target_bps, maxrate 1.5x, bufsize 2x);
+        # `-rc vbr_peak` is the AMF/QSV analogue of NVENC's VBR so a Windows
+        # hw contributor gets rate-controlled hardware encode instead of a
+        # rate-control-less default. No VAAPI device on Windows.
+        _tgt = video_bitrate_override or nvenc_target_bps(w, h, fps)
+        cmd += ["-c:v", encoder, "-rc", "vbr_peak", "-b:v", str(_tgt),
+                "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
     else:
         cmd += ["-c:v", encoder, "-b:v",
                 (str(video_bitrate_override) if video_bitrate_override else video_bitrate)]
     # Pin BT.709 + limited-range tags on the SPS so downstream players
     # don't have to guess. (Limited range matches the scale=out_range
     # conversion above; both must agree or you get a brightness shift.)
-    if encoder in ("h264_nvenc", "hevc_nvenc", "libx264", "libx265",
-                   "libopenh264"):
+    if encoder in ("h264_nvenc", "hevc_nvenc", "h264_amf", "h264_qsv",
+                   "libx264", "libx265", "libopenh264"):
         cmd += [
             "-color_range", "tv",
             "-colorspace", "bt709",
@@ -508,7 +534,7 @@ def _grow_pipe(fd: int) -> None:
         except (OSError, ValueError):
             max_size = 1 << 20
         fcntl.fcntl(fd, f_setpipe_sz, max_size)
-    except OSError:
+    except Exception:  # fcntl is Unix-only; skip the pipe-size tweak on Windows
         pass
 
 

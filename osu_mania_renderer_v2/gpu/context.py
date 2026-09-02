@@ -18,6 +18,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import sys
 
 import moderngl
 
@@ -170,7 +171,14 @@ class HeadlessGl:
     def __enter__(self) -> HeadlessGl:
         device_index_env = os.environ.get("R3D_EGL_DEVICE_INDEX")
         try:
-            if device_index_env is not None:
+            if sys.platform == "win32":
+                # Windows: glcontext ships ONLY the WGL module -- there is no
+                # EGL device and 'wgl' is NOT a valid backend name. Passing NO
+                # backend= lets moderngl.default_backend() select WGL. No EGL
+                # device pinning (R3D_EGL_DEVICE_INDEX / MODERNGL_BACKEND have
+                # no WGL equivalent; Windows uses the primary adapter).
+                self._ctx = moderngl.create_standalone_context(require=330)
+            elif device_index_env is not None:
                 self._ctx = _create_pinned_egl_context(int(device_index_env))
             else:
                 self._ctx = moderngl.create_standalone_context(
