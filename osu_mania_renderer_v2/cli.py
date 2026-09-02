@@ -90,6 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="exact official star rating (parity with taiko/std/"
                         "catch); shown as the 'X.XX★' pill on the results card "
                         "(omit to use the rosu estimate)")
+    p.add_argument("--rate",            type=float, default=None,
+                   help="true clock-rate multiplier of the play (lazer "
+                        "rate-adjusted DT/HT, e.g. 1.16); overrides the "
+                        "mods-bitmask rate (DT 1.5 / HT 0.75) for gameplay/"
+                        "audio timing and rosu pp/SR; omit for legacy rates")
     p.add_argument("--hide-judgement-line", action="store_true",
                    help="hide the horizontal line at the receptor")
     p.add_argument("--no-skip-intro",   action="store_true",
@@ -178,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.show_pp:            opts_kwargs["show_pp_counter"]   = True
     if args.pp is not None:     opts_kwargs["pp_override"]       = args.pp
     if args.sr is not None:     opts_kwargs["sr_override"]       = args.sr
+    if args.rate is not None:   opts_kwargs["rate_override"]     = args.rate
     if args.hide_judgement_line:opts_kwargs["hide_judgement_line"] = True
     if args.no_skip_intro:      opts_kwargs["skip_intro"]        = False
     if args.no_replay_hitsounds: opts_kwargs["use_replay_hitsounds"] = False

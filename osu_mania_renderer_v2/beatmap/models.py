@@ -193,6 +193,13 @@ class RenderOptions:
     # so the shared dispatcher can pass --sr to every renderer uniformly
     # (cli.py uses a STRICT parse_args that would otherwise crash on it).
     sr_override: float | None = None
+    # True lazer clock-rate multiplier (--rate). Lazer's rate-adjust slider
+    # makes DT/HT any multiplier in 0.5x-2.0x, but the legacy mods bitmask
+    # only carries the DT/HT bits, so a 1.16x play would otherwise render
+    # AND be pp/SR-scored as full 1.5x. When set it overrides the bitmask-
+    # derived rate for gameplay/audio timing and for the rosu pp/SR clock
+    # rate. None -> bitmask rate (DT 1.5 / HT 0.75), unchanged behaviour.
+    rate_override: float | None = None
     show_result_screen: bool = True
     hide_judgement_line: bool = False   # the horizontal line at the receptor
     skip_intro: bool = True             # skip audio_lead_in_ms intro silence

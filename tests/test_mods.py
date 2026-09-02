@@ -58,6 +58,25 @@ def test_dt_halves_note_times():
     assert res.beatmap.notes[0].time_ms == 2000  # 3000 / 1.5
 
 
+def test_rate_override_beats_dt_bitmask():
+    """Lazer rate-adjusted DT (--rate): the TRUE clock multiplier must
+    override the bitmask-implied 1.5 for gameplay/audio timing."""
+    bm = _mk_beatmap(notes=[Note(0, 2900)])
+    rp = _mk_replay(mods=Mod.DT.value)
+    res = apply_mods(bm, rp, rate_override=1.16)
+    assert res.audio_rate == 1.16
+    assert res.beatmap.notes[0].time_ms == int(2900 / 1.16)
+
+
+def test_rate_override_none_keeps_legacy_dt():
+    """--rate absent -> byte-identical legacy behaviour (DT stays 1.5)."""
+    bm = _mk_beatmap(notes=[Note(0, 3000)])
+    rp = _mk_replay(mods=Mod.DT.value)
+    res = apply_mods(bm, rp, rate_override=None)
+    assert res.audio_rate == 1.5
+    assert res.beatmap.notes[0].time_ms == 2000
+
+
 def test_ht_extends_note_times():
     bm = _mk_beatmap(notes=[Note(0, 3000)])
     rp = _mk_replay(mods=Mod.HT.value)

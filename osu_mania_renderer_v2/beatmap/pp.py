@@ -38,9 +38,14 @@ def _mods_to_acronyms(mods_bitfield: int) -> str:
     return ",".join(out)
 
 
-def compute_pp(osu_path: Path, replay: ReplayInfo) -> tuple[float, float]:
+def compute_pp(osu_path: Path, replay: ReplayInfo,
+               clock_rate: float | None = None) -> tuple[float, float]:
     """Return (player_pp, max_fc_pp). Returns (0.0, 0.0) on any failure
-    (rosu-pp missing, unsupported map, suspicious beatmap…)."""
+    (rosu-pp missing, unsupported map, suspicious beatmap…).
+
+    `clock_rate` — the play's TRUE speed multiplier for lazer rate-adjusted
+    plays (--rate). When given, it overrides the DT/HT-implied 1.5/0.75 via
+    rosu's set_clock_rate; None keeps the mods-derived clock rate."""
     try:
         import rosu_pp_py as rosu  # type: ignore[import-not-found]
     except ImportError:
@@ -71,24 +76,34 @@ def compute_pp(osu_path: Path, replay: ReplayInfo) -> tuple[float, float]:
         )
         if mods:
             perf_kwargs["mods"] = mods
-        player_perf = rosu.Performance(**perf_kwargs).calculate(bmap)
+        player_calc = rosu.Performance(**perf_kwargs)
+        if clock_rate is not None:
+            player_calc.set_clock_rate(float(clock_rate))
+        player_perf = player_calc.calculate(bmap)
 
         # Max possible: SS-FC with the same mods, in the same scoring
         # system (stable, per the comment above).
         max_kwargs = dict(lazer=lazer, accuracy=100.0)
         if mods:
             max_kwargs["mods"] = mods
-        max_perf = rosu.Performance(**max_kwargs).calculate(bmap)
+        max_calc = rosu.Performance(**max_kwargs)
+        if clock_rate is not None:
+            max_calc.set_clock_rate(float(clock_rate))
+        max_perf = max_calc.calculate(bmap)
         return float(player_perf.pp or 0.0), float(max_perf.pp or 0.0)
     except Exception as e:  # noqa: BLE001
         log.warning("pp_compute_failed", extra={"error": str(e)})
         return 0.0, 0.0
 
 
-def compute_star_rating(osu_path: Path, replay: ReplayInfo) -> float:
+def compute_star_rating(osu_path: Path, replay: ReplayInfo,
+                        clock_rate: float | None = None) -> float:
     """Rosu-pp star rating for this play (mods applied — DT/NC/HR/EZ scale it).
     Fallback for the results-card SR pill when no exact --sr override is passed.
-    Returns 0.0 on any failure (rosu-pp missing, unsupported map, …)."""
+    Returns 0.0 on any failure (rosu-pp missing, unsupported map, …).
+
+    `clock_rate` — TRUE speed multiplier for lazer rate-adjusted plays
+    (--rate); overrides the DT/HT-implied rate via set_clock_rate."""
     try:
         import rosu_pp_py as rosu  # type: ignore[import-not-found]
     except ImportError:
@@ -102,7 +117,10 @@ def compute_star_rating(osu_path: Path, replay: ReplayInfo) -> float:
         diff_kwargs = dict(lazer=True)
         if mods:
             diff_kwargs["mods"] = mods
-        attrs = rosu.Difficulty(**diff_kwargs).calculate(bmap)
+        diff_calc = rosu.Difficulty(**diff_kwargs)
+        if clock_rate is not None:
+            diff_calc.set_clock_rate(float(clock_rate))
+        attrs = diff_calc.calculate(bmap)
         return float(attrs.stars or 0.0)
     except Exception as e:  # noqa: BLE001
         log.warning("star_rating_compute_failed", extra={"error": str(e)})
