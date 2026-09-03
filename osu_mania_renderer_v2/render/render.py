@@ -205,7 +205,10 @@ async def build_render_plan(
         effective_approach_ms = int(APPROACH_MS * SCROLL_SPEED_BASELINE / options.scroll_speed)
     else:
         effective_approach_ms = APPROACH_MS
-    mod_res = apply_mods(beatmap, replay)
+    # --rate: lazer rate-adjusted plays carry their TRUE clock multiplier
+    # here; it overrides the DT/HT bitmask rate for timing/audio AND rosu.
+    mod_res = apply_mods(beatmap, replay,
+                         rate_override=options.rate_override)
     for w in mod_res.warnings:
         log.warning(w)
     modded = mod_res.beatmap
@@ -276,7 +279,8 @@ async def build_render_plan(
     acronyms = mod_acronyms(replay.mods, modded.key_count)
 
     # PP for this play + max possible PP (SS-FC). Both 0 if rosu-pp absent.
-    player_pp, max_pp = compute_pp(osu_file, replay)
+    player_pp, max_pp = compute_pp(osu_file, replay,
+                                   clock_rate=options.rate_override)
     # Exact-pp override: when the caller supplies the authoritative passed
     # pp (the osu! server value), anchor player_pp to it so the live
     # counter eases onto it and the results card shows it exactly.
@@ -297,7 +301,8 @@ async def build_render_plan(
     # rosu-pp estimate (mods applied). 0.0 hides the pill (parity with the other
     # engines' --sr handling).
     stars = (float(options.sr_override) if options.sr_override is not None
-             else compute_star_rating(osu_file, replay))
+             else compute_star_rating(osu_file, replay,
+                                      clock_rate=options.rate_override))
     log.info("stars", extra={"stars": stars,
                              "override": options.sr_override is not None})
 

@@ -89,7 +89,8 @@ def mod_acronyms(mods_bitfield: int, key_count: int) -> tuple[str, ...]:
     return tuple(out)
 
 
-def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
+def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo,
+               rate_override: float | None = None) -> ModResult:
     mods = replay.mods
     warnings: list[str] = []
 
@@ -101,6 +102,13 @@ def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
         audio_rate = 0.75
     else:
         audio_rate = 1.0
+    # Lazer rate-adjusted plays (--rate): the legacy bitmask only carries the
+    # DT/HT bits, but lazer's speed slider makes the true multiplier anything
+    # in 0.5x-2.0x (e.g. DT@1.16x). When the caller passes the play's TRUE
+    # clock rate it overrides the bitmask-derived value; None keeps the
+    # legacy DT 1.5 / HT 0.75 semantics byte-identically.
+    if rate_override is not None:
+        audio_rate = float(rate_override)
     audio_pitch = bool(mods & Mod.NC)
 
     # Apply speed to note times.

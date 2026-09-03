@@ -508,6 +508,14 @@ def _cli() -> None:
                    help="exact official star rating (parity with taiko/std/"
                         "catch); shown as the 'X.XX★' results-card pill "
                         "(omit to use the rosu estimate)")
+    # --rate (parity with cli.py). Must be declared HERE too -
+    # parse_known_args silently drops undeclared flags. The play's TRUE
+    # clock-rate multiplier for lazer rate-adjusted DT/HT (e.g. 1.16);
+    # overrides the mods-bitmask rate for gameplay/audio timing and rosu.
+    p.add_argument("--rate", type=float, default=None,
+                   help="true clock-rate multiplier of the play (lazer "
+                        "rate-adjusted DT/HT); overrides the mods-bitmask "
+                        "rate (DT 1.5 / HT 0.75); omit for legacy rates")
     # renderer.py always emits --scroll-speed from the preset; it MUST be
     # declared here or parse_known_args silently drops it, so mania renders
     # ignored the saved scroll speed and fell back to the baseline 17.
@@ -564,6 +572,7 @@ def _cli() -> None:
                              if args.featured_avatar_png else None),
         pp_override=args.pp,
         sr_override=args.sr,
+        rate_override=args.rate,
         scroll_speed=(max(1, min(40, args.scroll_speed))
                       if args.scroll_speed is not None else None),
         **dim_kwargs,

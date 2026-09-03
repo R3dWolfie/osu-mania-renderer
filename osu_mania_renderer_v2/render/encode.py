@@ -309,7 +309,10 @@ def build_ffmpeg_cmd(
         # bufsize=2x. Non-NVENC encoders keep the caller's video_bitrate
         # exactly as before.
         _tgt = video_bitrate_override or nvenc_target_bps(w, h, fps)
-        cmd += ["-c:v", encoder, "-b:v", str(_tgt),
+        # CQ23 quality-targeted VBR (quality-approved 2026-09-02): visually
+        # identical to the fixed-target ladder, ~17% smaller; the ladder is
+        # kept only as the -maxrate/-bufsize cap below.
+        cmd += ["-c:v", encoder, "-rc", "vbr", "-cq", "23", "-b:v", "0",
                 "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
     elif encoder in ("h264_amf", "h264_qsv"):
         # Windows AMD (AMF) / Intel (QSV) hardware H.264. Mirror the NVENC
