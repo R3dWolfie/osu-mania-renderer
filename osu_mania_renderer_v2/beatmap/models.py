@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -150,6 +149,7 @@ class RenderOptions:
     # gets file size to ~30 MB for a 3-minute song so Discord's inline embed
     # player can buffer it instead of timing out on large downloads.
     video_bitrate: str = "2500k"
+    video_bitrate_override: int | None = None   # explicit bps; overrides the nvenc ladder
     audio_bitrate: str = "160k"
     # Visual toggles — every "feel like lazer" feature is gated by one of
     # these so the future settings page can map each to a checkbox. Defaults
@@ -174,6 +174,8 @@ class RenderOptions:
     # one optional element off; defaults keep current behaviour.
     show_score: bool = True
     show_grade: bool = True
+    # 0.0 hides the entire engine HUD (YT overlay is the sole HUD); >0 = on.
+    hud_opacity: float = 1.0
     show_key_overlay: bool = True       # the receptor key-press flash
     show_key_counter: bool = True       # bottom-right per-column press counter
     show_combo: bool = True             # the centred combo counter
@@ -255,12 +257,3 @@ class RenderOptions:
     # overlay draws the grey placeholder chip. Mirrors std's featured-avatar
     # threading (mania_ordr.std_renderer's ("featured-avatar-png", …) map).
     featured_avatar_png: str | None = None
-    # Results-screen map leaderboard (parity with the std/catch renderers —
-    # catch beatmap/models.py:203-210): the featured play flanked by compact
-    # ranked cards of the OTHER renders of this map. Default source = the
-    # local render DB; "osu" reads the bot-written osu! global scores JSON
-    # (falls back to the DB when absent). Default-on but a no-op when the map
-    # has no other renders, so existing renders are unchanged.
-    show_leaderboard: bool = True
-    leaderboard_source: str = "r3d"      # r3d | osu
-    leaderboard_json: Path | None = None

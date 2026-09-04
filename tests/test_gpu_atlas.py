@@ -325,7 +325,7 @@ def test_resolve_column_per_column_override_wins_over_beatmap(tmp_path):
     on purpose — honour it."""
     from PIL import Image
 
-    from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
+    from osu_mania_renderer_v2.skin_ini import ManiaSection
     skin_dir = tmp_path / "skin"
     skin_dir.mkdir()
     bm_dir = tmp_path / "map"

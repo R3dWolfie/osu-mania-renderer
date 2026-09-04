@@ -45,11 +45,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skin-dir", type=Path, default=None,
         help="path to an extracted .osk directory (overrides bundled sprites)",
     )
-    p.add_argument(
-        "--default-skin", type=Path, default=None,
-        help="default/bundled skin dir used by the wiki compositor; "
-             "auto-detected relative to the package when omitted",
-    )
     # Settings-page surface. Each flag maps 1:1 to a RenderOptions field;
     # `store_true` flips a default-on toggle off. Defaults match
     # RenderOptions' own defaults so omitting a flag preserves prior behaviour.
@@ -85,8 +80,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-grade",        action="store_true", help="hide grade letter")
     p.add_argument("--no-key-overlay",  action="store_true", help="hide receptor key flash")
     p.add_argument("--no-key-counter",  action="store_true", help="hide bottom-right key-press counter")
-    p.add_argument("--no-combo",        action="store_true", help="hide the centred combo counter")
-    p.add_argument("--no-judgment",     action="store_true", help="hide the hit-judgement text/sprite burst")
     p.add_argument("--no-result-screen",action="store_true", help="cut the results card")
     p.add_argument("--show-pp",         action="store_true", help="show live PP counter")
     p.add_argument("--pp",              type=float, default=None,
@@ -121,19 +114,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--featured-avatar-png", type=Path, default=None,
                    help="featured player's osu! avatar PNG → results-screen "
                         "header (parity with std). Absent ⇒ grey placeholder")
-    p.add_argument("--no-leaderboard", action="store_true",
-                   help="hide the per-map render leaderboard on the results "
-                        "screen (featured play flanked by other renders of "
-                        "the same map; parity with std/catch, default on)")
-    p.add_argument("--leaderboard-source", choices=["r3d", "osu"],
-                   default="r3d",
-                   help="flank-card source: 'r3d' = the local render DB "
-                        "(default), 'osu' = the map's osu! GLOBAL top scores "
-                        "from --leaderboard-json (silently falls back to r3d "
-                        "when that file is missing/empty/invalid)")
-    p.add_argument("--leaderboard-json", type=Path, default=None,
-                   help="path to the bot-written osu! global scores JSON "
-                        "(only read when --leaderboard-source osu)")
     p.add_argument("--watermark",       default=None,
                    help="text shown bottom-right (default: empty)")
     p.add_argument("--allow-converted", action="store_true",
@@ -146,8 +126,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def build_render_options(args) -> RenderOptions:
-    """Map parsed CLI args to the options shared by both CLI module names."""
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Build RenderOptions kwargs, only overriding fields where a flag was
     # given. RenderOptions defaults stay authoritative.
@@ -190,8 +174,6 @@ def build_render_options(args) -> RenderOptions:
     if args.no_grade:           opts_kwargs["show_grade"]        = False
     if args.no_key_overlay:     opts_kwargs["show_key_overlay"]  = False
     if args.no_key_counter:     opts_kwargs["show_key_counter"]  = False
-    if args.no_combo:           opts_kwargs["show_combo"]        = False
-    if args.no_judgment:        opts_kwargs["show_judgment"]     = False
     if args.no_result_screen:   opts_kwargs["show_result_screen"]= False
     if args.show_pp:            opts_kwargs["show_pp_counter"]   = True
     if args.pp is not None:     opts_kwargs["pp_override"]       = args.pp
@@ -207,22 +189,9 @@ def build_render_options(args) -> RenderOptions:
     if args.logo:                opts_kwargs["show_logo"]            = True
     if args.featured_avatar_png is not None:
         opts_kwargs["featured_avatar_png"] = str(args.featured_avatar_png)
-    if args.no_leaderboard:      opts_kwargs["show_leaderboard"]   = False
-    if args.leaderboard_source:  opts_kwargs["leaderboard_source"] = args.leaderboard_source
-    if args.leaderboard_json is not None:
-        opts_kwargs["leaderboard_json"] = args.leaderboard_json
     if args.watermark is not None:
         opts_kwargs["watermark_text"] = args.watermark[:64]
-    return RenderOptions(**opts_kwargs)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
-    options = build_render_options(args)
+    options = RenderOptions(**opts_kwargs)
 
     async def _run() -> None:
         await render_mania(

@@ -6,12 +6,12 @@ introduced 2026-05. Validates the cumulative-distance helpers in
 The old point-sample approach was broken on charts with mid-song SV
 changes (notes warped at section boundaries). These tests pin down
 the new behaviour so regressions show up immediately."""
-from osu_mania_renderer_v2.beatmap.beatmap import (
+from osu_mania_renderer_v2.beatmap import (
     build_sv_distance_table,
     sv_distance_at,
 )
-from osu_mania_renderer_v2.beatmap.models import TimingPoint
-from osu_mania_renderer_v2.render.scene import _y_integrated
+from osu_mania_renderer_v2.models import TimingPoint
+from osu_mania_renderer_v2.scene import _y_integrated
 
 
 def _tp(time_ms: int, sv: float) -> TimingPoint:
