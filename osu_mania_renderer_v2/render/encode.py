@@ -315,7 +315,7 @@ def build_ffmpeg_cmd(
     cmd += ["-movflags", "+faststart"]
 
     if audio_path is not None:
-        cmd += ["-c:a", "aac", "-b:a", audio_bitrate, "-map", "0:v"]
+        cmd += ["-c:a", "aac", "-ar", "48000", "-b:a", audio_bitrate, "-map", "0:v"]
         # `audio_out_label` is either a stream selector like "1:a" (use bare)
         # or a filter-complex output label like "aout" (use [aout]).
         if audio_out_label is None:
