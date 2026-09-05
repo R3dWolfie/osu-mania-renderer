@@ -286,17 +286,40 @@ def build_ffmpeg_cmd(
     cmd += ["-vf", ",".join(vf_chain)]
 
     if encoder in ("h264_nvenc", "hevc_nvenc"):
-        # Resolution-scaled NVENC bitrate ladder (R3D cross-engine policy,
-        # 2026-07): the flat video_bitrate (2500k default) starved 1080p60+;
-        # NVENC now targets nvenc_target_bps(w, h, fps) with maxrate=1.5x /
-        # bufsize=2x. Non-NVENC encoders keep the caller's video_bitrate
-        # exactly as before.
-        _tgt = video_bitrate_override or nvenc_target_bps(w, h, fps)
-        cmd += ["-c:v", encoder, "-b:v", str(_tgt),
-                "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
+        # #87 (quality-approved): default to CQ23 (constant quality) instead
+        # of a flat bitrate. On osu gameplay this lands ~3-4x smaller than
+        # the ladder target -> much smaller masters -> faster node->
+        # coordinator upload (the real "Finalizing" cost on remote renders).
+        # The resolution ladder becomes a maxrate CAP. Explicit
+        # video_bitrate_override still pins an exact bitrate.
+        if video_bitrate_override:
+            _tgt = int(video_bitrate_override)
+            cmd += ["-c:v", encoder, "-b:v", str(_tgt),
+                    "-maxrate", str(int(_tgt * 1.5)), "-bufsize", str(_tgt * 2)]
+        else:
+            _cap = nvenc_target_bps(w, h, fps)
+            cmd += ["-c:v", encoder, "-rc", "vbr", "-cq", "23", "-b:v", "0",
+                    "-maxrate", str(_cap), "-bufsize", str(_cap * 2)]
     else:
-        cmd += ["-c:v", encoder, "-b:v",
-                (str(video_bitrate_override) if video_bitrate_override else video_bitrate)]
+        # #87 default-quality: crf 23 (x264 family) / CQP qp 23 (vaapi).
+        # Explicit override pins the bitrate. VAAPI CQP is driver-dependent
+        # -> Aussie to validate on AMD before the fleet bundle.
+        if video_bitrate_override:
+            cmd += ["-c:v", encoder, "-b:v", str(video_bitrate_override)]
+        elif encoder in ("libx264", "libx265", "libopenh264"):
+            cmd += ["-c:v", encoder, "-crf", "23"]
+        elif encoder == "h264_vaapi":
+            cmd += ["-c:v", encoder, "-rc_mode", "CQP", "-qp", "23"]
+        else:
+            cmd += ["-c:v", encoder, "-b:v", video_bitrate]
+        if encoder in ("libx264", "libx265", "libopenh264"):
+            # CPU-encode thread cap (R3D host-governance, 2026-09): leave >=2
+            # logical cores free for the machine's owner. Uncapped, libx264
+            # spawns threads on EVERY core at normal priority and can freeze a
+            # contributor's desktop (the rel/Stella "semi-crash"). Harmless on
+            # dedicated render boxes: CPU encode is only the no-HW fallback.
+            # Same cap in all four engines (catch/taiko/std/mania v2).
+            cmd += ["-threads", str(max(2, (os.cpu_count() or 4) - 2))]
     # Pin BT.709 + limited-range tags on the SPS so downstream players
     # don't have to guess. (Limited range matches the scale=out_range
     # conversion above; both must agree or you get a brightness shift.)
@@ -315,7 +338,7 @@ def build_ffmpeg_cmd(
     cmd += ["-movflags", "+faststart"]
 
     if audio_path is not None:
-        cmd += ["-c:a", "aac", "-b:a", audio_bitrate, "-map", "0:v"]
+        cmd += ["-c:a", "aac", "-ar", "48000", "-b:a", audio_bitrate, "-map", "0:v"]
         # `audio_out_label` is either a stream selector like "1:a" (use bare)
         # or a filter-complex output label like "aout" (use [aout]).
         if audio_out_label is None:
