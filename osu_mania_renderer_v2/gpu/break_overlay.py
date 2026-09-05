@@ -72,7 +72,7 @@ digits and the text lines, sized in the renderer's 1080-reference units
 768-space layout).
 
 Z-ORDER: lazer's BreakOverlay is a LATER overlay-component child than
-HUDOverlay (Player.createOverlayComponents) — the canonical pipeline calls
+HUDOverlay (Player.createOverlayComponents) — FrameRenderer.draw calls
 this after every HUD element (hud/top chrome/flashlight/UR), and before
 the fade-to-black / results / watermark layers, matching lazer's Player
 container order. Only single-replay renders construct it (versus/multi
@@ -158,7 +158,7 @@ class LazerBreakOverlay:
     """Stateful per-render overlay: bakes the static art lazily (first
     visible break frame), then draws per frame during effective breaks
     (map-time duration >= MIN_BREAK_DURATION). Frames arrive in monotonic
-    time order (the compositor runs once per output frame); the
+    time order (FrameRenderer.draw is called once per output frame); the
     damped bar width is replayed statefully like lazer's always-running
     Update()."""
 
@@ -349,8 +349,8 @@ class LazerBreakOverlay:
     # --- per-frame -----------------------------------------------------------
 
     def draw(self, scene) -> None:
-        """Compose the overlay for this frame. Called every frame by the
-        registered break-overlay element (the bar damp runs continuously, like lazer's
+        """Compose the overlay for this frame. Called every frame from
+        FrameRenderer.draw (the bar damp runs continuously, like lazer's
         Update); outside break windows it returns before ANY GL call, so
         non-break frames are untouched."""
         if not self.periods:

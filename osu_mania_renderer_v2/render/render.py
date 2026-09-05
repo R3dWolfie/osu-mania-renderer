@@ -1,36 +1,43 @@
-"""Shared render-plan and per-frame gameplay-state generation.
+"""The public render_mania orchestrator: parse → mod → render → encode.
 
 The per-render setup (parse/mods/judgments/timelines/encoder/ffmpeg) and the
-per-frame gameplay-state computation live in ``build_render_plan`` and
-``build_frame_state``. Frame composition is owned by ``render.compositor``.
-The compatibility-shaped ``render_mania`` name at the bottom of this module
-forwards there and contains no drawing loop.
+per-frame gameplay-state computation are extracted into `build_render_plan`
+and `build_frame_state` so an alternative draw path (the wiki-driven renderer)
+can reuse identical gameplay semantics — the only thing that differs between
+paths is HOW each frame is drawn.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
 import os
-import pathlib
+import time as _t
 from bisect import bisect_right as _br
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from dataclasses import replace as _dc_replace
+from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
+import pathlib
 from typing import Any
 
 from osu_mania_renderer_v2.beatmap.beatmap import build_sv_distance_table, parse_beatmap
+from osu_mania_renderer_v2.render import loudnorm_cache
+from osu_mania_renderer_v2.render.encode import FfmpegPipe, build_ffmpeg_cmd, probe_encoder
+from osu_mania_renderer_v2.errors import (
+    BeatmapParseError,
+    MissingAudioError,
+    RenderTimeoutError,
+)
+from osu_mania_renderer_v2.gpu.context import HeadlessGl
+from osu_mania_renderer_v2.gpu.readback import FrameReader
+from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
 from osu_mania_renderer_v2.beatmap.judgments import compute_judgments, reconcile_to_counts
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
+from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
-from osu_mania_renderer_v2.errors import BeatmapParseError, MissingAudioError
-from osu_mania_renderer_v2.render import loudnorm_cache
-from osu_mania_renderer_v2.render.encode import build_ffmpeg_cmd, probe_encoder
-from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
-from osu_mania_renderer_v2.render.logo import set_intro_start_ms
 from osu_mania_renderer_v2.render.scene import JudgmentPopup, snapshot
 
 log = logging.getLogger("osu_mania_renderer_v2")
@@ -43,19 +50,10 @@ APPROACH_MS = 600
 SCROLL_SPEED_BASELINE = 17
 RESULTS_DURATION_MS = 6000   # how long the post-game results card shows
 RESULTS_GAP_MS = 800         # quiet gap between last note and results fade-in
-_FAIL_TAIL_MS = 700          # video tail after a fail/quit before results (taiko parity)
 START_FADE_MS = 1600         # opening fade-in from black at song start
 END_FADE_MS = 600            # gameplay → results transition fade
 HIT_LIGHT_DURATION_MS = 320  # how long a receptor flash lingers
 COMBO_POP_DURATION_MS = 180  # how long the combo number stays scaled up
-# show_logo guaranteed pre-roll — the mania mirror of catch's
-# RenderConfig.lead_in_ms = 1500 (osu_catch_renderer/beatmap/models.py:136,
-# "blank/approach before first object"). When the R3D intro splash is on and
-# the map's first note comes too early for the splash window
-# (< logo.LOGO_MIN_WINDOW_MS before its approach), the timeline is opened
-# THIS much before the first note's spawn — catch render/render.py:454-461
-# (`start_ms = min(0, int(first - preempt - cfg.lead_in_ms))`).
-LOGO_LEAD_IN_MS = 1500
 
 # osu!mania HP deltas per judgment. The osu! stable HP drain formula is
 # complex; these values approximate the visible behaviour — geki/300 fully
@@ -114,9 +112,10 @@ _DEFAULT_SKIN_DIRS = (
 class RenderPlan:
     """Everything computed once per render, before the per-frame loop.
 
-    Consumed by the canonical compositor to compute identical gameplay
-    numbers for every frame. Holds pure data only — no GL context, ffmpeg
-    pipe, or other live resource."""
+    Shared by `render_mania` (legacy draw) and the wiki-driven renderer so
+    both compute identical gameplay numbers. Holds pure data only — no GL
+    context, ffmpeg pipe, or other live resource (those are owned by the
+    loop function so their lifecycle stays in one try/finally)."""
 
     # inputs / context
     options: RenderOptions
@@ -175,14 +174,6 @@ class RenderPlan:
     # scaling carried in score_scale.
     score_scale: float = 1.0
     score_final: int | None = None
-    # show_logo pre-roll (ms) prepended BEFORE map t=0 — the mania mirror of
-    # catch's guaranteed lead-in (catch render/render.py:458-459
-    # `start_ms = min(0, int(first - preempt - cfg.lead_in_ms))`): the video
-    # opens at map time -logo_preroll_ms, the audio (song + hitsound WAV) is
-    # adelay'd by the same amount, and build_frame_state maps the loop's
-    # 0-based frame clock back to map time by subtracting it. 0 (the default,
-    # and always 0 with show_logo off) => timeline identical to before.
-    logo_preroll_ms: int = 0
 
 
 async def build_render_plan(
@@ -370,8 +361,7 @@ async def build_render_plan(
     if _osr_score > 0 and _gv < 30_000_000 and not (_mods & (1 << 29)):
         try:
             from osu_mania_renderer_v2.beatmap.score_fidelity import (
-                mania_lazer_accuracy,
-                stable_to_standardised,
+                mania_lazer_accuracy, stable_to_standardised,
             )
             _lz_acc = mania_lazer_accuracy(
                 replay.count_geki, replay.count_300, replay.count_katu,
@@ -417,51 +407,10 @@ async def build_render_plan(
         else:
             log.warning("audio_missing", extra={"expected": str(cand)})
 
-    # show_logo pre-roll — mirror of catch render/render.py:454-461: catch
-    # guarantees `start_ms = min(0, int(first - preempt - cfg.lead_in_ms))`
-    # (lead_in_ms=1500, catch beatmap/models.py:136) so the intro splash
-    # always has a full lead-in window before the first object's approach.
-    # Mania's timeline always opened at map t=0, so a map whose first note
-    # comes < LOGO_MIN_WINDOW_MS after its approach start never showed the
-    # splash at all. When the splash is on, open the timeline at start_ms
-    # (map time, <= 0) instead: prepend -start_ms of video and delay the
-    # audio by the same amount. show_logo off keeps start_ms pinned to 0 —
-    # the whole pipeline is byte-identical to before.
-    first_note_ms = min((n.time_ms for n in modded.notes), default=0)
-    logo_preroll_ms = 0
-    if options.show_logo:
-        _logo_start_ms = min(
-            0, int(first_note_ms - effective_approach_ms - LOGO_LEAD_IN_MS))
-        logo_preroll_ms = -_logo_start_ms
-        if logo_preroll_ms > 0:
-            log.info("logo_preroll", extra={
-                "ms": logo_preroll_ms, "first_note_ms": first_note_ms,
-                "approach_ms": effective_approach_ms,
-            })
-    # Tell the splash envelope where the timeline really opens (gpu/renderer
-    # hard-codes t_start=0.0). Unconditional so a long-lived process never
-    # carries a previous render's offset.
-    set_intro_start_ms(-logo_preroll_ms)
-
-    # End-of-song layout: brief silent gap → results card. gameplay_end /
-    # results_start stay MAP-time (build_frame_state compares them against
-    # the remapped map clock); total_video_ms is VIDEO-domain, so it alone
-    # grows by the pre-roll.
-    # SIBLING PARITY (Red, 2026-08-07): a failed/quit replay stops recording at
-    # death and cuts straight to results — catch/taiko truncate the video at the
-    # death point (taiko: fail_time_ms + 700) rather than playing the rest of the
-    # map, and NONE of them paint a "FAILED" wash (see the removed fail overlay).
-    # mania's signal is the same "where the replay frames stop": a play that
-    # judged fewer objects than the map has is incomplete (the player died or
-    # quit — every completed object yields a hit/miss event, so a short count
-    # means the replay ended early). Truncate to the last judged object + tail.
+    # End-of-song layout: brief silent gap → results card.
     gameplay_end_ms = modded.total_duration_ms
-    if len(judgments.events) < len(modded.notes) and judgment_timeline:
-        last_play_ms = max(eff_t for eff_t, _ in judgment_timeline)
-        gameplay_end_ms = min(gameplay_end_ms,
-                              int(last_play_ms + _FAIL_TAIL_MS))
     results_start_ms = gameplay_end_ms + RESULTS_GAP_MS
-    total_video_ms = results_start_ms + RESULTS_DURATION_MS + logo_preroll_ms
+    total_video_ms = results_start_ms + RESULTS_DURATION_MS
     total_frames = math.ceil(total_video_ms / 1000 * options.fps)
 
     # Hitsound track — a temp WAV pre-mixed with one sample at every non-miss
@@ -529,14 +478,9 @@ async def build_render_plan(
         audio_rate=mod_res.audio_rate,
         audio_pitch=mod_res.audio_pitch,
         prenormalized_audio_path=prenormalized_audio,
-        # adelay = the AudioLeadIn intro silence PLUS the show_logo pre-roll:
-        # the video now opens logo_preroll_ms before map t=0, so the song AND
-        # the hitsound WAV (both adelay'd by this value in encode.py) start
-        # exactly when the remapped clock crosses map t=0 — audio sync is
-        # unchanged, just translated with the video. 0 pre-roll => identical
-        # command line to before.
-        audio_lead_in_ms=effective_lead_in_ms + logo_preroll_ms,
+        audio_lead_in_ms=effective_lead_in_ms,
         video_bitrate=options.video_bitrate,
+        video_bitrate_override=options.video_bitrate_override,
         audio_bitrate=options.audio_bitrate,
         output_path=output_path,
         total_duration_ms=total_video_ms,
@@ -548,7 +492,7 @@ async def build_render_plan(
 
     bg_filename = modded.background_filename
     bg_path = (beatmap_dir / bg_filename) if bg_filename else None
-    # first_note_ms computed above (pre-roll needs it before the ffmpeg cmd).
+    first_note_ms = min((n.time_ms for n in modded.notes), default=0)
     banner_text = (
         f"{modded.artist} - {modded.title} [{modded.difficulty}]   "
         f"{replay.player_name}"
@@ -589,7 +533,6 @@ async def build_render_plan(
         n_scoring=_n_scoring, max_combo_portion=_max_combo_portion,
         mod_mult=_mod_mult, mania_mw=_mania_mw,
         score_scale=_score_scale, score_final=_score_final,
-        logo_preroll_ms=logo_preroll_ms,
     )
 
 
@@ -602,18 +545,6 @@ def build_frame_state(
     """Compute the full per-frame SceneState. Pure given (plan, t_ms,
     smoothing carriers). Returns (scene_full, score_smoothed, accuracy_smoothed)
     so the caller threads the two single-pole low-pass accumulators forward."""
-    # show_logo pre-roll remap — the compositor hands in the 0-based video
-    # clock frame_n*1000/fps;
-    # subtracting the pre-roll converts it to MAP time (the axis every plan
-    # quantity — notes, judgments, kiai, gameplay_end, results_start — lives
-    # on), so the first logo_preroll_ms of video sits at negative map time:
-    # no notes, no judgments, audio not yet started (it is adelay'd by the
-    # same amount in build_render_plan). This is catch's negative start_ms
-    # (catch render/render.py:458-459) expressed as a clock translation
-    # instead of a loop-start change. logo_preroll_ms is 0 unless show_logo
-    # opened the timeline early, so the subtraction is exact-identity for
-    # every existing render.
-    t_ms = t_ms - plan.logo_preroll_ms
     replay = plan.replay
     key_count = plan.key_count
     gameplay_end_ms = plan.gameplay_end_ms
@@ -829,23 +760,6 @@ def build_frame_state(
     key_press_age_ms = tuple(key_press_age_ms_arr)
     key_press_counts = tuple(key_press_counts_arr)
 
-    # Falling-edge (release) ages per column. Cached on the plan — a pure
-    # function of the immutable replay.key_events, built on first use (same
-    # pattern as plan._je_times above). The Argon key counter's release
-    # tweens (hud/elements.key_counter: indicator 250 ms return + name
-    # 200 ms decay) key off this, mirroring STD's
-    # KeySeries.last_release_at (std render/hud.py:772-774).
-    release_iters = getattr(plan, "_release_iters", None)
-    if release_iters is None:
-        release_iters = _falling_edges_per_col(replay.key_events, key_count)
-        plan._release_iters = release_iters
-    key_release_age_ms_arr = []
-    for c in range(key_count):
-        times = release_iters[c]
-        idx = _br(times, t_ms) - 1
-        key_release_age_ms_arr.append(t_ms - times[idx] if idx >= 0 else 99999)
-    key_release_age_ms = tuple(key_release_age_ms_arr)
-
     miss_break_age = 99999
     for mt in reversed(plan.miss_break_times):
         if mt <= t_ms:
@@ -964,7 +878,6 @@ def build_frame_state(
         per_column_ur=plan.per_column_ur,
         key_press_age_ms=key_press_age_ms,
         key_press_counts=key_press_counts,
-        key_release_age_ms=key_release_age_ms,
         miss_break_age_ms=miss_break_age,
     )
     return scene_full, score_smoothed, accuracy_smoothed
@@ -982,20 +895,102 @@ async def render_mania(
     allow_converted: bool = False,
     convert_to_keys: int = 4,
 ) -> None:
-    """Compatibility import path forwarding to the canonical compositor."""
-    from osu_mania_renderer_v2.render.compositor import render_mania as _render
+    log.info("render_start", extra={"osr": str(osr_path), "out": str(output_path)})
 
-    await _render(
-        osr_path=osr_path,
-        beatmap_dir=beatmap_dir,
-        output_path=output_path,
-        options=options,
-        progress_callback=progress_callback,
-        log_path=log_path,
-        skin_dir=skin_dir,
-        allow_converted=allow_converted,
+    plan = await build_render_plan(
+        osr_path=osr_path, beatmap_dir=beatmap_dir, output_path=output_path,
+        options=options, skin_dir=skin_dir, allow_converted=allow_converted,
         convert_to_keys=convert_to_keys,
     )
+
+    pipe = FfmpegPipe(plan.ffmpeg_cmd, fifo_path=plan.fifo_path)
+    await pipe.start()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + options.timeout_seconds
+
+    try:
+        with HeadlessGl(width=options.resolution[0], height=options.resolution[1]) as gl:
+            rc = RenderContext(
+                ctx=gl.ctx, fbo=gl.fbo,
+                width=options.resolution[0], height=options.resolution[1],
+                key_count=plan.key_count,
+            )
+            fr = FrameRenderer(
+                rc, options, skin_dir=skin_dir,
+                beatmap_dir=beatmap_dir,
+                first_note_ms=plan.first_note_ms,
+                # bg dim envelope inputs (dim.py): modded-time note starts +
+                # break periods, and the scroll-speed-scaled approach window.
+                note_starts=plan.note_times,
+                breaks=getattr(plan.modded, "breaks", ()),
+                approach_ms=plan.effective_approach_ms,
+                # break overlay clock: real/video time -> map time
+                rate=plan.audio_rate,
+            )
+            if plan.bg_path and plan.bg_path.exists():
+                fr.set_background(plan.bg_path)
+            fr.set_banner_text(plan.banner_text)
+            reader = FrameReader(gl.ctx, gl.fbo, components=3)
+
+            last_progress_t = 0.0
+            score_smoothed = 0.0
+            accuracy_smoothed = 100.0
+            # Per-phase accumulators (pre-draw Python / GPU draw / readback).
+            _phase_pre_draw_s = 0.0
+            _phase_draw_s = 0.0
+            _phase_read_write_s = 0.0
+            for frame_n in range(plan.total_frames):
+                _phase_t0 = _t.perf_counter()
+                if loop.time() > deadline:
+                    raise RenderTimeoutError(
+                        f"render exceeded {options.timeout_seconds}s"
+                    )
+                t_ms = int(frame_n * 1000 / options.fps)
+                scene_full, score_smoothed, accuracy_smoothed = build_frame_state(
+                    plan, t_ms, score_smoothed, accuracy_smoothed,
+                )
+                _phase_pre_draw_s += _t.perf_counter() - _phase_t0
+                _phase_t1 = _t.perf_counter()
+                fr.draw(scene_full)
+                _phase_draw_s += _t.perf_counter() - _phase_t1
+                _phase_t2 = _t.perf_counter()
+                frame = reader.read()
+                await pipe.write_frame(frame)
+                _phase_read_write_s += _t.perf_counter() - _phase_t2
+
+                if progress_callback and (loop.time() - last_progress_t > 0.5):
+                    await progress_callback(frame_n / plan.total_frames)
+                    last_progress_t = loop.time()
+
+            # Flush any frames still in flight in the readback PBO ring.
+            for tail_frame in reader.drain():
+                await pipe.write_frame(tail_frame)
+            log.info(
+                "phase_timing pre_draw=%.2fs draw=%.2fs read_write=%.2fs frames=%d",
+                _phase_pre_draw_s, _phase_draw_s, _phase_read_write_s,
+                plan.total_frames,
+            )
+
+            if progress_callback:
+                await progress_callback(1.0)
+        await pipe.close(output_path)
+    except BaseException:
+        # Kill ffmpeg on any error
+        if pipe.proc and pipe.proc.returncode is None:
+            try:
+                pipe.proc.kill()
+            except ProcessLookupError:
+                pass
+        raise
+    finally:
+        # Drop the temp hitsound WAV regardless of success / failure.
+        if plan.hitsound_wav is not None:
+            try:
+                plan.hitsound_wav.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    log.info("render_done", extra={"out": str(output_path)})
 
 
 def _find_osu(beatmap_dir: Path, expected_md5: str) -> Path:
@@ -1100,22 +1095,6 @@ def _rising_edges_per_col(events, key_count: int) -> list[list[int]]:
                 presses[c].append(e.time_ms)
         prev = e.keys_held
     return presses
-
-
-def _falling_edges_per_col(events, key_count: int) -> list[list[int]]:
-    """Falling-edge (key-UP) times per column — the mirror of
-    _rising_edges_per_col above. Feeds SceneState.key_release_age_ms,
-    which drives the Argon key counter's release tweens (indicator's
-    250 ms OutQuart return + the name's 200 ms OutQuart white decay)."""
-    releases: list[list[int]] = [[] for _ in range(key_count)]
-    prev = 0
-    for e in events:
-        released = prev & ~e.keys_held
-        for c in range(key_count):
-            if released & (1 << c):
-                releases[c].append(e.time_ms)
-        prev = e.keys_held
-    return releases
 
 
 def _per_column_ur(events, key_count: int) -> tuple[float, ...]:

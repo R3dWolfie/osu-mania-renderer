@@ -2,14 +2,14 @@ import os
 
 import pytest
 
-from osu_mania_renderer_v2.beatmap.models import VisualMods
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-from osu_mania_renderer_v2.render.scene import JudgmentPopup, SceneState
+from osu_mania_renderer_v2.models import VisualMods
+from osu_mania_renderer_v2.scene import JudgmentPopup, SceneState
 
 
 @pytest.mark.slow
-def test_receptors_drawn_at_bottom(compose_scene):
+def test_receptors_drawn_at_bottom():
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
     W, H = 320, 240
@@ -21,13 +21,13 @@ def test_receptors_drawn_at_bottom(compose_scene):
             keys_held=(True, False, True, False),
             visual_mods=VisualMods(),
         )
-        compose_scene(fr, gl, scene)
+        fr.draw(scene)
         data = gl.fbo.read(components=3)
         assert max(data) > 50
 
 
 @pytest.mark.slow
-def test_judgment_popup_drawn(compose_scene):
+def test_judgment_popup_drawn():
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
     W, H = 320, 240
@@ -39,6 +39,6 @@ def test_judgment_popup_drawn(compose_scene):
             visual_mods=VisualMods(),
             active_judgments=(JudgmentPopup(column=2, judgment="300", age_ms=100),),
         )
-        compose_scene(fr, gl, scene)
+        fr.draw(scene)
         data = gl.fbo.read(components=3)
         assert max(data) > 50

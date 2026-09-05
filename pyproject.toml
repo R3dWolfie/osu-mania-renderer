@@ -9,12 +9,6 @@ dependencies = [
     "osrparse>=7.0",
     "Pillow>=10.0",
     "numpy>=2.0",
-    # SR/pp on the results card (beatmap/pp.py). Pinned to the exact version
-    # std/catch/taiko run so all four renderers compute identical numbers.
-    # Code is fail-soft if it's ever absent, but it must be installed for
-    # parity — before this it was missing from mania's venv and SR/pp rendered
-    # as ★-- / 0 while every sibling showed real values.
-    "rosu_pp_py==4.0.2",
 ]
 
 [project.optional-dependencies]

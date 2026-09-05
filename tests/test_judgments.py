@@ -1,5 +1,5 @@
-from osu_mania_renderer_v2.beatmap.judgments import compute_judgments
-from osu_mania_renderer_v2.beatmap.models import KeyEvent, Note
+from osu_mania_renderer_v2.judgments import compute_judgments
+from osu_mania_renderer_v2.models import KeyEvent, Note
 
 
 def test_perfect_tap_within_window():

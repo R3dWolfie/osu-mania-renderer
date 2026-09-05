@@ -1,4 +1,4 @@
-from osu_mania_renderer_v2.beatmap.models import (
+from osu_mania_renderer_v2.models import (
     HoldNote,
     KeyEvent,
     Note,

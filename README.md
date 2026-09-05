@@ -21,11 +21,15 @@ service restart. Production runs on the `mania-v3` branch.
   environment variable.
 - ffmpeg encoding with selectable encoder: `auto`, `h264_vaapi`, `h264_nvenc`,
   or `libx264`; optional loudnorm normalization pass.
-- One canonical **element-registry compositor** (`render/compositor.py` and
-  `render/pipeline.py`) backed by the shared GPU sprite/text primitives. The
-  sprite atlas is built once from an optional extracted `.osk` directory,
-  skin.ini, and bundled fallbacks. `wiki_renderer.py` remains only as the
-  worker command's compatibility module; `OSU_USE_WIKI_RENDERER` is ignored.
+- Custom **skin pipeline** with two paths (see `__init__.py`):
+  - **GPU renderer** (default) — hand-coded painter, sprite atlas built once at
+    startup from an `.osk` + skin.ini + bundled fallback sprites.
+  - **Wiki-driven renderer** (`wiki_renderer.py`, opt-in via
+    `OSU_USE_WIKI_RENDERER=1`) — every visible pixel traces to a user-skin asset,
+    a default-skin asset, or a wiki-documented default; unresolved variables raise
+    rather than guess. This path **requires** `--skin-dir`. Still under active
+    development (verify current prod path — the env toggle defaults to the GPU
+    renderer).
 - No osu! game assets are bundled; osu!'s default art/skins/audio are CC BY-NC and
   are not included. This repo ships only original or procedurally-generated art.
 - HUD: score/combo/accuracy/PP via digit sprites; HP bar, progress bar, and
@@ -55,7 +59,7 @@ Positional args: `osr` (the `.osr` file) and `beatmap_dir` (directory containing
 --encoder-device PATH        VAAPI device, e.g. /dev/dri/renderD128
 --timeout SECONDS            render timeout (default 600)
 --skin-dir PATH              extracted .osk dir (overrides bundled sprites;
-                             omitted means the empty/default fallback skin)
+                             required for the wiki renderer)
 --scroll-speed 1-40          --bg-dim / --bg-dim-{intro,game,breaks} / --bg-blur
 --pp FLOAT / --sr FLOAT      exact official PP / star rating for the results card
 --allow-converted            --convert-to-keys {4,5,6,7,8,9,10}
@@ -98,12 +102,12 @@ pip install -e ".[dev]"
 
 ```
 osu_mania_renderer_v2/       # the package
-  __init__.py                # public render_mania() API
+  __init__.py                # render_mania() + GPU/wiki renderer switch
   cli.py                     # osu-renderer CLI (argparse)
-  wiki_renderer.py           # worker-facing compatibility shim
-  gpu/                       # ModernGL/EGL: context, atlas, primitives, shaders, text
-  render/                    # canonical compositor/pipeline + state/encode support
-  hud/ argon/ skin/          # registered elements and skin-aware presentation
+  wiki_renderer.py           # wiki-driven render path
+  wiki_elements/             # per-element specs (notes, stage, hud, effects…)
+  gpu/                       # ModernGL/EGL: context, atlas, renderer, shaders, text
+  render/                    # scene, encode, hitsounds, loudnorm, bg, logo
   beatmap/                   # beatmap/replay parse, mods, judgments, scoring,
                              #   converters, skin.ini, pp
   errors.py                  # renderer exception types

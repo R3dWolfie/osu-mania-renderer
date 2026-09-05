@@ -2,14 +2,14 @@ import os
 
 import pytest
 
-from osu_mania_renderer_v2.beatmap.models import VisualMods
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-from osu_mania_renderer_v2.render.scene import SceneState, VisibleNote
+from osu_mania_renderer_v2.models import VisualMods
+from osu_mania_renderer_v2.scene import SceneState, VisibleNote
 
 
 @pytest.mark.slow
-def test_renders_a_single_note(compose_scene):
+def test_renders_a_single_note():
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 to run GL smoke tests")
     W, H = 256, 256
@@ -25,7 +25,7 @@ def test_renders_a_single_note(compose_scene):
             keys_held=(False, False, False, False),
             visual_mods=VisualMods(),
         )
-        compose_scene(fr, gl, scene)
+        fr.draw(scene)
         data = gl.fbo.read(components=3)
         # At least one pixel should be brighter than the background.
         assert max(data) > 50

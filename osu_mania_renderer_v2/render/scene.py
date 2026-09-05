@@ -109,13 +109,6 @@ class SceneState:
     # Per-column cumulative key-press count up to t_ms (rising edges). Drives
     # the bottom-right key counter (lazer's KeyCounterDisplay).
     key_press_counts: tuple[int, ...] = ()
-    # Per-column age (ms) since the most recent key-UP (falling edge).
-    # 99999 = no release yet. Together with key_press_age_ms this drives
-    # the Argon key counter's press/release tweens (the indicator's 4 px
-    # drop + 250 ms return, the name's white flash + 200 ms decay) — same
-    # edge-time sourcing as STD's KeySeries.last_press_at/last_release_at
-    # (std render/hud.py:719-774).
-    key_release_age_ms: tuple[int, ...] = ()
     # Age (ms) since the most recent combo-break that was large enough to
     # trigger the shake/flash. 9999 = no recent break.
     miss_break_age_ms: int = 9999

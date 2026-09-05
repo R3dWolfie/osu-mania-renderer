@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from osu_mania_renderer_v2.beatmap.beatmap import parse_beatmap
-from osu_mania_renderer_v2.beatmap.models import HoldNote
+from osu_mania_renderer_v2.beatmap import parse_beatmap
 from osu_mania_renderer_v2.errors import BeatmapParseError, NotAManiaError
+from osu_mania_renderer_v2.models import HoldNote
 
 
 def test_parse_ao_infinity_hard(fixtures_dir: Path):
