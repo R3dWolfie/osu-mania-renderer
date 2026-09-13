@@ -2053,10 +2053,13 @@ class FrameRenderer:
                 )
                 score_bottom = accuracy_y
 
-        mods_bottom = self._draw_legacy_mod_icons(
-            scene,
-            fallback_anchor_y=score_bottom - 16.0 * ui_scale,
-        )
+        if self.options.show_mods:
+            mods_bottom = self._draw_legacy_mod_icons(
+                scene,
+                fallback_anchor_y=score_bottom - 16.0 * ui_scale,
+            )
+        else:
+            mods_bottom = score_bottom - 16.0 * ui_scale
         if self.options.show_pp_counter and scene.max_pp > 0:
             texture, width, height = self._cached_text(
                 f"{scene.pp:.0f}pp", 44, (255, 220, 140, 255),
