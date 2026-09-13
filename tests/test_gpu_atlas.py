@@ -190,6 +190,50 @@ def test_resolve_global_lighting_n_layered_fallback(tmp_path):
     assert frames[0].getpixel((0, 0)) == (5, 5, 5, 255)
 
 
+def test_explicit_blank_lighting_overrides_resolve_as_user_assets(tmp_path):
+    """`LightingN/L: blank` is authored transparency, not missing data."""
+    from PIL import Image
+
+    from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
+
+    skin = tmp_path / "skin"
+    skin.mkdir()
+    Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(skin / "blank.png")
+    section = ManiaSection(keys=4, lighting_n="blank", lighting_l="blank")
+
+    for slot in ("lighting_n", "lighting_l"):
+        frames, src = SpriteAtlas._resolve_global(
+            slot, skin_dir=skin, beatmap_dir=None, section=section,
+        )
+        assert src == "user"
+        assert len(frames) == 1
+        assert frames[0].size == (1, 1)
+        assert frames[0].getpixel((0, 0))[3] == 0
+
+
+def test_explicit_lighting_override_animation_is_case_insensitive(tmp_path):
+    """Named paths accept Windows separators and discover `-N` frames."""
+    from PIL import Image
+
+    from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
+
+    skin = tmp_path / "skin"
+    effects = skin / "Effects"
+    effects.mkdir(parents=True)
+    Image.new("RGBA", (16, 8), (10, 0, 0, 255)).save(effects / "FLASH-0.PNG")
+    Image.new("RGBA", (16, 8), (20, 0, 0, 255)).save(effects / "FLASH-1.PNG")
+    section = ManiaSection(keys=4, lighting_n=r"effects\flash")
+
+    frames, src = SpriteAtlas._resolve_global(
+        "lighting_n", skin_dir=skin, beatmap_dir=None, section=section,
+    )
+
+    assert src == "user"
+    assert len(frames) == 2
+    assert frames[0].getpixel((0, 0)) == (10, 0, 0, 255)
+    assert frames[1].getpixel((0, 0)) == (20, 0, 0, 255)
+
+
 def test_resolve_column_animated_skin(tmp_path):
     """Per-column note_tap animation discovery via `<base>-N.png`."""
     from PIL import Image
@@ -325,7 +369,7 @@ def test_resolve_column_per_column_override_wins_over_beatmap(tmp_path):
     on purpose — honour it."""
     from PIL import Image
 
-    from osu_mania_renderer_v2.skin_ini import ManiaSection
+    from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
     skin_dir = tmp_path / "skin"
     skin_dir.mkdir()
     bm_dir = tmp_path / "map"

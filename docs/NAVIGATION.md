@@ -95,8 +95,9 @@ Going from a `.osk` upload to "pixels on screen", the chain is:
    from skin.ini (or lazer defaults). `_draw_columns()` paints
    `Colour{N}` lane backgrounds + `ColumnLineWidth` dividers.
    `_draw_stage_decorations()` paints the side dim + stage chrome.
-   `_draw_receptors()` reads each column's native receptor aspect
-   and bottom-anchors at the hit line. `_draw_notes()` does the same
+   `_draw_receptors()` stretches each legacy key to the column width while
+   retaining its ScaleAdjust-aware native design height, then anchors it to
+   the stage edge like lazer's `LegacyKeyArea`. `_draw_notes()` does the same
    for tap notes + hold heads/tails + the L-sprite body
    (stretched at NoteBodyStyle 0, tiled at 2/3/4).
 

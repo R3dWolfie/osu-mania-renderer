@@ -33,7 +33,16 @@ class VisibleNote:
 class JudgmentPopup:
     column: int
     judgment: str       # "geki" | "300" | "katu" | "100" | "50" | "miss"
-    age_ms: int         # 0 = just hit, fades over 600ms
+    age_ms: int         # 0 = just judged; legacy presentation ends at 220ms
+
+
+@dataclass(frozen=True)
+class HitErrorEvent:
+    """One scored hit carried to the HUD with its real visual age."""
+
+    offset_ms: float
+    judgment: str
+    age_ms: int
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,10 @@ class SceneState:
     # Display-ordered mod pill labels for this replay, e.g. ("4K", "HD", "DT").
     # First entry is the key-count badge; rest are gameplay mods.
     mod_acronyms: tuple[str, ...] = ()
+    # Authoritative raw replay flags for both custom-skin and Argon mod icons.
+    # Kept separate from mod_acronyms, which retains a synthetic key-count
+    # badge for older presentation paths but is not used by the Argon HUD.
+    replay_mods: int = 0
     # Post-game results card. When True, the renderer overlays the final
     # grade / score / accuracy / judgment breakdown on top of a dimmed,
     # gameplay-emptied playfield (notes have all scrolled past at this point).
@@ -62,6 +75,16 @@ class SceneState:
     # Drives the on-screen unstable rate bar — gameplay HUD shows the
     # distribution + the average offset. None = no press for that note.
     recent_offsets: tuple[float, ...] = ()
+    # At most the newest 50 scored hits still within lazer's 5.1-second
+    # BarHitErrorMeter animation. Unlike recent_offsets, these retain their
+    # real event age and judgment colour.
+    hit_error_events: tuple[HitErrorEvent, ...] = ()
+    # Perfect/Great/Good/Ok/Meh windows for the modded beatmap OD. The widest
+    # hit window (Meh) defines the meter's visible range.
+    hit_error_windows: tuple[float, float, float, float, float] = ()
+    # lazer's floatingAverage = old * 0.9 + offset * 0.1. None means that no
+    # scored hit has occurred yet, so the indicator remains hidden.
+    hit_error_ema_ms: float | None = None
     # Average hit offset across the play so far, in ms (positive = late).
     avg_hit_offset_ms: float = 0.0
     # Unstable rate (10 × stddev of all signed hit offsets so far).
@@ -85,6 +108,9 @@ class SceneState:
     # Combo pop animation: ms since the last combo increment (0 = just now).
     # The renderer scales the combo number briefly then settles back.
     combo_age_ms: int = 9999
+    # Presentation-only state for stable/lazer's 200ms combo-break burst.
+    combo_break_previous_value: int = 0
+    combo_break_age_ms: int = 9999
     # Smoothed (tweened) versions of score + accuracy so the on-screen
     # counter rolls up rather than snapping per-frame.
     score_smoothed: int = 0

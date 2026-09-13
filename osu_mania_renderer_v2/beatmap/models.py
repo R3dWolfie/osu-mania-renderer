@@ -161,19 +161,29 @@ class RenderOptions:
     # measurably slow down dense charts. Off by default; flip on for
     # cosmetic flair if you don't mind the longer render time.
     show_note_trail: bool = False
+    # Retained for callers which still construct RenderOptions with the old
+    # R3D per-hit timing-popup gate. Argon no longer renders those popups; the
+    # website's hit-error control is represented explicitly below.
     show_hit_error_popup: bool = True
     show_combo_pop: bool = True
     show_combo_tier_color: bool = True
     show_miss_shake: bool = True
     show_progress_bar: bool = True
     show_hp_bar: bool = True
+    # Compatibility alias for older callers of the standalone UR readout.
+    # New website-facing code should use show_unstable_rate. Rendering treats
+    # either false value as disabled so existing callers remain authoritative.
     show_ur_bar: bool = True
+    show_unstable_rate: bool = True
     show_kiai_highlight: bool = True
     show_player_sidebar: bool = False  # opt-in; needs osu! API call
     # HUD draw-call gates surfaced by the web settings page. Each toggles
     # one optional element off; defaults keep current behaviour.
     show_score: bool = True
     show_grade: bool = True
+    show_mods: bool = True
+    show_scoreboard: bool = True
+    show_hit_error_meter: bool = True
     # 0.0 hides the entire engine HUD (YT overlay is the sole HUD); >0 = on.
     hud_opacity: float = 1.0
     show_key_overlay: bool = True       # the receptor key-press flash

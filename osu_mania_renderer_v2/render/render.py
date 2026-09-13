@@ -31,14 +31,27 @@ from osu_mania_renderer_v2.errors import (
 )
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
 from osu_mania_renderer_v2.gpu.readback import FrameReader
-from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
-from osu_mania_renderer_v2.beatmap.judgments import compute_judgments, reconcile_to_counts
+from osu_mania_renderer_v2.gpu.renderer import (
+    FrameRenderer,
+    RenderContext,
+    next_hit_error_ema,
+)
+from osu_mania_renderer_v2.beatmap.judgments import (
+    WINDOW_100,
+    WINDOW_200,
+    WINDOW_300,
+    WINDOW_320,
+    WINDOW_50,
+    compute_judgments,
+    reconcile_to_counts,
+    windows_for_od,
+)
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
-from osu_mania_renderer_v2.render.scene import JudgmentPopup, snapshot
+from osu_mania_renderer_v2.render.scene import HitErrorEvent, JudgmentPopup, snapshot
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
@@ -136,6 +149,7 @@ class RenderPlan:
     max_hold_dur_ms: int
     judgment_events: tuple
     judgment_timeline: list
+    hit_error_windows: tuple[float, float, float, float, float]
     total_quality: int
     kiai_ranges: list[tuple[int, int]]
     per_column_ur: tuple[float, ...]
@@ -227,6 +241,12 @@ async def build_render_plan(
     judgments = compute_judgments(
         modded.notes, replay.key_events, modded.key_count,
         overall_difficulty=getattr(modded, "overall_difficulty", None),
+    )
+    modded_od = getattr(modded, "overall_difficulty", None)
+    hit_error_windows = (
+        windows_for_od(float(modded_od))
+        if modded_od is not None
+        else (WINDOW_320, WINDOW_300, WINDOW_200, WINDOW_100, WINDOW_50)
     )
     # Re-label the simulated judgments to the .osr's authoritative tallies so the
     # live accuracy/counts are correct frame-by-frame and need no end-of-song
@@ -519,6 +539,7 @@ async def build_render_plan(
         sv_for_note=sv_for_note, timing_points=tps, sv_table=sv_table,
         note_times=note_times_tuple, max_hold_dur_ms=max_hold_dur_ms_val,
         judgment_events=judgments.events, judgment_timeline=judgment_timeline,
+        hit_error_windows=hit_error_windows,
         total_quality=total_quality, kiai_ranges=kiai_ranges,
         per_column_ur=per_column_ur, miss_break_times=miss_break_times,
         press_iters=press_iters, acronyms=acronyms,
@@ -564,40 +585,25 @@ def build_frame_state(
         note_times=plan.note_times,
         max_hold_dur_ms=plan.max_hold_dur_ms,
     )
-    # Active judgments: any whose time ∈ [t-600ms, t].
-    # `judgment_events` is note-time-sorted (compute_judgments folds a
-    # sorted scoring list), so the window `0 <= t_ms - time < 800` is a
-    # contiguous slice — find it with two bisects instead of scanning the
-    # whole event list every frame. Sortedness is verified once per render;
-    # an unsorted timeline (never in practice) falls back to the original
-    # full scan so behaviour is identical either way.
-    _je = plan.judgment_events
-    _je_times = getattr(plan, "_je_times", None)
-    if _je_times is None:
-        _je_times = [j.time_ms for j in _je]
-        plan._je_times = _je_times
-        plan._je_sorted = all(
-            _je_times[i] <= _je_times[i + 1]
-            for i in range(len(_je_times) - 1)
+    # Active judgments use the actual effective judgment time (press time for
+    # hits, scheduled time for misses), matching the score/combo fold below.
+    # This also gives each new legacy animation an exact age-zero/frame-zero
+    # start even when the hit offset is nonzero.
+    _tl = plan.judgment_timeline
+    _tl_times = getattr(plan, "_tl_times", None)
+    if _tl_times is None:
+        _tl_times = [effective_time for effective_time, _event in _tl]
+        plan._tl_times = _tl_times
+    active = tuple(
+        JudgmentPopup(
+            column=event.column,
+            judgment=event.judgment,
+            age_ms=t_ms - effective_time,
         )
-    if plan._je_sorted:
-        # 0 <= t_ms - time < 800  ⇔  t_ms - 800 < time <= t_ms
-        active = tuple(
-            JudgmentPopup(
-                column=j.column, judgment=j.judgment,
-                age_ms=t_ms - j.time_ms,
-            )
-            for j in _je[_br(_je_times, t_ms - 800):_br(_je_times, t_ms)]
-        )
-    else:
-        active = tuple(
-            JudgmentPopup(
-                column=j.column, judgment=j.judgment,
-                age_ms=t_ms - j.time_ms,
-            )
-            for j in _je
-            if 0 <= t_ms - j.time_ms < 800
-        )
+        for effective_time, event in _tl[
+            _br(_tl_times, t_ms - 800):_br(_tl_times, t_ms)
+        ]
+    )
     # One pass over the press-time-sorted timeline: counts → live accuracy +
     # quality-weighted score + running combo + UR/avg offset + HP +
     # last-hit-per-column + offset-per-column.
@@ -617,12 +623,16 @@ def build_frame_state(
                         "50": 0, "miss": 0},
             "quality": 0,
             "offsets": [],
+            "hit_error_history": [],
+            "hit_error_ema": None,
             # Running left-to-right sum of `offsets` in append order — the
             # exact fold builtin sum() performs, so bit-identical to the
             # per-frame sum(offsets_so_far) it replaces.
             "offsets_sum": 0,
             "combo": 0,
             "last_combo_t": 0,
+            "last_combo_break_t": -99999,
+            "combo_break_previous": 0,
             "hp": 1.0,
             "last_hit_per_col": [
                 (-99999, "", 0.0) for _ in range(key_count)
@@ -638,9 +648,13 @@ def build_frame_state(
     running = _fsc["running"]
     quality_so_far = _fsc["quality"]
     offsets_so_far = _fsc["offsets"]
+    hit_error_history = _fsc["hit_error_history"]
+    hit_error_ema = _fsc["hit_error_ema"]
     _offsets_sum = _fsc["offsets_sum"]
     combo_at_t = _fsc["combo"]
     last_combo_change_t = _fsc["last_combo_t"]
+    last_combo_break_t = _fsc["last_combo_break_t"]
+    combo_break_previous = _fsc["combo_break_previous"]
     hp = _fsc["hp"]
     last_hit_per_col = _fsc["last_hit_per_col"]
     # ScoreV3 (standardised) accumulators — scoring judgments only.
@@ -649,7 +663,6 @@ def build_frame_state(
     _combo_portion = _fsc["combo_portion"]
     _cur_base = _fsc["cur_base"]
     _n_scored = _fsc["n_scored"]
-    _tl = plan.judgment_timeline
     _idx = _fsc["idx"]
     _n_tl = len(_tl)
     while _idx < _n_tl:
@@ -673,6 +686,9 @@ def build_frame_state(
                 _sd_combo += 1
                 _combo_portion += _mw * (_sd_combo ** 0.5)
         if j.judgment == "miss":
+            if combo_at_t > 0:
+                combo_break_previous = combo_at_t
+                last_combo_break_t = eff_t
             combo_at_t = 0
         else:
             combo_at_t += 1
@@ -685,12 +701,25 @@ def build_frame_state(
         if j.hit_offset_ms is not None:
             offsets_so_far.append(j.hit_offset_ms)
             _offsets_sum = _offsets_sum + j.hit_offset_ms
+            if j.scoring:
+                hit_error_history.append(
+                    (eff_t, float(j.hit_offset_ms), j.judgment),
+                )
+                if len(hit_error_history) > 50:
+                    del hit_error_history[:-50]
+                old_ema = 0.0 if hit_error_ema is None else hit_error_ema
+                hit_error_ema = next_hit_error_ema(
+                    old_ema, j.hit_offset_ms,
+                )
     _fsc["last_t"] = t_ms
     _fsc["idx"] = _idx
     _fsc["quality"] = quality_so_far
     _fsc["offsets_sum"] = _offsets_sum
+    _fsc["hit_error_ema"] = hit_error_ema
     _fsc["combo"] = combo_at_t
     _fsc["last_combo_t"] = last_combo_change_t
+    _fsc["last_combo_break_t"] = last_combo_break_t
+    _fsc["combo_break_previous"] = combo_break_previous
     _fsc["hp"] = hp
     _fsc["sd_combo"] = _sd_combo
     _fsc["combo_portion"] = _combo_portion
@@ -729,6 +758,15 @@ def build_frame_state(
         avg_offset = 0.0
         ur = 0.0
     recent_offsets = tuple(offsets_so_far[-60:])  # last 60 ticks
+    hit_error_events = tuple(
+        HitErrorEvent(
+            offset_ms=offset,
+            judgment=judgment,
+            age_ms=t_ms - event_time,
+        )
+        for event_time, offset, judgment in hit_error_history
+        if 0 <= t_ms - event_time < 5100
+    )
 
     hit_light_age = tuple(
         (t_ms - lhc[0]) if lhc[1] else 99999
@@ -738,6 +776,7 @@ def build_frame_state(
     hit_offset_per_col = tuple(lhc[2] for lhc in last_hit_per_col)
 
     combo_age_ms = t_ms - last_combo_change_t
+    combo_break_age_ms = t_ms - last_combo_break_t
 
     if gameplay_end_ms > 0:
         song_progress = min(1.0, max(0.0, t_ms / gameplay_end_ms))
@@ -851,6 +890,7 @@ def build_frame_state(
         max_combo=replay.max_combo,
         accuracy=(replay.accuracy if results_opacity > 0 else acc_so_far),
         mod_acronyms=plan.acronyms,
+        replay_mods=int(getattr(replay, "mods", 0) or 0),
         results_opacity=results_opacity,
         grade=_compute_grade_from_replay(replay),
         live_grade=live_grade,
@@ -860,6 +900,9 @@ def build_frame_state(
             replay.count_50, replay.count_miss,
         ),
         recent_offsets=recent_offsets,
+        hit_error_events=hit_error_events,
+        hit_error_windows=plan.hit_error_windows,
+        hit_error_ema_ms=hit_error_ema,
         avg_hit_offset_ms=avg_offset,
         unstable_rate=ur,
         pp=(plan.player_pp if results_opacity > 0 else pp_live),
@@ -870,6 +913,8 @@ def build_frame_state(
         hit_light_judgment=hit_light_jud,
         hit_offset_per_col=hit_offset_per_col,
         combo_age_ms=combo_age_ms,
+        combo_break_previous_value=combo_break_previous,
+        combo_break_age_ms=combo_break_age_ms,
         score_smoothed=int(score_smoothed),
         accuracy_smoothed=accuracy_smoothed,
         song_progress=song_progress,

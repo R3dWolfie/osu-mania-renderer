@@ -437,13 +437,35 @@ async def render(
                 pass
 
 
-def _cli() -> None:
-    """Admin test CLI: `python -m osu_mania_renderer_v2.wiki_renderer OSR BEATMAP_DIR
-    -o OUT --skin-dir DIR [--default-skin DIR] [legacy flags]`. Builds a
-    RenderOptions from the flags and drives the async `render`."""
-    import asyncio
-    from osu_mania_renderer_v2.beatmap.models import RenderOptions
+def _wiki_visibility_options(args: argparse.Namespace) -> dict[str, bool | float]:
+    """Map website/dispatcher flags to independent engine HUD gates."""
+    hud_on = args.hud_opacity > 0.0
+    return {
+        "show_combo": hud_on and not args.no_combo,
+        "show_judgment": hud_on and not args.no_judgment,
+        "show_key_counter": hud_on and not args.no_key_counter,
+        "show_key_overlay": not args.no_key_overlay,
+        "show_score": hud_on and not args.no_score,
+        "show_grade": hud_on and not args.no_grade,
+        "show_mods": hud_on and not args.no_mods,
+        "show_scoreboard": hud_on and not args.no_scoreboard,
+        "show_progress_bar": hud_on,
+        "show_hp_bar": hud_on and not args.no_hp_bar,
+        "show_hit_error_meter": hud_on and not args.no_hit_error,
+        # Compatibility fields remain in lockstep with the website-named
+        # settings for callers which still inspect the old option names.
+        "show_hit_error_popup": not args.no_hit_error,
+        "show_unstable_rate": hud_on and not args.no_ur,
+        "show_ur_bar": hud_on and not args.no_ur,
+        "show_pp_counter": hud_on and args.show_pp,
+        "show_result_screen": not args.no_result_screen,
+        "hide_judgement_line": args.hide_judgement_line,
+        "hud_opacity": args.hud_opacity,
+    }
 
+
+def _build_wiki_parser() -> argparse.ArgumentParser:
+    """Build the production wiki-renderer command-line surface."""
     p = argparse.ArgumentParser(description="wiki-driven renderer (admin test path)")
     p.add_argument("osr", type=Path, help=".osr replay file")
     p.add_argument("beatmap_dir", type=Path,
@@ -468,8 +490,25 @@ def _cli() -> None:
                    help="hide hit-judgement text/sprite")
     p.add_argument("--no-key-counter", action="store_true",
                    help="hide bottom-right key counter")
+    p.add_argument("--no-key-overlay", action="store_true",
+                   help="hide receptor key flash")
+    p.add_argument("--no-hp-bar", action="store_true", help="hide HP bar")
+    p.add_argument("--no-hit-error", action="store_true",
+                   help="hide hit-error meter")
+    p.add_argument("--no-ur", action="store_true",
+                   help="hide standalone unstable rate")
+    p.add_argument("--no-score", action="store_true", help="hide score counter")
+    p.add_argument("--no-grade", action="store_true", help="hide grade letter")
+    p.add_argument("--no-mods", action="store_true", help="hide active mod icons")
+    p.add_argument("--no-scoreboard", action="store_true",
+                   help="hide gameplay leaderboard")
+    p.add_argument("--no-result-screen", action="store_true",
+                   help="cut the results card")
+    p.add_argument("--show-pp", action="store_true", help="show live PP counter")
+    p.add_argument("--hide-judgement-line", action="store_true",
+                   help="hide the horizontal receptor judgement line")
     p.add_argument("--hud-opacity", type=float, default=1.0,
-                   help="0 = hide the ENTIRE engine HUD (score/acc/grade/combo/judgment/key-counter/pp/progress/hp/ur bars); matches std")
+                   help="0 = hide the engine HUD while preserving gameplay")
     # Background dim (same names/mapping as cli.py — the bot's
     # mania_ordr/renderer.py has ALWAYS sent these four flags, but only
     # cli.py declared them, so this prod path silently dropped them via
@@ -513,6 +552,18 @@ def _cli() -> None:
     # ignored the saved scroll speed and fell back to the baseline 17.
     p.add_argument("--scroll-speed", type=int, default=None,
                    help="osu!mania scroll-speed 1-40 (lazer default 17, higher = faster)")
+    return p
+
+
+def _cli() -> None:
+    """Admin test CLI: `python -m osu_mania_renderer_v2.wiki_renderer OSR BEATMAP_DIR
+    -o OUT --skin-dir DIR [--default-skin DIR] [legacy flags]`. Builds a
+    RenderOptions from the flags and drives the async `render`."""
+    import asyncio
+
+    from osu_mania_renderer_v2.beatmap.models import RenderOptions
+
+    p = _build_wiki_parser()
     args, _unknown = p.parse_known_args()
 
     default_skin = args.default_skin
@@ -524,7 +575,6 @@ def _cli() -> None:
         args.skin_dir = Path(tempfile.mkdtemp(prefix="argon-empty-"))
 
     import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
-    from osu_mania_renderer_v2.beatmap.models import RenderOptions as _RO  # noqa: F811
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Stage-aware bg dim (cli.py's exact clamping/mapping): omitted flags
     # keep the RenderOptions defaults (background_dim 0.70 fallback).
@@ -537,10 +587,6 @@ def _cli() -> None:
         dim_kwargs["bg_dim_game"] = max(0, min(100, args.bg_dim_game)) / 100.0
     if args.bg_dim_breaks is not None:
         dim_kwargs["bg_dim_breaks"] = max(0, min(100, args.bg_dim_breaks)) / 100.0
-    # hud_opacity 0 blanks the whole engine HUD so the field is gameplay-only
-    # (the YT overlay is the sole HUD). Gameplay stays: notes, receptors, the
-    # key-press flash (show_key_overlay), hit lighting, stage/kiai effects.
-    _hud_on = args.hud_opacity > 0.0
     _vbo = None
     if args.video_bitrate:
         _b = str(args.video_bitrate).strip().lower()
@@ -549,16 +595,7 @@ def _cli() -> None:
     options = RenderOptions(
         resolution=(w, h), fps=args.fps, encoder=args.encoder,
         timeout_seconds=(args.timeout or 600),
-        show_combo=_hud_on and not args.no_combo,
-        show_judgment=_hud_on and not args.no_judgment,
-        show_key_counter=_hud_on and not args.no_key_counter,
-        show_score=_hud_on,
-        show_grade=_hud_on,
-        show_progress_bar=_hud_on,
-        show_hp_bar=_hud_on,
-        show_ur_bar=_hud_on,
         video_bitrate_override=_vbo,
-        hud_opacity=args.hud_opacity,
         show_logo=args.logo,
         featured_avatar_png=(str(args.featured_avatar_png)
                              if args.featured_avatar_png else None),
@@ -566,6 +603,7 @@ def _cli() -> None:
         sr_override=args.sr,
         scroll_speed=(max(1, min(40, args.scroll_speed))
                       if args.scroll_speed is not None else None),
+        **_wiki_visibility_options(args),
         **dim_kwargs,
     )
     async def _print_progress(fraction: float) -> None:

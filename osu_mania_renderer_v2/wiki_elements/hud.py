@@ -1,38 +1,269 @@
 """HUD elements — lazer-faithful (per r3drenderer_lazer_fidelity).
 
 Health = the legacy scorebar (scorebar-bg/colour/marker, top-left) when the
-skin ships it, else the Argon procedural health capsule. Score/accuracy use
-the skin score font. R3D web-viewer chrome (title, side UR bars, vertical HP)
-is stripped to no-ops; the legacy render_mania keeps the R3D look as fallback.
+skin ships it, else the source-shaped Argon health path. Score/accuracy use
+the skin score font. Argon uses the shared dual edge hit-error meters and a
+separate website-controlled UR readout; obsolete R3D timing chrome stays off.
 """
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+
+import moderngl
+
+from osu_mania_renderer_v2.beatmap.mods import actual_mod_acronyms
+from osu_mania_renderer_v2.gpu.argon_health import (
+    argon_health_path_geometry,
+    argon_health_path_renderer,
+)
+from osu_mania_renderer_v2.gpu.argon_wedge import (
+    argon_wedge_geometry,
+    argon_wedge_renderer,
+)
 from osu_mania_renderer_v2.wiki_elements._common import (
     is_argon_default,
-    is_keycount_acronym,
     mod_fill_colour,
 )
+
+# Argon HUD source geometry. osu!lazer authors this overlay on its 1280x720
+# gameplay surface; arbitrary 16:9 outputs scale by render_height / 720.
+ARGON_REFERENCE_WIDTH = 1280.0
+ARGON_REFERENCE_HEIGHT = 720.0
+ARGON_HEALTH_POSITION = (50.0, 20.0)
+ARGON_HEALTH_WIDTH = 300.0
+ARGON_HEALTH_BAR_HEIGHT = 30.0
+ARGON_HEALTH_MAIN_PATH_RADIUS = 10.0
+ARGON_HEALTH_GLOW_PATH_RADIUS = 40.0
+ARGON_HEALTH_MAIN_GLOW_PORTION = 0.6
+ARGON_HEALTH_GLOW_PORTION = (
+    ARGON_HEALTH_GLOW_PATH_RADIUS
+    - ARGON_HEALTH_MAIN_PATH_RADIUS * (1.0 - ARGON_HEALTH_MAIN_GLOW_PORTION)
+) / ARGON_HEALTH_GLOW_PATH_RADIUS
+ARGON_HEALTH_GLOW_PADDING = (
+    ARGON_HEALTH_MAIN_PATH_RADIUS - ARGON_HEALTH_GLOW_PATH_RADIUS
+)
+ARGON_HEALTH_CONNECTOR = (0.0, 30.0, 45.0, 3.0)
+ARGON_SCORE_POSITION = (250.0, 50.0)
+ARGON_ACCURACY_MARGIN = (20.0, 20.0)
+ARGON_PP_POSITION = (20.0, 72.0)
+ARGON_PP_SCALE = 0.8
+
+# Shared BarHitErrorMeter constants from osu!lazer/the audited Standard HUD.
+ARGON_HEM_ICON_SIZE = 16.0
+ARGON_HEM_ICON_BAR_GAP = 6.0
+ARGON_HEM_BAR_LENGTH = 200.0
+ARGON_HEM_COLUMN_SIZE = 14.0
+ARGON_HEM_BAND_SIZE = 2.0
+ARGON_HEM_TICK_THICKNESS = 4.0
+ARGON_HEM_CENTRE_MARKER_SIZE = 8.0
+ARGON_HEM_CHEVRON_SIZE = 8.0
+ARGON_HEM_CHEVRON_STROKE = 2.0
+ARGON_HEM_EDGE_FADE_SIZE = 6.0
+
+
+@dataclass(frozen=True)
+class ArgonHudGeometry:
+    scale: float
+    health_rect: tuple[float, float, float, float]
+    health_bar_height: float
+    health_main_radius: float
+    health_glow_radius: float
+    health_glow_rect: tuple[float, float, float, float]
+    health_path_points: tuple[tuple[float, float], ...]
+    connector_rect: tuple[float, float, float, float]
+    score_anchor: tuple[float, float]
+    accuracy_anchor: tuple[float, float]
+    pp_anchor: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class ArgonHitErrorMeterInstance:
+    left: float
+    top: float
+    mirrored: bool
+
+
+@dataclass(frozen=True)
+class ArgonHitErrorMeterGeometry:
+    scale: float
+    width: float
+    height: float
+    axis_start: float
+    axis_centre: float
+    cross_centre: float
+    bar_length: float
+    column_size: float
+    band_size: float
+    tick_thickness: float
+    centre_marker_size: float
+    chevron_size: float
+    chevron_stroke: float
+    edge_fade_size: float
+    instances: tuple[ArgonHitErrorMeterInstance, ArgonHitErrorMeterInstance]
+
+
+@dataclass(frozen=True)
+class HudComponentVisibility:
+    health: bool
+    hit_error_meter: bool
+    unstable_rate: bool
+    score: bool
+    mods: bool
+    scoreboard: bool
+    performance_points: bool
+
+
+def hud_component_visibility(options) -> HudComponentVisibility:
+    """Resolve independent website HUD settings plus the global HUD gate."""
+    hud_on = getattr(options, "hud_opacity", 1.0) > 0.0
+    return HudComponentVisibility(
+        health=hud_on and getattr(options, "show_hp_bar", True),
+        hit_error_meter=(
+            hud_on and getattr(options, "show_hit_error_meter", True)
+        ),
+        unstable_rate=(
+            hud_on
+            and getattr(options, "show_unstable_rate", True)
+            and getattr(options, "show_ur_bar", True)
+        ),
+        score=hud_on and getattr(options, "show_score", True),
+        mods=hud_on and getattr(options, "show_mods", True),
+        scoreboard=hud_on and getattr(options, "show_scoreboard", True),
+        performance_points=(
+            hud_on and getattr(options, "show_pp_counter", False)
+        ),
+    )
+
+
+def argon_hud_geometry(render_width: int, render_height: int) -> ArgonHudGeometry:
+    """Resolve source-backed Argon HUD anchors in output top-left pixels."""
+    scale = render_height / ARGON_REFERENCE_HEIGHT
+    hx, hy = (value * scale for value in ARGON_HEALTH_POSITION)
+    health_height = (
+        ARGON_HEALTH_BAR_HEIGHT + ARGON_HEALTH_MAIN_PATH_RADIUS * 2.0
+    ) * scale
+    health_width = ARGON_HEALTH_WIDTH * scale
+    glow_padding = ARGON_HEALTH_GLOW_PADDING * scale
+    glow_rect = (
+        hx + glow_padding,
+        hy + glow_padding,
+        health_width - glow_padding * 2.0,
+        health_height - glow_padding * 2.0,
+    )
+    source_path = argon_health_path_geometry(
+        ARGON_HEALTH_WIDTH,
+        ARGON_HEALTH_BAR_HEIGHT + ARGON_HEALTH_MAIN_PATH_RADIUS * 2.0,
+        ARGON_HEALTH_MAIN_PATH_RADIUS,
+    )
+    path = tuple(
+        (hx + x * scale, hy + y * scale)
+        for x, y in (
+            source_path.start,
+            source_path.top_arc_start,
+            source_path.top_arc_end,
+            source_path.slash_end,
+            source_path.bottom_arc_end,
+            source_path.end,
+        )
+    )
+    return ArgonHudGeometry(
+        scale=scale,
+        health_rect=(hx, hy, health_width, health_height),
+        health_bar_height=ARGON_HEALTH_BAR_HEIGHT * scale,
+        health_main_radius=ARGON_HEALTH_MAIN_PATH_RADIUS * scale,
+        health_glow_radius=ARGON_HEALTH_GLOW_PATH_RADIUS * scale,
+        health_glow_rect=glow_rect,
+        health_path_points=path,
+        connector_rect=tuple(value * scale for value in ARGON_HEALTH_CONNECTOR),
+        score_anchor=(ARGON_SCORE_POSITION[0] * scale,
+                      ARGON_SCORE_POSITION[1] * scale),
+        accuracy_anchor=(render_width - ARGON_ACCURACY_MARGIN[0] * scale,
+                         ARGON_ACCURACY_MARGIN[1] * scale),
+        pp_anchor=(render_width - ARGON_PP_POSITION[0] * scale,
+                   ARGON_PP_POSITION[1] * scale),
+    )
+
+
+def argon_hit_error_meter_geometry(
+    render_width: int,
+    render_height: int,
+) -> ArgonHitErrorMeterGeometry:
+    """Two vertical meters anchored to the opposing centre edges."""
+    scale = render_height / ARGON_REFERENCE_HEIGHT
+    width = (ARGON_HEM_COLUMN_SIZE + ARGON_HEM_CHEVRON_SIZE) * scale
+    height = (
+        ARGON_HEM_ICON_SIZE * 2.0
+        + ARGON_HEM_ICON_BAR_GAP * 2.0
+        + ARGON_HEM_BAR_LENGTH
+    ) * scale
+    top = (render_height - height) * 0.5
+    return ArgonHitErrorMeterGeometry(
+        scale=scale,
+        width=width,
+        height=height,
+        axis_start=(ARGON_HEM_ICON_SIZE + ARGON_HEM_ICON_BAR_GAP) * scale,
+        axis_centre=height * 0.5,
+        cross_centre=(ARGON_HEM_CHEVRON_SIZE
+                      + ARGON_HEM_COLUMN_SIZE * 0.5) * scale,
+        bar_length=ARGON_HEM_BAR_LENGTH * scale,
+        column_size=ARGON_HEM_COLUMN_SIZE * scale,
+        band_size=ARGON_HEM_BAND_SIZE * scale,
+        tick_thickness=ARGON_HEM_TICK_THICKNESS * scale,
+        centre_marker_size=ARGON_HEM_CENTRE_MARKER_SIZE * scale,
+        chevron_size=ARGON_HEM_CHEVRON_SIZE * scale,
+        chevron_stroke=ARGON_HEM_CHEVRON_STROKE * scale,
+        edge_fade_size=ARGON_HEM_EDGE_FADE_SIZE * scale,
+        instances=(
+            ArgonHitErrorMeterInstance(0.0, top, False),
+            ArgonHitErrorMeterInstance(render_width - width, top, True),
+        ),
+    )
+
+
+def argon_hit_error_axis_y(
+    geometry: ArgonHitErrorMeterGeometry,
+    offset_ms: float,
+    max_hit_window: float,
+) -> float:
+    """Map early (negative) hits toward the top and late hits downward."""
+    if max_hit_window <= 0:
+        position = 0.5
+    else:
+        position = max(0.0, min(
+            1.0, (offset_ms / max_hit_window + 1.0) * 0.5,
+        ))
+    return geometry.axis_start + position * geometry.bar_length
+
 
 # Argon counter geometry. The argon-counter glyphs are 240px square boxes with
 # the digit content inset ~31px per side; ARGON_OVERLAP pulls the boxes together
 # so the visible digits sit tight/condensed like lazer's counter. The HUD is
-# authored in lazer's 1080p design space (absolute px), so everything scales by
-# height/1080 → pixel-exact at 1080p output.
+# authored as native 240px textures; callers provide the final 720-space scale.
 ARGON_OVERLAP = 60          # native px of box-to-box overlap (out of 240);
                             # ~content-width advance so digits just touch (the
                             # ~31px inset per side is the doubled padding cancelled)
 ARGON_WIRE_ALPHA = 0.15     # dim "wireframes" template behind the live digits
 
 
-def _draw_mod_icons(ctx, right_x: float, top_y: float) -> None:
+def _draw_mod_icons(
+    ctx,
+    right_x: float,
+    top_y: float,
+    *,
+    ui_scale: float | None = None,
+) -> None:
     """lazer ModDisplay: active mods as flat-topped hexagons (mod_hex tinted
     by ModType), acronym centred in fill×0.1. Top-right, horizontal flow,
-    rightmost on top, resting overlap. Native mania key-count is excluded."""
+    rightmost on top, resting overlap. Only replay-authored mods are shown;
+    the native Mania key-count is never fabricated as a mod."""
+    if not hud_component_visibility(getattr(ctx, "options", None)).mods:
+        return
     s = ctx.scene
-    mods = [m for m in (s.mod_acronyms or ()) if not is_keycount_acronym(m)]
+    mods = actual_mod_acronyms(int(getattr(s, "replay_mods", 0)))
     if not mods:
         return
-    s2 = ctx.height / 768.0
+    s2 = ui_scale if ui_scale is not None else ctx.height / 768.0
     box = max(24, int(48 * s2))          # MOD_ICON_SIZE 80 × MOD_ICON_SCALE 0.6
     step = max(10, int(33 * s2))         # 48 − (25×0.6) overlap
     total_w = box + (len(mods) - 1) * step
@@ -67,6 +298,107 @@ def _draw_tl(ctx, name_or_idx, left, top, w, h, tint, *, is_idx=False, direct=Fa
         ctx.draw_sprite(name_or_idx, int(left), int(gl_y), int(w), int(h), tint)
 
 
+def _draw_argon_wedges(ctx) -> None:
+    """Draw both source rounded-gradient wedges with their 0.8 X shear."""
+    fr = ctx.fr
+    gl = fr.rc.ctx
+    geometry = argon_wedge_geometry(fr.rc.height)
+    renderer = argon_wedge_renderer(fr)
+    fr._flush_sprite_batch()
+    try:
+        # The wedge shader emits premultiplied cyan/alpha.
+        gl.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+        for position in geometry.source_positions:
+            renderer.draw(position, geometry, (fr.rc.width, fr.rc.height))
+    finally:
+        gl.blend_func = (
+            moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA,
+        )
+
+
+def _draw_capsule_segment(ctx, start, end, thickness, tint) -> None:
+    """Draw one top-left-space rounded segment using the bundled capsule."""
+    length = math.dist(start, end)
+    if length <= 0 or thickness <= 0:
+        return
+    centre_x = (start[0] + end[0]) * 0.5
+    centre_y_gl = ctx.height - (start[1] + end[1]) * 0.5
+    angle = math.degrees(math.atan2(start[1] - end[1], end[0] - start[0]))
+    width = length + thickness
+    ctx.fr._draw_direct(
+        "argon_hp",
+        centre_x - width * 0.5,
+        centre_y_gl - thickness * 0.5,
+        width,
+        thickness,
+        tint=tint,
+        rotation_deg=angle,
+    )
+
+
+def _draw_argon_health_paths(ctx, geometry: ArgonHudGeometry, hp: float) -> None:
+    """Draw source Argon background/glow/main shader quads from ``scene.hp``."""
+    hp = max(0.0, min(1.0, float(hp)))
+    fr = ctx.fr
+    gl = fr.rc.ctx
+    viewport = (fr.rc.width, fr.rc.height)
+    renderer = argon_health_path_renderer(fr)
+    fr._flush_sprite_batch()
+    try:
+        # The ported shaders emit premultiplied RGB, matching the source.
+        gl.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+        renderer.draw_background(
+            geometry.health_rect,
+            viewport,
+            (ARGON_HEALTH_WIDTH, 50.0),
+        )
+        if hp <= 0.0:
+            return
+
+        gl.blend_func = (moderngl.ONE, moderngl.ONE)
+        renderer.draw_bar(
+            geometry.health_glow_rect,
+            viewport,
+            (360.0, 110.0),
+            progress=hp,
+            radius=ARGON_HEALTH_GLOW_PATH_RADIUS,
+            glow_portion=ARGON_HEALTH_GLOW_PORTION,
+            bar_colour=(1.0, 1.0, 1.0, 1.0),
+            glow_colour=(0x7E / 255, 0xD7 / 255, 0xFD / 255, 0.5),
+            gradient_left=(1.0, 1.0, 1.0, 0.8),
+            gradient_right=(1.0, 1.0, 1.0, 1.0),
+        )
+        renderer.draw_bar(
+            geometry.health_rect,
+            viewport,
+            (ARGON_HEALTH_WIDTH, 50.0),
+            progress=hp,
+            radius=ARGON_HEALTH_MAIN_PATH_RADIUS,
+            glow_portion=ARGON_HEALTH_MAIN_GLOW_PORTION,
+            bar_colour=(1.0, 1.0, 1.0, 1.0),
+            glow_colour=(0x7E / 255, 0xD7 / 255, 0xFD / 255, 0.5),
+            gradient_left=(1.0, 1.0, 1.0, 1.0),
+            gradient_right=(1.0, 1.0, 1.0, 1.0),
+        )
+    finally:
+        gl.blend_func = (
+            moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA,
+        )
+
+
+def _draw_argon_health_display(ctx, geometry: ArgonHudGeometry, hp: float) -> None:
+    """Draw the continuous source health path and its independent connector.
+
+    The source's retained hit/miss colour transforms require judgement-action
+    history not carried by SceneState. This deterministic presentation keeps
+    that animation deferred while preserving the shader path, fill direction,
+    background/glow/main composition, connector, colours, and bounds.
+    """
+    _draw_argon_health_paths(ctx, geometry, hp)
+    x, top, width, height = geometry.connector_rect
+    _draw_tl(ctx, "column_bg", x, top, width, height, (1, 1, 1, 0.95))
+
+
 def _scorebar_fill_colour(hp: float) -> tuple[float, float, float]:
     """lazer LegacyHealthDisplay.getFillColour (new style): white at full,
     fading white→black approaching 0.5, then black→red approaching 0."""
@@ -88,7 +420,14 @@ def hit_error_popups(*, element, skin, assets, variables, ctx) -> None:
 
 
 def hit_strip(*, element, skin, assets, variables, ctx) -> None:
-    return  # R3D rainbow UR strip; lazer uses BarHitErrorMeter (not drawn)
+    if (
+        not hud_component_visibility(ctx.options).hit_error_meter
+    ):
+        return
+    if is_argon_default(ctx, 0):
+        _argon_hit_error(ctx)
+    else:
+        ctx.fr._draw_lazer_hit_error_meter(ctx.scene)
 
 
 def _fmt_time(ms: float) -> str:
@@ -135,57 +474,168 @@ def progress_bar(*, element, skin, assets, variables, ctx) -> None:
         ctx.fr._draw_progress_bar(ctx.scene)
 
 
-# Hit-error meter judgement windows (ms) → colour, centre-out (lazer mania).
-_UR_BANDS = (
-    (20.0, (108, 192, 255)),    # perfect  (blue)
-    (43.0, (100, 220, 130)),    # great    (green)
-    (76.0, (240, 220, 90)),     # good     (yellow)
-    (106.0, (240, 160, 80)),    # ok       (orange)
-    (127.0, (237, 73, 92)),     # meh/miss (red)
-)
-
-
 def _argon_hit_error(ctx) -> None:
-    """lazer BarHitErrorMeter (Argon): a vertical meter on the right with the
-    judgement windows as colour bands, white ticks for recent hit offsets, a
-    white centre line, and an arrow at the rolling average."""
+    """Draw Argon's source pair of vertically-oriented BarHitErrorMeters."""
+    from osu_mania_renderer_v2.gpu.renderer import (
+        LAZER_HIT_RESULT_COLOURS,
+        lazer_hit_error_tick_state,
+        lazer_hit_window_bands,
+    )
+
     fr = ctx.fr
     s = ctx.scene
     rc = fr.rc
-    A = rc.height / 1080.0
-    cx = rc.width - int(34 * A)
-    cy = rc.height // 2                 # GL centre
-    half = int(rc.height * 0.16)
-    rng = _UR_BANDS[-1][0]              # ±ms mapped to the half-height
-    band_w = max(3, int(6 * A))
-    bx = cx - band_w // 2
-    # Colour bands, centre outward, mirrored above/below the centre line.
-    prev = 0.0
-    for win, col in _UR_BANDS:
-        y0 = int(prev / rng * half)
-        y1 = int(win / rng * half)
-        seg = max(1, y1 - y0)
-        c = (col[0] / 255, col[1] / 255, col[2] / 255, 0.5)
-        fr._draw_sprite("column_bg", bx, cy + y0, band_w, seg, c)
-        fr._draw_sprite("column_bg", bx, cy - y1, band_w, seg, c)
-        prev = win
-    # White centre line.
-    fr._draw_sprite("column_bg", cx - int(11 * A), cy - max(1, int(1 * A)),
-                    int(22 * A), max(2, int(2 * A)), (1, 1, 1, 0.9))
-    # Ticks for recent hit offsets (white), newest brightest.
-    offs = (s.recent_offsets or ())[-20:]
-    tick_w = int(20 * A)
-    for i, off in enumerate(offs):
-        frac = max(-1.0, min(1.0, off / rng))
-        ty = cy + int(frac * half)
-        a = 0.25 + 0.6 * (i + 1) / max(1, len(offs))
-        fr._draw_sprite("column_bg", cx - tick_w // 2, ty - max(1, int(1 * A)),
-                        tick_w, max(2, int(2 * A)), (1, 1, 1, a))
-    # Rolling-average arrow.
-    if offs:
-        ay = cy + int(max(-1.0, min(1.0, s.avg_hit_offset_ms / rng)) * half)
-        fr._draw_sprite("column_bg", cx + int(13 * A), ay - int(3 * A),
-                        int(6 * A), int(6 * A), (1, 1, 1, 0.95))
+    geometry = argon_hit_error_meter_geometry(rc.width, rc.height)
+    bands = lazer_hit_window_bands(s.hit_error_windows)
+    if not bands:
+        return
+    max_window = bands[-1].window_ms
+
+    def rect(
+        instance, local_x, local_top, width, height, tint,
+        *, sprite="column_bg",
+    ):
+        if instance.mirrored:
+            local_x = geometry.width - local_x - width
+        _draw_tl(
+            ctx, sprite,
+            instance.left + local_x,
+            instance.top + local_top,
+            width, height, tint,
+        )
+
+    def point(instance, local_x, local_y):
+        if instance.mirrored:
+            local_x = geometry.width - local_x
+        return instance.left + local_x, instance.top + local_y
+
+    def draw_band(instance, band, *, fade_edges=False):
+        extent = geometry.bar_length * band.relative_length
+        top = geometry.axis_centre - extent * 0.5
+        local_x = geometry.cross_centre - geometry.band_size * 0.5
+        if not fade_edges:
+            rect(instance, local_x, top, geometry.band_size, extent,
+                 (*band.colour, 1.0))
+            return
+        fade = min(geometry.edge_fade_size, extent * 0.5)
+        solid = max(0.0, extent - fade * 2.0)
+        if solid > 0:
+            rect(instance, local_x, top + fade, geometry.band_size, solid,
+                 (*band.colour, 1.0))
+        slices = 6
+        for index in range(slices):
+            y0 = fade * index / slices
+            y1 = fade * (index + 1) / slices
+            alpha = (index + 0.5) / slices
+            rect(instance, local_x, top + y0, geometry.band_size, y1 - y0,
+                 (*band.colour, alpha))
+            rect(instance, local_x, top + extent - y1,
+                 geometry.band_size, y1 - y0, (*band.colour, alpha))
+
+    for instance in geometry.instances:
+        draw_band(instance, bands[-1], fade_edges=True)
+        for band in reversed(bands[:-1]):
+            draw_band(instance, band)
+        marker_colour = bands[0].colour
+        size = geometry.centre_marker_size
+        marker_x = geometry.cross_centre - size * 0.5
+        marker_top = geometry.axis_centre - size * 0.5
+        rect(instance, marker_x, marker_top, size, size,
+             (*marker_colour, 1.0), sprite="note_circle")
+
+    # Tick capsules use their real scene ages/offsets/results and additive
+    # blending. The same source data is presented on both mirrored meters.
+    fr._flush_sprite_batch()
+    gl = rc.ctx
+    gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+    try:
+        for instance in geometry.instances:
+            for event in s.hit_error_events[-50:]:
+                state = lazer_hit_error_tick_state(event.age_ms)
+                if state.alpha <= 0 or state.width_fraction <= 0:
+                    continue
+                y = argon_hit_error_axis_y(
+                    geometry, event.offset_ms, max_window,
+                )
+                width = geometry.column_size * state.width_fraction
+                local_x = geometry.cross_centre - width * 0.5
+                colour = LAZER_HIT_RESULT_COLOURS.get(
+                    event.judgment, (1.0, 1.0, 1.0),
+                )
+                rect(
+                    instance, local_x, y - geometry.tick_thickness * 0.5,
+                    width, geometry.tick_thickness,
+                    (*colour, state.alpha),
+                )
+        fr._flush_sprite_batch()
+    finally:
+        gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+
+    for instance in geometry.instances:
+        # Darkened centre foreground above the judgment ticks.
+        inner = geometry.centre_marker_size * 0.5
+        colour = tuple(channel * 0.7 for channel in bands[0].colour)
+        rect(
+            instance,
+            geometry.cross_centre - inner * 0.5,
+            geometry.axis_centre - inner * 0.5,
+            inner, inner, (*colour, 1.0), sprite="note_circle",
+        )
+
+        # Original text fallback for unavailable hare/tortoise art. E/L stay
+        # within the 16-unit source label slots at both screen edges.
+        for label, local_y in (
+            ("E", ARGON_HEM_ICON_SIZE * 0.5 * geometry.scale),
+            ("L", (ARGON_HEM_ICON_SIZE + ARGON_HEM_ICON_BAR_GAP
+                   + ARGON_HEM_BAR_LENGTH + ARGON_HEM_ICON_BAR_GAP
+                   + ARGON_HEM_ICON_SIZE * 0.5) * geometry.scale),
+        ):
+            texture, width, height = fr._cached_text(
+                label, 18, (235, 235, 245, 235),
+            )
+            x, y = point(instance, geometry.cross_centre, local_y)
+            fr._draw_external_texture(
+                texture,
+                x=int(round(x - width * 0.5)),
+                y=int(round(rc.height - y - height * 0.5)),
+                w=width, h=height, alpha=0.92,
+            )
+
+        if s.hit_error_ema_ms is not None:
+            axis = argon_hit_error_axis_y(
+                geometry, s.hit_error_ema_ms, max_window,
+            )
+            points = (
+                point(instance, geometry.scale, axis - 4.0 * geometry.scale),
+                point(instance, 7.0 * geometry.scale, axis),
+                point(instance, geometry.scale, axis + 4.0 * geometry.scale),
+            )
+            _draw_capsule_segment(
+                ctx, points[0], points[1], geometry.chevron_stroke,
+                (1, 1, 1, 0.95),
+            )
+            _draw_capsule_segment(
+                ctx, points[1], points[2], geometry.chevron_stroke,
+                (1, 1, 1, 0.95),
+            )
+
+
+def _argon_unstable_rate(ctx) -> None:
+    """R3D standalone UR readout at the shared neutral 720-space origin."""
+    value = max(0.0, float(getattr(ctx.scene, "unstable_rate", 0.0)))
+    text = f"UR: {value:.2f}"
+    texture, width, height = ctx.fr._cached_text(
+        text, 27, (255, 255, 255, 235),
+    )
+    scale = ctx.height / ARGON_REFERENCE_HEIGHT
+    left = 575.0 * scale
+    top = 682.0 * scale
+    ctx.fr._draw_external_texture(
+        texture,
+        x=int(round(left)),
+        y=int(round(ctx.height - top - height)),
+        w=width, h=height, alpha=0.92,
+    )
 
 
 def fail_overlay(*, element, skin, assets, variables, ctx) -> None:
@@ -196,7 +646,7 @@ def fail_overlay(*, element, skin, assets, variables, ctx) -> None:
 
 def hp_bar(*, element, skin, assets, variables, ctx) -> None:
     """Health bar at the TOP — legacy scorebar when the skin ships it,
-    else the Argon procedural capsule."""
+    else the Argon source-shaped path."""
     if not ctx.options.show_hp_bar:
         return
     # Argon default: the health line is drawn in _draw_argon_hud (after the
@@ -328,60 +778,17 @@ def _argon_number(ctx, text, *, x, center_y, glyph_h, align, alpha=1.0,
                     font="argon", tint=tint)
 
 
-def _draw_leaderboard(ctx) -> None:
-    """lazer's gameplay leaderboard — the player's own score card (rank #1):
-    a green rounded panel below the score wedge with rank, avatar, name, live
-    score, accuracy (top-right) and combo (bottom-right)."""
-    fr = ctx.fr
-    s = ctx.scene
-    rc = fr.rc
-    A = rc.height / 1080.0
-    cx0, cy0 = 28 * A, 84 * A
-    cw, ch = 372 * A, 52 * A
-
-    def _txt(x_left, y_top_centre, text, size, col, *, align="left", alpha=1.0):
-        tex, tw, th = fr._cached_text(text, size, col)   # size is 1080-ref
-        x = x_left - tw if align == "right" else x_left
-        gl_y = int(rc.height - y_top_centre - th / 2)
-        fr._draw_external_texture(tex, x=int(x), y=gl_y, w=tw, h=th, alpha=alpha)
-
-    # Green card (white sprite tinted grass-green, lazer's own-score highlight).
-    _draw_tl(ctx, "argon_card", cx0, cy0, cw, ch, (0.28, 0.43, 0.14, 0.95),
-             direct=True)
-    # Rank, vertically centred at the left.
-    _txt(cx0 + 12 * A, cy0 + ch / 2, "#1", 16, (235, 245, 225, 255))
-    # Avatar — a grey rounded square placeholder.
-    av = ch * 0.74
-    avx, avy = cx0 + 42 * A, cy0 + (ch - av) / 2
-    _draw_tl(ctx, "argon_card", avx, avy, av, av, (0.55, 0.57, 0.60, 1.0),
-             direct=True)
-    tx = avx + av + 12 * A
-    # Player name (parsed off the banner text "... [diff]   <player>").
-    bt = getattr(fr, "_banner_text", "") or ""
-    name = bt.rsplit("   ", 1)[-1].strip() if "   " in bt else (bt or "Player")
-    _txt(tx, cy0 + ch * 0.36, name[:18], 18, (255, 255, 255, 255))
-    # Live score (comma-grouped), under the name.
-    disp = (s.score if s.results_opacity > 0
-            else (s.score_smoothed if s.score_smoothed > 0 else s.score))
-    _txt(tx, cy0 + ch * 0.70, f"{int(disp):,}", 15, (225, 235, 215, 255),
-         alpha=0.95)
-    # Accuracy (top-right) + combo (bottom-right).
-    acc = s.accuracy if s.results_opacity > 0 else s.accuracy_smoothed
-    _txt(cx0 + cw - 12 * A, cy0 + ch * 0.36, f"{acc:.2f}%", 14,
-         (255, 255, 255, 255), align="right", alpha=0.95)
-    _txt(cx0 + cw - 12 * A, cy0 + ch * 0.70, f"{s.combo}x", 14,
-         (225, 235, 215, 255), align="right", alpha=0.9)
-
-
 def _draw_argon_hud(ctx) -> None:
     """lazer's Argon default HUD: score in the top-left wedge, accuracy
     top-right (with an 'ACCURACY' label + pp under it), all in the
-    argon-counter font. Layout from ArgonSkin (1080p design space, scaled
-    by height/1080). Combo is drawn over the playfield in notes.py."""
+    argon-counter font. Layout comes from ArgonSkin's 1280x720 gameplay
+    surface and scales by output height/720. Combo remains in notes.py."""
     fr = ctx.fr
     s = ctx.scene
     rc = fr.rc
-    A = rc.height / 1080.0          # argon design-space scale
+    geometry = argon_hud_geometry(rc.width, rc.height)
+    scale = geometry.scale
+    visibility = hud_component_visibility(ctx.options)
 
     if s.results_opacity > 0:
         disp_score, disp_acc = s.score, s.accuracy
@@ -390,73 +797,53 @@ def _draw_argon_hud(ctx) -> None:
         disp_acc = s.accuracy_smoothed
 
     # ── Score: top-left wedge banner, number right-aligned inside it ──
-    wedge_w, wedge_h = 380 * A, 72 * A
-    if ctx.atlas.global_source("argon_wedge") in ("bundle", "user"):
-        _draw_tl(ctx, "argon_wedge", 0, 0, wedge_w, wedge_h, (1, 1, 1, 1),
-                 direct=True)
+    # The two source wedge pieces remain decorative HUD background even when
+    # the independently-controlled health or score component is hidden.
+    _draw_argon_wedges(ctx)
 
-    # Health: lazer ArgonHealthDisplay — a THICK glossy white tube tracing the
-    # top of the score wedge (MAIN_PATH_RADIUS=10 → ~20u thick, white #FFF,
-    # cyan #7ED7FD glow). A dim track tube, the white fill 0→HP over it, and a
-    # cyan glow at the fill head.
-    if ctx.options.show_hp_bar:
-        hp = max(0.0, min(1.0, getattr(s, "hp", 1.0)))
-        hx, hw = 26 * A, 320 * A
-        hh = max(5, int(20 * A))          # MAIN_PATH_RADIUS*2
-        hy = 4 * A                        # ride the very top edge of the wedge
-        # Soft cyan glow halo behind the tube.
-        _draw_tl(ctx, "argon_hp", hx - 4 * A, hy - 4 * A, hw + 8 * A, hh + 8 * A,
-                 (0.49, 0.84, 0.99, 0.18), direct=True)
-        # Dim track tube (full width), then the bright white fill to HP.
-        _draw_tl(ctx, "argon_hp", hx, hy, hw, hh, (0.32, 0.34, 0.40, 0.85),
-                 direct=True)
-        fw = max(hh, hp * hw)             # keep a round cap even near 0
-        _draw_tl(ctx, "argon_hp", hx, hy, fw, hh, (1, 1, 1, 1.0), direct=True)
-        # Cyan glow at the fill head.
-        _draw_tl(ctx, "argon_hp", hx + fw - hh, hy - 3 * A, hh * 1.6, hh + 6 * A,
-                 (0.49, 0.84, 0.99, 0.6), direct=True)
-    if ctx.options.show_score:
-        score_box = 52 * A
-        # Origin TopRight at x = components_x_offset(50) + 200 = 250; the
-        # number is vertically centred in the wedge.
-        score_right = 250 * A
-        # Sit below the HP tube (which rides the wedge top).
-        score_cy_gl = rc.height - 46 * A
-        _argon_number(ctx, f"{int(disp_score):d}", x=score_right,
-                      center_y=score_cy_gl, glyph_h=score_box, align="right")
+    if visibility.score:
+        # argon-counter textures are 240px at glyph scale 0.125 = 30 source px.
+        score_right, score_top = geometry.score_anchor
+        score_height = 30.0 * scale
+        score_cy_gl = rc.height - score_top - score_height * 0.5
+        _argon_number(
+            ctx, f"{int(disp_score):d}", x=score_right,
+            center_y=score_cy_gl, glyph_h=score_height, align="right",
+        )
+    if visibility.health:
+        _draw_argon_health_display(ctx, geometry, getattr(s, "hp", 1.0))
 
     # ── Accuracy: top-right, with the small 'ACCURACY' label above it ──
-    acc_box = 42 * A
-    acc_right = rc.width - 20 * A
-    label_top = 14 * A
-    ltex, lw, lh = fr._cached_text("ACCURACY", 15,  # 1080-ref (auto-scaled)
+    acc_height = 30.0 * scale
+    acc_right, acc_top = geometry.accuracy_anchor
+    ltex, lw, lh = fr._cached_text("ACCURACY", 18,
                                    (200, 205, 220, 235))
     fr._draw_external_texture(ltex, x=int(acc_right - lw),
-                              y=int(rc.height - label_top - lh), w=lw, h=lh,
+                              y=int(rc.height - acc_top - lh), w=lw, h=lh,
                               alpha=0.9)
-    acc_cy_gl = rc.height - (label_top + lh + 6 * A + (acc_box * 0.74) / 2.0)
+    # Source label is 12px tall and the glyph row begins at local y=12.
+    acc_cy_gl = rc.height - acc_top - 12.0 * scale - acc_height * 0.5
     _argon_number(ctx, f"{disp_acc:.2f}%", x=acc_right, center_y=acc_cy_gl,
-                  glyph_h=acc_box, align="right")
+                  glyph_h=acc_height, align="right")
 
     # ── PP: under the accuracy line ('PP' label + value), Argon-amber ──
-    if ctx.options.show_pp_counter and s.max_pp > 0:
-        pp_box = 30 * A
-        pp_top = label_top + lh + 6 * A + acc_box * 0.74 + 8 * A
-        pl, plw, plh = fr._cached_text("PP", 13,  # 1080-ref (auto-scaled)
+    if visibility.performance_points and s.max_pp > 0:
+        pp_right, pp_top = geometry.pp_anchor
+        pp_height = 30.0 * ARGON_PP_SCALE * scale
+        pl, plw, plh = fr._cached_text("PP", 14,
                                        (200, 205, 220, 235))
-        fr._draw_external_texture(pl, x=int(acc_right - plw),
+        fr._draw_external_texture(pl, x=int(pp_right - plw),
                                   y=int(rc.height - pp_top - plh), w=plw, h=plh,
                                   alpha=0.85)
-        pp_cy_gl = rc.height - (pp_top + plh + 4 * A + (pp_box * 0.74) / 2.0)
-        _argon_number(ctx, f"{int(s.pp)}", x=acc_right, center_y=pp_cy_gl,
-                      glyph_h=pp_box, align="right", tint=(1.0, 0.86, 0.55))
+        pp_cy_gl = (
+            rc.height - pp_top - 12.0 * ARGON_PP_SCALE * scale
+            - pp_height * 0.5
+        )
+        _argon_number(ctx, f"{int(s.pp)}", x=pp_right, center_y=pp_cy_gl,
+                      glyph_h=pp_height, align="right", tint=(1.0, 0.86, 0.55))
 
     # Active mods (hexagon icons) under the accuracy/pp block, top-right.
-    _draw_mod_icons(ctx, acc_right, 110 * A)
-
-    # Player leaderboard card below the score wedge.
-    _draw_leaderboard(ctx)
-
+    _draw_mod_icons(ctx, acc_right, 110.0 * scale, ui_scale=scale)
 
 def hud(*, element, skin, assets, variables, ctx) -> None:
     """Score + accuracy readout, top-right.
@@ -467,9 +854,9 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
     overlap = skin.ini `[Fonts] ScoreOverlap` (default 0). When NO user skin
     is selected (Argon default), use lazer's Argon HUD (argon-counter font,
     score wedge top-left). Otherwise fall back to the clean PIL readout."""
-    # hud_opacity 0: skip the whole score/accuracy/pp/mods/leaderboard HUD
-    # element (accuracy + the leaderboard card draw here, ungated by
-    # show_score) so the field is gameplay-only for the YT overlay.
+    # hud_opacity 0: skip the whole score/accuracy/pp/mods/wedges/health HUD
+    # element. Accuracy is intentionally independent of show_score, so this
+    # top-level gate remains the complete gameplay-only overlay switch.
     if ctx.options.hud_opacity <= 0.0:
         return
     fr = ctx.fr
@@ -493,7 +880,7 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
     _gw, score_nh = ctx.atlas.global_native_size("score_0")
     score_nh = score_nh or 70
     right_pad = max(6, int(10 * hud_scale))      # LegacyScoreCounter Margin H=10
-    top_pad = max(6, int(9 * hud_scale))
+    accuracy_top_margin = max(4, int(9 * hud_scale))
     overlap = ctx.skin_ini.score_overlap if ctx.skin_ini is not None else 0
 
     # Smoothed during gameplay (counter rolls up), authoritative on results.
@@ -505,11 +892,13 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
 
     right_x = rc.width - right_pad
     # `mods_top` is a FROM-TOP y (what _draw_mod_icons/_draw_tl expect).
-    mods_top = top_pad
+    mods_top = accuracy_top_margin
 
     if ctx.options.show_score:
         score_h = score_nh * hud_scale * 0.96
-        score_cy = rc.height - top_pad - score_h / 2.0
+        # LegacyScoreCounter has no vertical margin. The 9-unit margin belongs
+        # to LegacyAccuracyCounter below it.
+        score_cy = rc.height - score_h / 2.0
         ctx.draw_number(
             f"{int(display_score):d}", x=right_x, center_y=score_cy,
             glyph_h=score_h, overlap_px=overlap, align="right",
@@ -517,7 +906,7 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
         # Accuracy: scale 0.6×0.96, Margin H=17 (7px more indented than score).
         acc_h = score_nh * hud_scale * 0.576
         acc_right_x = rc.width - max(10, int(17 * hud_scale))
-        acc_cy = (score_cy - score_h / 2.0) - max(4, int(9 * hud_scale)) - acc_h / 2.0
+        acc_cy = (score_cy - score_h / 2.0) - accuracy_top_margin - acc_h / 2.0
         ctx.draw_number(
             f"{display_acc:.2f}%", x=acc_right_x, center_y=acc_cy,
             glyph_h=acc_h, overlap_px=overlap, align="right", alpha=0.95,
@@ -593,10 +982,13 @@ def top_chrome(*, element, skin, assets, variables, ctx) -> None:
 
 
 def ur_summary(*, element, skin, assets, variables, ctx) -> None:
-    # lazer's hit-error meter (vertical, right side) for the Argon default.
-    # The old R3D twin side bars stay stripped for legacy skins.
-    if ctx.options.show_ur_bar and is_argon_default(ctx, 0):
-        _argon_hit_error(ctx)
+    # R3D's standalone website-controlled UR counter is separate from the
+    # source Argon main HUD and never includes average-offset text.
+    if (
+        hud_component_visibility(ctx.options).unstable_rate
+        and is_argon_default(ctx, 0)
+    ):
+        _argon_unstable_rate(ctx)
 
 
 def results_overlay(*, element, skin, assets, variables, ctx) -> None:

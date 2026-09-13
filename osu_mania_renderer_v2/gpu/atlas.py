@@ -31,10 +31,16 @@ import moderngl
 import numpy as np
 from PIL import Image
 
+from osu_mania_renderer_v2.beatmap.mods import LEGACY_MOD_SKIN_ASSET_NAMES
 from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
 
 SPRITES_DIR = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 _LOG = logging.getLogger("osu_mania_renderer_v2")
+
+
+def legacy_mod_slot_name(asset_name: str) -> str:
+    """Internal direct-image key for ``selection-mod-*`` skin assets."""
+    return f"selection_mod_{asset_name}"
 
 
 # ===== Default per-keycount column layout =====
@@ -135,7 +141,7 @@ _GLOBAL_SKIN_FILE_MAP: dict[str, tuple[str, ...]] = {
     "lighting_l":      ("mania-lightingL.png", "lightingL.png"),
     "judgment_geki":   ("mania-hit300g.png", "mania-hit300G.png"),
     "judgment_300":    ("mania-hit300.png",),
-    "judgment_katu":   ("mania-hit100k.png", "mania-hit100K.png", "mania-hit200.png"),
+    "judgment_katu":   ("mania-hit200.png",),
     "judgment_100":    ("mania-hit100.png",),
     "judgment_50":     ("mania-hit50.png",),
     "judgment_miss":   ("mania-hit0.png",),
@@ -217,7 +223,8 @@ GLOBAL_SPRITE_NAMES: tuple[str, ...] = (
     "argon_0", "argon_1", "argon_2", "argon_3", "argon_4",
     "argon_5", "argon_6", "argon_7", "argon_8", "argon_9",
     "argon_dot", "argon_percent", "argon_x", "argon_wireframes",
-    # Argon score banner (wedge) + HP tube + leaderboard card — drawn direct.
+    # Argon helper sprites. The wedge slot remains bundled for resource
+    # compatibility, but the current gameplay wedge pair is procedural.
     "argon_wedge",
     "argon_hp",
     "argon_card",
@@ -374,7 +381,7 @@ class SpriteAtlas:
         # cascade-body tiling so the L sprite repeats at its natural
         # aspect instead of being stretched.
         self._column_aspects: dict[tuple[str, int], float] = {}
-        self._column_native_sizes: dict[tuple[str, int], tuple[int, int]] = {}
+        self._column_native_sizes: dict[tuple[str, int], tuple[float, float]] = {}
         # Full-resolution RGBA images kept OUTSIDE the layered atlas for wide
         # sprites (scorebar, stage panels) — the 256² atlas tile would crush
         # a 1366-wide health bar. These are drawn as direct textures at native
@@ -396,7 +403,11 @@ class SpriteAtlas:
         # placeholder" — many skins ship a placeholder pixel so the
         # file resolves to "user" source without actually contributing
         # visible chrome.
-        self._global_native_sizes: dict[str, tuple[int, int]] = {}
+        self._global_native_sizes: dict[str, tuple[float, float]] = {}
+        # Whether the resolved RGBA asset has at least one visible alpha pixel.
+        # Some real skins deliberately ship huge transparent punctuation
+        # placeholders; layout code must not mistake those for visible glyphs.
+        self._global_visible: dict[str, bool] = {}
         # Animation frame counts. Slots without an entry → single-frame.
         # global_frames[slot_name] = N; the slot's index_of returns
         # frame-0's layer index, frames 1..N-1 follow consecutively.
@@ -412,13 +423,15 @@ class SpriteAtlas:
         skin_dir: Path | None = None,
         beatmap_dir: Path | None = None,
         mania_section: ManiaSection | None = None,
+        score_prefix: str = "score",
         combo_prefix: str = "score",
     ) -> SpriteAtlas:
         """Build the atlas. Sprite resolution tries beatmap_dir first
         (per-map overrides), then skin_dir, then bundled fallback. This
         matches danser's BEATMAP > SKIN > FALLBACK > LOCAL chain.
 
-        `combo_prefix` ([Fonts] ComboPrefix, default "score") selects the
+        `score_prefix` / `combo_prefix` select the corresponding [Fonts]
+        sprite families. `combo_prefix` (default "score") selects the
         combo number font files (`<prefix>-N.png`) so skins with a separate
         combo font (Night05's `combo-N`) render combo with the right glyphs."""
         atlas = cls(key_count)
@@ -436,7 +449,8 @@ class SpriteAtlas:
         for name in GLOBAL_SPRITE_NAMES:
             frames, src = cls._resolve_global(
                 name, skin_dir=skin_dir, beatmap_dir=beatmap_dir,
-                section=mania_section, combo_prefix=combo_prefix,
+                section=mania_section, score_prefix=score_prefix,
+                combo_prefix=combo_prefix,
             )
             atlas._global_indices[name] = layer_idx
             atlas._global_sources[name] = src
@@ -454,6 +468,9 @@ class SpriteAtlas:
                 # uses design units, so @2x and @1x skins render identically.
                 sa = frames[0].info.get("scale_adjust", 1)
                 atlas._global_native_sizes[name] = (fw / sa, fh / sa)
+                atlas._global_visible[name] = (
+                    frames[0].getchannel("A").getbbox() is not None
+                )
                 # Keep full-res image for wide sprites drawn directly (crisp).
                 if name in _DIRECT_DRAW_SLOTS:
                     atlas._direct_images[name] = frames[0]
@@ -468,8 +485,13 @@ class SpriteAtlas:
             # (stage_left/right stay letterboxed: they use the square-quad
             # trick to stay full-height at the edges.)
             g_fit = (_fit_stretch
-                     if name in ("playfield_frame", "scorebar_bg", "scorebar_colour",
+                     if (name.startswith(("score_", "combo_"))
+                         or name in ("playfield_frame", "scorebar_bg", "scorebar_colour",
                                  "stage_left", "stage_right",
+                                 # Legacy lighting is drawn at native aspect;
+                                 # stretch-fill avoids applying aspect twice
+                                 # after the renderer sizes its destination.
+                                 "lighting_n", "lighting_l",
                                  "judgment_geki", "judgment_300", "judgment_katu",
                                  "judgment_100", "judgment_50", "judgment_miss",
                                  # Argon note body/glyph: non-square (1.43:1);
@@ -480,7 +502,7 @@ class SpriteAtlas:
                                  # Argon key pill (22:14) + dots (22:17) are
                                  # baked to fill their canvas at the lazer
                                  # aspect — stretch so they render full-size.
-                                 "argon_key_pill", "argon_key_dots")
+                                 "argon_key_pill", "argon_key_dots"))
                      else _fit_letterbox)
             for frame in frames:
                 layers.append(np.asarray(
@@ -496,6 +518,29 @@ class SpriteAtlas:
             else:
                 from_missing += 1
         atlas._global_count = layer_idx
+
+        # Stable gameplay mod icons are sparse, skin-authored UI textures.
+        # Keep them as full-resolution direct images rather than bloating the
+        # layered gameplay atlas with every possible mod.
+        for asset_name in LEGACY_MOD_SKIN_ASSET_NAMES:
+            name = legacy_mod_slot_name(asset_name)
+            img, src = cls._resolve_mod_icon(
+                asset_name, skin_dir=skin_dir, beatmap_dir=beatmap_dir,
+            )
+            atlas._global_sources[name] = src
+            if img is None:
+                atlas._global_visible[name] = False
+                continue
+            width, height = img.size
+            scale_adjust = img.info.get("scale_adjust", 1)
+            atlas._global_native_sizes[name] = (
+                width / scale_adjust, height / scale_adjust,
+            )
+            atlas._global_aspects[name] = width / height if height > 0 else 1.0
+            atlas._global_visible[name] = (
+                img.getchannel("A").getbbox() is not None
+            )
+            atlas._direct_images[name] = img
 
         # Per-column slots. Each (kind, col) occupies M consecutive
         # layers where M is the resolved frame count. Atlas tracks the
@@ -655,13 +700,19 @@ class SpriteAtlas:
         wide/tall sprites render at native aspect."""
         return self._global_aspects.get(name, 1.0)
 
-    def global_native_size(self, name: str) -> tuple[int, int]:
-        """Native (width, height) in pixels of the source sprite
-        before letterboxing. Returns (0, 0) if the slot wasn't loaded.
+    def global_native_size(self, name: str) -> tuple[float, float]:
+        """Native (width, height) in ScaleAdjust-aware design units.
+
+        Captured before letterboxing; ``@2x`` pixel dimensions are divided by
+        two. Returns (0, 0) if the slot wasn't loaded.
         Used to distinguish meaningful skin chrome from 1×1 transparent
         placeholders that many skins ship to satisfy file-existence
         checks without contributing visible art."""
         return self._global_native_sizes.get(name, (0, 0))
+
+    def global_has_visible_pixels(self, name: str) -> bool:
+        """Whether the resolved global/direct asset contributes any alpha."""
+        return self._global_visible.get(name, False)
 
     def column_slot_index(self, kind: str, col: int) -> int:
         """Layer index of frame 0 for a per-column slot."""
@@ -691,11 +742,12 @@ class SpriteAtlas:
         repeats at its natural aspect instead of being stretched."""
         return self._column_aspects.get((kind, col), 1.0)
 
-    def column_native_size(self, kind: str, col: int) -> tuple[int, int]:
-        """Native (width, height) in pixels of a per-column slot's source
-        image, before letterboxing. Returns (0, 0) if not loaded. Used by
-        the legacy key area, whose height = the texture's native pixel
-        height (osu-pixels) rather than an aspect-scale of column width."""
+    def column_native_size(self, kind: str, col: int) -> tuple[float, float]:
+        """Native size in ScaleAdjust-aware design units for a column slot.
+
+        Captured before letterboxing; returns (0, 0) if not loaded. Used by
+        the legacy key area, whose height follows the texture's native design
+        height rather than an aspect-scale of column width."""
         return self._column_native_sizes.get((kind, col), (0, 0))
 
     def column_source(self, kind: str, col: int) -> str:
@@ -747,6 +799,7 @@ class SpriteAtlas:
         skin_dir: Path | None,
         beatmap_dir: Path | None,
         section: ManiaSection | None,
+        score_prefix: str = "score",
         combo_prefix: str = "score",
     ) -> tuple[list[Image.Image], str]:
         """Pick the right PNG(s) for a global atlas slot.
@@ -765,6 +818,9 @@ class SpriteAtlas:
         if slot.startswith("combo_"):
             glyph = slot[len("combo_"):]
             candidates = (f"{combo_prefix}-{glyph}.png",)
+        elif slot.startswith("score_"):
+            glyph = slot[len("score_"):]
+            candidates = (f"{score_prefix}-{glyph}.png",)
         animatable = slot in _ANIMATABLE_GLOBAL_SLOTS
 
         # Per-map (BEATMAP tier).
@@ -777,11 +833,20 @@ class SpriteAtlas:
                 img = _try_skin_file(beatmap_dir, candidate)
                 if img is not None:
                     return [img], "beatmap"
-        # Skin section override (explicit path; static only — skin.ini
-        # named paths don't have a -0 convention).
+        # Skin section override (explicit path). Animated overrides use the
+        # same `<base>-0.png`, ... convention as conventional filenames and
+        # must be attempted before the static override.
         if skin_dir is not None and section is not None:
             override = _global_section_override(section, slot)
             if override is not None:
+                if animatable:
+                    candidate = override.replace("\\", "/").strip()
+                    leaf = candidate.rsplit("/", 1)[-1]
+                    if "." not in leaf:
+                        candidate = f"{candidate}.png"
+                    frames = _try_animation_frames(skin_dir, (candidate,))
+                    if frames:
+                        return frames, "user"
                 img = _try_skin_override(skin_dir, override)
                 if img is not None:
                     return [img], "user"
@@ -800,6 +865,25 @@ class SpriteAtlas:
         if bundled.exists():
             return [Image.open(bundled).convert("RGBA")], "bundle"
         return [Image.new("RGBA", (4, 4), (0, 0, 0, 0))], "missing"
+
+    @staticmethod
+    def _resolve_mod_icon(
+        asset_name: str,
+        *,
+        skin_dir: Path | None,
+        beatmap_dir: Path | None,
+    ) -> tuple[Image.Image | None, str]:
+        """Resolve one stable ``selection-mod-*`` image with @2x support."""
+        filename = f"selection-mod-{asset_name}.png"
+        if beatmap_dir is not None:
+            image = _try_skin_file(beatmap_dir, filename)
+            if image is not None:
+                return image, "beatmap"
+        if skin_dir is not None:
+            image = _try_skin_file(skin_dir, filename)
+            if image is not None:
+                return image, "user"
+        return None, "missing"
 
     @staticmethod
     def _resolve_column(
@@ -935,6 +1019,8 @@ def _global_section_override(section: ManiaSection, slot: str) -> str | None:
         "stage_light":      section.stage_light,
         "playfield_frame":  section.stage_bottom,
         "hit_light":        section.stage_hint,
+        "lighting_n":       section.lighting_n,
+        "lighting_l":       section.lighting_l,
         "judgment_geki":    section.hit_300g,
         "judgment_300":     section.hit_300,
         "judgment_katu":    section.hit_200,
@@ -954,10 +1040,11 @@ def _global_section_override(section: ManiaSection, slot: str) -> str | None:
 # atlas, which would crush them). scorebar-bg/colour + the stage panels.
 _DIRECT_DRAW_SLOTS: frozenset[str] = frozenset({
     "scorebar_bg", "scorebar_colour", "stage_left", "stage_right",
+    "scorebar_marker", "scorebar_ki", "scorebar_kidanger", "scorebar_kidanger2",
     "playfield_frame",
-    "argon_wedge",   # wide score banner — crisp at native resolution.
+    "argon_wedge",   # retained resource slot; current HUD wedges are procedural.
     "argon_hp",      # glossy HP tube — crisp + stretches to fill.
-    "argon_card",    # rounded leaderboard / avatar card — tinted at draw.
+    "argon_card",    # rounded results/avatar card — tinted at draw.
 })
 
 
