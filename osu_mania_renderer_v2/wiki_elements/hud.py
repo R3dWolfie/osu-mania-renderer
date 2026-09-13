@@ -893,6 +893,7 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
     right_x = rc.width - right_pad
     # `mods_top` is a FROM-TOP y (what _draw_mod_icons/_draw_tl expect).
     mods_top = accuracy_top_margin
+    ay = rc.height - accuracy_top_margin  # PP anchor default (no accuracy shown)
 
     if ctx.options.show_score:
         score_h = score_nh * hud_scale * 0.96
@@ -912,6 +913,7 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
             glyph_h=acc_h, overlap_px=overlap, align="right", alpha=0.95,
         )
         # Below the accuracy line: from-top = height − (accuracy bottom GL).
+        ay = acc_cy - acc_h / 2.0  # accuracy bottom; PP readout anchors under it
         mods_top = (rc.height - (acc_cy - acc_h / 2.0)) + max(6, int(rc.height * 0.012))
 
     # Active mods as lazer-style hexagon icons, top-right under the readout.
