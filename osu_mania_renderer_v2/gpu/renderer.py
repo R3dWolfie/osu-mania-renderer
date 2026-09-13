@@ -233,6 +233,14 @@ class FrameRenderer:
                 return False
         return True
 
+    def _legacy_timing_overlay_visibility(self) -> tuple[bool, bool]:
+        """Gate R3D-only hit-error popups and UR text to the Argon default."""
+        is_argon = self._is_argon_default()
+        return (
+            self.options.show_hit_error_popup and is_argon,
+            self.options.show_ur_bar and is_argon,
+        )
+
     def _compute_playfield_geometry(self) -> None:
         """Resolve playfield X-position + per-column widths from either
         the skin's `[Mania]` block or the renderer's defaults.
@@ -688,7 +696,8 @@ class FrameRenderer:
 
         if not keys_under_notes:
             self._draw_receptors(scene)
-        if self.options.show_hit_error_popup:
+        show_hit_error_popups, show_ur_summary = self._legacy_timing_overlay_visibility()
+        if show_hit_error_popups:
             self._draw_hit_error_popups(scene)
         if not self.options.hide_judgement_line:
             self._draw_hit_strip(scene)
@@ -703,7 +712,7 @@ class FrameRenderer:
         self._draw_top_chrome(scene)
         if scene.visual_mods.flashlight:
             self._draw_flashlight_pass()
-        if self.options.show_ur_bar:
+        if show_ur_summary:
             self._draw_ur_summary(scene)
         # lazer z-order: BreakOverlay is a LATER overlay-component child
         # than HUDOverlay (Player.createOverlayComponents) — drawn above
