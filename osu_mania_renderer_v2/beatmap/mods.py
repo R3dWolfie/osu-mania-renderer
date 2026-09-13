@@ -20,6 +20,7 @@ class Mod(enum.IntFlag):
     HT = 1 << 8
     NC = 1 << 9
     FL = 1 << 10
+    AT = 1 << 11
     PF = 1 << 14
     K4 = 1 << 15
     K5 = 1 << 16
@@ -35,6 +36,82 @@ class Mod(enum.IntFlag):
     K2 = 1 << 28
     V2 = 1 << 29
     MR = 1 << 30
+
+
+@dataclass(frozen=True)
+class LegacyModIcon:
+    """One stable-style gameplay mod icon derived from the replay bitfield."""
+
+    acronym: str
+    asset_name: str | None
+
+
+# Stable's Player iterates the legacy flags in enum-value order and loads
+# ``selection-mod-{enum name lowercased}``.  V2/MR are newer than that asset
+# contract, so they intentionally retain generated fallbacks.
+_LEGACY_MOD_ICON_ORDER: tuple[tuple[Mod, str, str | None], ...] = (
+    (Mod.NF, "NF", "nofail"),
+    (Mod.EZ, "EZ", "easy"),
+    (Mod.HD, "HD", "hidden"),
+    (Mod.HR, "HR", "hardrock"),
+    (Mod.SD, "SD", "suddendeath"),
+    (Mod.DT, "DT", "doubletime"),
+    (Mod.HT, "HT", "halftime"),
+    (Mod.NC, "NC", "nightcore"),
+    (Mod.FL, "FL", "flashlight"),
+    (Mod.AT, "AT", "autoplay"),
+    (Mod.PF, "PF", "perfect"),
+    (Mod.K4, "4K", "key4"),
+    (Mod.K5, "5K", "key5"),
+    (Mod.K6, "6K", "key6"),
+    (Mod.K7, "7K", "key7"),
+    (Mod.K8, "8K", "key8"),
+    (Mod.FI, "FI", "fadein"),
+    (Mod.RD, "RD", "random"),
+    (Mod.K9, "9K", "key9"),
+    (Mod.KC, "KC", "keycoop"),
+    (Mod.K1, "1K", "key1"),
+    (Mod.K3, "3K", "key3"),
+    (Mod.K2, "2K", "key2"),
+    (Mod.V2, "V2", None),
+    (Mod.MR, "MR", None),
+)
+
+LEGACY_MOD_SKIN_ASSET_NAMES: tuple[str, ...] = tuple(
+    asset_name
+    for _bit, _acronym, asset_name in _LEGACY_MOD_ICON_ORDER
+    if asset_name is not None
+)
+
+
+def legacy_mod_icons(mods_bitfield: int) -> tuple[LegacyModIcon, ...]:
+    """Return only ACTUAL replay mods in stable gameplay display order.
+
+    In particular this never fabricates a key-count icon from beatmap metadata.
+    Nightcore and Perfect suppress their implied lower-tier icons exactly as
+    stable's ``Player`` does.
+    """
+    has_nc = bool(mods_bitfield & Mod.NC)
+    has_pf = bool(mods_bitfield & Mod.PF)
+    out: list[LegacyModIcon] = []
+    for bit, acronym, asset_name in _LEGACY_MOD_ICON_ORDER:
+        if not (mods_bitfield & bit):
+            continue
+        if bit == Mod.DT and has_nc:
+            continue
+        if bit == Mod.SD and has_pf:
+            continue
+        out.append(LegacyModIcon(acronym=acronym, asset_name=asset_name))
+    return tuple(out)
+
+
+def actual_mod_acronyms(mods_bitfield: int) -> tuple[str, ...]:
+    """Return display acronyms for replay-authored mods only.
+
+    Unlike :func:`mod_acronyms`, this never fabricates a native key-count
+    label. An explicit key mod such as Key4 remains visible.
+    """
+    return tuple(icon.acronym for icon in legacy_mod_icons(mods_bitfield))
 
 
 @dataclass(frozen=True)

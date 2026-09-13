@@ -77,6 +77,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-loudnorm",     action="store_true", help="skip ffmpeg loudnorm pass")
     p.add_argument("--no-combo-break",  action="store_true", help="skip combo-break SFX")
     p.add_argument("--no-score",        action="store_true", help="hide score readout")
+    p.add_argument("--no-mods",         action="store_true", help="hide active mod icons")
+    p.add_argument(
+        "--no-scoreboard", action="store_true",
+        help="hide gameplay leaderboard",
+    )
     p.add_argument("--no-grade",        action="store_true", help="hide grade letter")
     p.add_argument("--no-key-overlay",  action="store_true", help="hide receptor key flash")
     p.add_argument("--no-key-counter",  action="store_true", help="hide bottom-right key-press counter")
@@ -126,12 +131,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+def _render_options_from_args(args: argparse.Namespace) -> RenderOptions:
+    """Translate parsed CLI flags to the renderer's explicit option gates."""
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     # Build RenderOptions kwargs, only overriding fields where a flag was
     # given. RenderOptions defaults stay authoritative.
@@ -162,15 +163,22 @@ def main(argv: list[str] | None = None) -> int:
         opts_kwargs["combo_break_threshold"] = max(0, args.combo_break_threshold)
     if args.audio_fade_out_ms is not None:
         opts_kwargs["audio_fade_out_ms"] = max(0, args.audio_fade_out_ms)
-    if args.no_hp_bar:      opts_kwargs["show_hp_bar"]         = False
-    if args.no_hit_error:   opts_kwargs["show_hit_error_popup"] = False
-    if args.no_ur:          opts_kwargs["show_ur_bar"]         = False
+    if args.no_hp_bar:      opts_kwargs["show_hp_bar"]          = False
+    if args.no_hit_error:
+        opts_kwargs["show_hit_error_meter"] = False
+        # Preserve the old field for callers which inspect constructed options.
+        opts_kwargs["show_hit_error_popup"] = False
+    if args.no_ur:
+        opts_kwargs["show_unstable_rate"] = False
+        opts_kwargs["show_ur_bar"] = False
     if args.no_progress:    opts_kwargs["show_progress_bar"]   = False
     if args.no_combo_pop:   opts_kwargs["show_combo_pop"]      = False
     if args.no_miss_shake:  opts_kwargs["show_miss_shake"]     = False
     if args.no_loudnorm:    opts_kwargs["normalize_loudness"]  = False
     if args.no_combo_break: opts_kwargs["combo_break_sound"]   = False
     if args.no_score:           opts_kwargs["show_score"]        = False
+    if args.no_mods:            opts_kwargs["show_mods"]         = False
+    if args.no_scoreboard:      opts_kwargs["show_scoreboard"]   = False
     if args.no_grade:           opts_kwargs["show_grade"]        = False
     if args.no_key_overlay:     opts_kwargs["show_key_overlay"]  = False
     if args.no_key_counter:     opts_kwargs["show_key_counter"]  = False
@@ -191,7 +199,16 @@ def main(argv: list[str] | None = None) -> int:
         opts_kwargs["featured_avatar_png"] = str(args.featured_avatar_png)
     if args.watermark is not None:
         opts_kwargs["watermark_text"] = args.watermark[:64]
-    options = RenderOptions(**opts_kwargs)
+    return RenderOptions(**opts_kwargs)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    options = _render_options_from_args(args)
 
     async def _run() -> None:
         await render_mania(

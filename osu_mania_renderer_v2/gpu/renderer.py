@@ -11,19 +11,29 @@ from __future__ import annotations
 import logging
 import struct
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import moderngl
 import numpy as np
 from PIL import Image
 
-from osu_mania_renderer_v2.render.dim import build_dim_envelope
-from osu_mania_renderer_v2.gpu.atlas import SpriteAtlas, column_variant
+from osu_mania_renderer_v2.beatmap.models import RenderOptions
+from osu_mania_renderer_v2.beatmap.mods import LegacyModIcon, legacy_mod_icons
+from osu_mania_renderer_v2.beatmap.skin_ini import (
+    DEFAULT_COLOUR_BREAK,
+    ManiaSection,
+    parse_skin_ini,
+)
+from osu_mania_renderer_v2.gpu.atlas import (
+    SpriteAtlas,
+    column_variant,
+    legacy_mod_slot_name,
+)
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
-from osu_mania_renderer_v2.beatmap.models import RenderOptions
+from osu_mania_renderer_v2.render.dim import build_dim_envelope
 from osu_mania_renderer_v2.render.scene import SceneState
-from osu_mania_renderer_v2.beatmap.skin_ini import parse_skin_ini
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
@@ -59,6 +69,793 @@ RECEPTOR_HEIGHT_REL_COL = 1.0
 RECEPTOR_BOTTOM_OFFSET_FRAC = 0.05
 # Hit-feedback rainbow strip at the very bottom of the playfield.
 HIT_STRIP_HEIGHT_FRAC = 0.012
+
+# osu!lazer LegacyHitExplosion timings. The authored lighting sprite fades in
+# from zero for 80 ms, then fades out over 120 ms.
+LEGACY_HIT_EXPLOSION_FADE_IN_MS = 80.0
+LEGACY_HIT_EXPLOSION_FADE_OUT_MS = 120.0
+LEGACY_HIT_EXPLOSION_DURATION_MS = (
+    LEGACY_HIT_EXPLOSION_FADE_IN_MS + LEGACY_HIT_EXPLOSION_FADE_OUT_MS
+)
+
+LEGACY_JUDGMENT_DURATION_MS = 220.0
+LEGACY_JUDGMENT_FRAME_MS = 50.0
+
+
+def legacy_mania_position_gl(
+    position: float,
+    render_height: int,
+    upside_down: bool,
+) -> float:
+    """Stable ``ScaleFlipPosition`` followed by top-down to GL conversion."""
+    flipped = 480.0 - position if upside_down else position
+    return render_height - flipped * render_height / 480.0
+
+
+def legacy_judgment_frame(age_ms: float, frame_count: int) -> int:
+    """Loop a legacy Mania judgment animation from frame zero at 20fps."""
+    if frame_count <= 1 or age_ms <= 0:
+        return 0
+    return int(age_ms / LEGACY_JUDGMENT_FRAME_MS) % frame_count
+
+
+def legacy_judgment_alpha(age_ms: float) -> float:
+    """Stable/lazer 20ms fade-in, 160ms hold, 40ms fade-out envelope."""
+    if age_ms < 0 or age_ms >= LEGACY_JUDGMENT_DURATION_MS:
+        return 0.0
+    if age_ms < 20.0:
+        return age_ms / 20.0
+    if age_ms < 180.0:
+        return 1.0
+    return 1.0 - (age_ms - 180.0) / 40.0
+
+
+def legacy_judgment_scale(age_ms: float, *, miss: bool) -> float:
+    """Deterministic equivalent of LegacyManiaJudgementPiece transforms."""
+    age = max(0.0, age_ms)
+    if miss:
+        progress = min(1.0, age / 100.0)
+        eased = 1.0 - (1.0 - progress) ** 2  # Easing.Out
+        return 1.2 + (1.0 - 1.2) * eased
+    if age < 40.0:
+        return 0.8 + 0.2 * (age / 40.0)
+    if age < 80.0:
+        # The source applies an immediate ScaleTo(0.85), then the next
+        # 40ms transform runs from 0.85 to 0.7.
+        return 0.85 + (0.7 - 0.85) * ((age - 40.0) / 40.0)
+    if age < 180.0:
+        return 0.7
+    if age < 220.0:
+        progress = (age - 180.0) / 40.0
+        return 0.7 + (0.4 - 0.7) * progress ** 2  # Easing.In
+    return 0.4
+
+
+def legacy_combo_y_scale(age_ms: float) -> float:
+    """Stable Mania combo increment stretch: Y 1.4 -> 1 over 300ms."""
+    if age_ms < 0 or age_ms >= 300.0:
+        return 1.0
+    progress = age_ms / 300.0
+    return 1.0 + 0.4 * (1.0 - progress) ** 2  # Easing.Out
+
+
+def legacy_combo_break_animation(age_ms: float) -> tuple[float, float]:
+    """Return (scale, alpha) for stable/lazer's 200ms old-combo burst."""
+    if age_ms < 0 or age_ms >= 200.0:
+        return 1.0, 0.0
+    progress = age_ms / 200.0
+    return 1.0 + 3.0 * progress, 0.8 * (1.0 - progress)
+
+
+@dataclass(frozen=True)
+class LegacyGlyphPlacement:
+    slot: str
+    x: float
+    top: float
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
+class LegacyTextLayout:
+    width: float
+    height: float
+    glyphs: tuple[LegacyGlyphPlacement, ...]
+
+
+def legacy_glyph_slot(font: str, character: str) -> str | None:
+    """Map a legacy score/combo text character to an atlas slot."""
+    if character.isdigit():
+        return f"{font}_{character}"
+    if font == "score":
+        return {
+            ",": "score_comma",
+            ".": "score_dot",
+            "%": "score_percent",
+            "x": "score_x",
+        }.get(character)
+    if font == "combo" and character == "x":
+        return "combo_x"
+    return None
+
+
+def legacy_text_layout(
+    text: str,
+    glyph_sizes: dict[str, tuple[float, float]],
+    *,
+    font: str = "score",
+    scale: float,
+    overlap: float,
+    fixed_digits: bool = True,
+) -> LegacyTextLayout:
+    """Compose legacy sprite text with fixed digit cells based on glyph 5.
+
+    ``glyph_sizes`` contains only visible/resolved slots. Missing or explicitly
+    transparent punctuation contributes neither a draw nor an empty advance.
+    """
+    reference = glyph_sizes.get("5")
+    reference_width = reference[0] if reference is not None else 0.0
+    cursor = 0.0
+    placements: list[LegacyGlyphPlacement] = []
+    max_height = 0.0
+    for character in text:
+        size = glyph_sizes.get(character)
+        slot = legacy_glyph_slot(font, character)
+        if size is None or slot is None:
+            continue
+        native_width, native_height = size
+        width = native_width * scale
+        height = native_height * scale
+        cell_width = (
+            reference_width * scale
+            if fixed_digits and character.isdigit() and reference_width > 0
+            else width
+        )
+        if placements:
+            cursor -= overlap * scale
+        placements.append(LegacyGlyphPlacement(
+            slot=slot,
+            x=cursor + (cell_width - width) / 2.0,
+            top=0.0,
+            width=width,
+            height=height,
+        ))
+        cursor += cell_width
+        max_height = max(max_height, height)
+    return LegacyTextLayout(
+        width=max(0.0, cursor),
+        height=max_height,
+        glyphs=tuple(placements),
+    )
+
+
+@dataclass(frozen=True)
+class LegacyModIconGeometry:
+    position_scale: float
+    texture_scale: float
+    center: tuple[float, float]
+    rect: tuple[float, float, float, float]
+
+
+def legacy_mod_icon_geometry(
+    render_width: int,
+    render_height: int,
+    index: int,
+    native_size: tuple[float, float],
+) -> LegacyModIconGeometry:
+    """Stable replay-mod placement (480-space) and texture size (768-space)."""
+    position_scale = render_height / 480.0
+    texture_scale = render_height / 768.0
+    center_x = render_width - (30.0 + 50.0 * index) * position_scale
+    center_y = render_height - 94.0 * position_scale
+    width = native_size[0] * texture_scale
+    height = native_size[1] * texture_scale
+    return LegacyModIconGeometry(
+        position_scale=position_scale,
+        texture_scale=texture_scale,
+        center=(center_x, center_y),
+        rect=(center_x - width / 2.0, center_y - height / 2.0, width, height),
+    )
+
+
+def legacy_lighting_scale(
+    section: ManiaSection | None,
+    column: int,
+    kind: str,
+    *,
+    effective_column_width: float | None = None,
+    legacy_version: float | None = None,
+) -> float:
+    """Latest-skin lighting scale in R3D's raw 480-reference units.
+
+    Explicit LightingN/LWidth wins when the entry for this column is nonzero;
+    otherwise the effective ColumnWidth is used. osu!lazer stores both values
+    after multiplying by 1.6 and divides by a 48-unit default. R3D stores the
+    raw values, making the equivalent ratio ``width / 30``.
+    """
+    if kind not in ("n", "l"):
+        raise ValueError(f"unknown legacy lighting kind: {kind!r}")
+    if legacy_version is not None and legacy_version < 2.5:
+        return 1.0
+
+    configured_width = 0.0
+    if section is not None:
+        widths = section.lighting_n_width if kind == "n" else section.lighting_l_width
+        if 0 <= column < len(widths):
+            configured_width = widths[column]
+
+    if configured_width != 0:
+        return configured_width / 30.0
+
+    if effective_column_width is None:
+        column_widths = section.column_width if section is not None else ()
+        if len(column_widths) == 1:
+            effective_column_width = float(column_widths[0])
+        elif 0 <= column < len(column_widths):
+            effective_column_width = float(column_widths[column])
+        else:
+            effective_column_width = 30.0
+
+    return effective_column_width / 30.0
+
+
+def legacy_hit_explosion_alpha(age_ms: float) -> float:
+    """Deterministic 80 ms fade-in followed by a 120 ms fade-out."""
+    if age_ms < 0 or age_ms >= LEGACY_HIT_EXPLOSION_DURATION_MS:
+        return 0.0
+    if age_ms < LEGACY_HIT_EXPLOSION_FADE_IN_MS:
+        return age_ms / LEGACY_HIT_EXPLOSION_FADE_IN_MS
+    return 1.0 - (
+        (age_ms - LEGACY_HIT_EXPLOSION_FADE_IN_MS)
+        / LEGACY_HIT_EXPLOSION_FADE_OUT_MS
+    )
+
+
+def legacy_hit_explosion_frame(age_ms: float, frame_count: int) -> int:
+    """Source-faithful one-shot frame selection for LightingN."""
+    if frame_count <= 1:
+        return 0
+    frame_length_ms = max(1000.0 / 60.0, 170.0 / frame_count)
+    return min(max(0, int(age_ms / frame_length_ms)), frame_count - 1)
+
+
+@dataclass(frozen=True)
+class LegacyHudGeometry:
+    """osu!lazer legacy HUD geometry in render pixels."""
+
+    ui_scale: float
+    score_height: float
+    accuracy_height: float
+    score_right_margin: float
+    accuracy_right_margin: float
+    accuracy_top: float
+    mod_height: float
+
+
+@dataclass(frozen=True)
+class ManiaHealthGeometry:
+    """osu!stable ``HpBarMania`` geometry in top-left render pixels."""
+
+    stage_scale: float
+    texture_scale: float
+    rotation_degrees: float
+    background_anchor: tuple[float, float]
+    background_size: tuple[float, float]
+    fill_anchor: tuple[float, float]
+    fill_size: tuple[float, float]
+    visible_fill_width: float
+
+
+class LegacyScorebarLayout(StrEnum):
+    """R3D presentation choice for a resolved legacy scorebar pair."""
+
+    MANIA_SIDE = "mania_side"
+    STANDARD_HUD = "standard_hud"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True)
+class LegacyScorebarAssetMetrics:
+    """ScaleAdjust-aware alpha geometry for one legacy scorebar image."""
+
+    design_size: tuple[float, float]
+    alpha_bbox: tuple[float, float, float, float] | None
+    alpha_area: float
+
+
+@dataclass(frozen=True)
+class LegacyScorebarClassification:
+    """Cached evidence behind R3D's conservative scorebar layout heuristic."""
+
+    layout: LegacyScorebarLayout
+    confidence: str
+    background: LegacyScorebarAssetMetrics
+    fill: LegacyScorebarAssetMetrics
+    gauge_corridor: tuple[float, float, float, float] | None
+    outside_gauge_alpha_ratio: float
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StandardHealthGeometry:
+    """osu!stable generic ``HpBar`` geometry in top-left render pixels."""
+
+    position_scale: float
+    background_scale: float
+    fill_scale: float
+    marker_scale: float
+    background_anchor: tuple[float, float]
+    background_size: tuple[float, float]
+    fill_anchor: tuple[float, float]
+    fill_size: tuple[float, float]
+    visible_fill_width: float
+    marker_center: tuple[float, float]
+    marker_size: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class ManiaStageSideGeometry:
+    """Stable stage-left/right rectangles in OpenGL render pixels."""
+
+    texture_scale: float
+    left_rect: tuple[float, float, float, float]
+    right_rect: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class LazerHitErrorMeterGeometry:
+    """LegacySkin BarHitErrorMeter dimensions in OpenGL render pixels."""
+
+    ui_scale: float
+    left: float
+    axis_y: float
+    length: float
+    bar_thickness: float
+    judgment_width: float
+    judgment_thickness: float
+    chevron_size: float
+    centre_outer_size: float
+    centre_inner_size: float
+
+
+@dataclass(frozen=True)
+class LazerHitWindowBand:
+    judgment: str
+    window_ms: float
+    relative_length: float
+    colour: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class LazerHitErrorTickState:
+    alpha: float
+    width_fraction: float
+
+
+# OsuColour.ForHitResult() values used by lazer's BarHitErrorMeter.
+LAZER_HIT_RESULT_COLOURS: dict[str, tuple[float, float, float]] = {
+    "geki": (0x99 / 255, 0xEE / 255, 1.0),
+    "300": (0x66 / 255, 0xCC / 255, 1.0),
+    "katu": (0xB3 / 255, 0xD9 / 255, 0x44 / 255),
+    "100": (0x88 / 255, 0xB3 / 255, 0.0),
+    "50": (1.0, 0xCC / 255, 0x22 / 255),
+}
+
+
+def lazer_hit_error_meter_geometry(
+    render_width: int,
+    render_height: int,
+) -> LazerHitErrorMeterGeometry:
+    """Scale lazer's 768-space legacy horizontal meter at bottom-centre."""
+    ui_scale = render_height / 768.0
+    length = 200.0 * ui_scale
+    return LazerHitErrorMeterGeometry(
+        ui_scale=ui_scale,
+        left=(render_width - length) / 2.0,
+        # Leave enough of LegacySkin's bottom margin for upright labels and
+        # the 14-unit judgment lines without clipping either at the screen.
+        axis_y=18.0 * ui_scale,
+        length=length,
+        bar_thickness=2.0 * ui_scale,
+        judgment_width=14.0 * ui_scale,
+        judgment_thickness=4.0 * ui_scale,
+        chevron_size=8.0 * ui_scale,
+        centre_outer_size=8.0 * ui_scale,
+        centre_inner_size=4.0 * ui_scale,
+    )
+
+
+def lazer_hit_window_bands(
+    windows: tuple[float, float, float, float, float],
+) -> tuple[LazerHitWindowBand, ...]:
+    """Return Perfect→Meh band sizes relative to the widest hit window."""
+    if len(windows) != 5 or windows[-1] <= 0:
+        return ()
+    maximum = windows[-1]
+    return tuple(
+        LazerHitWindowBand(judgment, float(window), float(window) / maximum,
+                           LAZER_HIT_RESULT_COLOURS[judgment])
+        for judgment, window in zip(
+            ("geki", "300", "katu", "100", "50"), windows, strict=True,
+        )
+    )
+
+
+def hit_error_offset_position(offset_ms: float, max_hit_window: float) -> float:
+    """Map a signed hit offset to lazer's clamped 0..1 bar position."""
+    if max_hit_window <= 0:
+        return 0.5
+    return max(0.0, min(1.0, (offset_ms / max_hit_window + 1.0) / 2.0))
+
+
+def lazer_hit_error_tick_state(age_ms: float) -> LazerHitErrorTickState:
+    """Match lazer's 100 ms OutQuint entrance and 5000 ms exit."""
+    if age_ms < 0 or age_ms >= 5100:
+        return LazerHitErrorTickState(alpha=0.0, width_fraction=0.0)
+    if age_ms < 100:
+        progress = age_ms / 100.0
+        eased = 1.0 - (1.0 - progress) ** 5  # Easing.OutQuint
+        return LazerHitErrorTickState(
+            alpha=0.6 * eased,
+            width_fraction=eased,
+        )
+    progress = (age_ms - 100.0) / 5000.0
+    return LazerHitErrorTickState(
+        alpha=0.6 * (1.0 - progress),
+        # ResizeWidthTo(0, ..., Easing.InQuint).
+        width_fraction=1.0 - progress ** 5,
+    )
+
+
+def next_hit_error_ema(old_average: float, offset_ms: float) -> float:
+    """Apply lazer's moving-average fold for one new scored hit."""
+    return old_average * 0.9 + offset_ms * 0.1
+
+
+def configure_direct_texture_sampling(name: str, texture) -> None:
+    """Apply the per-slot sampling policy for full-resolution skin art."""
+    if name in ("scorebar_bg", "scorebar_colour"):
+        # These semi-transparent bars may be rotated for HpBarMania. Repeating
+        # their coloured V=0 edge against transparent-black V=1 pixels creates
+        # a long dark seam; generated mip levels widen it.
+        texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        texture.repeat_x = False
+        texture.repeat_y = False
+        return
+    texture.build_mipmaps()
+    texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+
+
+def mania_stage_side_geometry(
+    playfield_left: float,
+    playfield_right: float,
+    stage_height: float,
+    left_native_width: float,
+    right_native_width: float,
+) -> ManiaStageSideGeometry:
+    """Apply stable's side-sprite origins and 768-reference width scale."""
+    texture_scale = stage_height / 768.0
+    left_width = max(1.0, left_native_width * texture_scale)
+    right_width = max(1.0, right_native_width * texture_scale)
+    return ManiaStageSideGeometry(
+        texture_scale=texture_scale,
+        # StageLeft uses Origins.TopRight; StageRight uses Origins.TopLeft.
+        left_rect=(
+            playfield_left - left_width,
+            0.0,
+            left_width,
+            stage_height,
+        ),
+        right_rect=(
+            playfield_right,
+            0.0,
+            right_width,
+            stage_height,
+        ),
+    )
+
+
+def mania_health_geometry(
+    stage_right: float,
+    stage_top: float,
+    stage_height: float,
+    background_native_size: tuple[float, float],
+    fill_native_size: tuple[float, float],
+    hp: float,
+    new_default: bool,
+) -> ManiaHealthGeometry:
+    """Map stable's 480-space anchors and 768-space sprite scale to R3D."""
+    stage_scale = stage_height / 480.0
+    # pSprite.ScaleToWindowRatio multiplies HpBarMania's 0.7 scale by
+    # WindowManager.RatioInverse (output height / SpriteRes, where SpriteRes
+    # is 768). R3D's single Mania stage maps that full logical height onto
+    # ``stage_height``.
+    texture_scale = 0.7 * stage_height / 768.0
+    hp = max(0.0, min(1.0, hp))
+    background_size = tuple(
+        value * texture_scale for value in background_native_size
+    )
+    fill_size = tuple(value * texture_scale for value in fill_native_size)
+    fill_x, fill_y = (6.6, 474.8) if new_default else (8.0, 478.0)
+    visible_fill_width = fill_size[0] * hp
+    return ManiaHealthGeometry(
+        stage_scale=stage_scale,
+        texture_scale=texture_scale,
+        rotation_degrees=-90.0,
+        background_anchor=(
+            stage_right + stage_scale,
+            stage_top + stage_height,
+        ),
+        background_size=background_size,
+        fill_anchor=(
+            stage_right + fill_x * stage_scale,
+            stage_top + fill_y * stage_scale,
+        ),
+        fill_size=fill_size,
+        visible_fill_width=visible_fill_width,
+    )
+
+
+def mania_health_new_default(fill_source: str, marker_source: str) -> bool:
+    """Mirror stable's new-default scorebar asset-source test."""
+    return fill_source == "bundle" or marker_source in ("user", "beatmap")
+
+
+def _scorebar_asset_metrics(image: Image.Image | None) -> LegacyScorebarAssetMetrics:
+    """Measure one already-decoded scorebar image in design-space units."""
+    if image is None:
+        return LegacyScorebarAssetMetrics((0.0, 0.0), None, 0.0)
+    scale_adjust = float(image.info.get("scale_adjust", 1) or 1)
+    if scale_adjust <= 0:
+        scale_adjust = 1.0
+    alpha = np.asarray(image.getchannel("A"), dtype=np.uint8)
+    raw_bbox = image.getchannel("A").getbbox()
+    alpha_bbox = (
+        None
+        if raw_bbox is None
+        else tuple(float(value) / scale_adjust for value in raw_bbox)
+    )
+    return LegacyScorebarAssetMetrics(
+        design_size=(
+            float(image.width) / scale_adjust,
+            float(image.height) / scale_adjust,
+        ),
+        alpha_bbox=alpha_bbox,
+        # Alpha mass, rather than RGB or canvas area, ignores transparent
+        # padding and treats partially transparent decoration proportionally.
+        alpha_area=float(alpha.sum()) / (255.0 * scale_adjust * scale_adjust),
+    )
+
+
+def classify_legacy_scorebar(
+    background_image: Image.Image | None,
+    fill_image: Image.Image | None,
+    *,
+    new_default: bool,
+) -> LegacyScorebarClassification:
+    """Classify custom scorebar art for R3D's presentation-only divergence.
+
+    osu!stable always applies ``HpBarMania`` in Mania. R3D only selects the
+    generic horizontal ``HpBar`` when several strong signals identify an
+    obvious standard-mode decorative composite. Unusual or incomplete assets
+    deliberately remain ``UNCERTAIN`` and therefore use stable's Mania path.
+    """
+    background = _scorebar_asset_metrics(background_image)
+    fill = _scorebar_asset_metrics(fill_image)
+    if background.alpha_bbox is None or fill.alpha_bbox is None:
+        return LegacyScorebarClassification(
+            layout=LegacyScorebarLayout.UNCERTAIN,
+            confidence="low",
+            background=background,
+            fill=fill,
+            gauge_corridor=None,
+            outside_gauge_alpha_ratio=0.0,
+            evidence=("missing-visible-alpha",),
+        )
+
+    fill_offset = (7.5, 7.8) if new_default else (3.0, 10.0)
+    fill_left, fill_top, fill_right, fill_bottom = fill.alpha_bbox
+    fill_visible_width = fill_right - fill_left
+    fill_visible_height = fill_bottom - fill_top
+
+    # Stable positions the visible fill bbox at this offset. Padding admits
+    # ordinary scorebar frames, glows and anti-aliased flourishes without
+    # counting them as separate composite HUD artwork.
+    corridor_pad_x = max(24.0, fill_visible_height)
+    corridor_pad_y = max(32.0, fill_visible_height)
+    corridor = (
+        fill_offset[0] + fill_left - corridor_pad_x,
+        fill_offset[1] + fill_top - corridor_pad_y,
+        fill_offset[0] + fill_right + corridor_pad_x,
+        fill_offset[1] + fill_bottom + corridor_pad_y,
+    )
+
+    background_alpha = np.asarray(
+        background_image.getchannel("A"), dtype=np.float64,
+    )
+    background_scale_adjust = float(
+        background_image.info.get("scale_adjust", 1) or 1,
+    )
+    if background_scale_adjust <= 0:
+        background_scale_adjust = 1.0
+    raw_left = max(0, int(np.floor(corridor[0] * background_scale_adjust)))
+    raw_top = max(0, int(np.floor(corridor[1] * background_scale_adjust)))
+    raw_right = min(
+        background_image.width,
+        int(np.ceil(corridor[2] * background_scale_adjust)),
+    )
+    raw_bottom = min(
+        background_image.height,
+        int(np.ceil(corridor[3] * background_scale_adjust)),
+    )
+    total_alpha = float(background_alpha.sum())
+    inside_alpha = 0.0
+    if raw_right > raw_left and raw_bottom > raw_top:
+        inside_alpha = float(
+            background_alpha[raw_top:raw_bottom, raw_left:raw_right].sum(),
+        )
+    outside_ratio = (
+        max(0.0, min(1.0, 1.0 - inside_alpha / total_alpha))
+        if total_alpha > 0
+        else 0.0
+    )
+    outside_area = background.alpha_area * outside_ratio
+
+    bg_width, bg_height = background.design_size
+    fill_width, fill_height = fill.design_size
+    bg_bbox_height = background.alpha_bbox[3] - background.alpha_bbox[1]
+    fill_is_long_and_shallow = (
+        fill_visible_width >= 240.0
+        and fill_visible_height > 0
+        and fill_visible_width / fill_visible_height >= 4.0
+    )
+    canvas_is_very_tall = (
+        bg_width >= 500.0
+        and bg_height >= 240.0
+        and fill_height > 0
+        and bg_height / fill_height >= 4.0
+    )
+    visible_art_is_very_tall = (
+        bg_bbox_height >= 180.0
+        and bg_bbox_height / fill_visible_height >= 5.0
+    )
+    outside_art_is_dominant = (
+        outside_ratio >= 0.55
+        and outside_area >= max(8000.0, fill.alpha_area * 0.75)
+    )
+
+    if (
+        fill_is_long_and_shallow
+        and canvas_is_very_tall
+        and visible_art_is_very_tall
+        and outside_art_is_dominant
+    ):
+        return LegacyScorebarClassification(
+            layout=LegacyScorebarLayout.STANDARD_HUD,
+            confidence="high",
+            background=background,
+            fill=fill,
+            gauge_corridor=corridor,
+            outside_gauge_alpha_ratio=outside_ratio,
+            evidence=(
+                "long-shallow-fill",
+                "very-tall-canvas",
+                "very-tall-visible-art",
+                "dominant-outside-gauge-alpha",
+            ),
+        )
+
+    compact_canvas = (
+        bg_height <= max(160.0, fill_height * 3.5)
+        and bg_bbox_height <= max(140.0, fill_visible_height * 4.0)
+    )
+    comparable_width = fill_width > 0 and 0.65 <= bg_width / fill_width <= 1.5
+    if fill_is_long_and_shallow and compact_canvas and comparable_width:
+        return LegacyScorebarClassification(
+            layout=LegacyScorebarLayout.MANIA_SIDE,
+            confidence="high",
+            background=background,
+            fill=fill,
+            gauge_corridor=corridor,
+            outside_gauge_alpha_ratio=outside_ratio,
+            evidence=("long-shallow-fill", "compact-scorebar-pair"),
+        )
+
+    return LegacyScorebarClassification(
+        layout=LegacyScorebarLayout.UNCERTAIN,
+        confidence="low",
+        background=background,
+        fill=fill,
+        gauge_corridor=corridor,
+        outside_gauge_alpha_ratio=outside_ratio,
+        evidence=("composite-signals-incomplete",),
+    )
+
+
+def standard_health_geometry(
+    render_height: int,
+    background_native_size: tuple[float, float],
+    fill_native_size: tuple[float, float],
+    marker_native_size: tuple[float, float],
+    hp: float,
+    *,
+    new_default: bool,
+) -> StandardHealthGeometry:
+    """Port osu!stable's unrotated generic ``HpBar`` presentation."""
+    position_scale = render_height / 480.0
+    texture_scale = render_height / 768.0
+    background_scale = 0.96 * texture_scale
+    fill_scale = 0.965 * texture_scale
+    marker_scale = 0.97 * texture_scale
+    hp = max(0.0, min(1.0, hp))
+    fill_x, fill_y = (7.5, 7.8) if new_default else (3.0, 10.0)
+    marker_y = 10.625 if new_default else 10.0
+    background_size = tuple(
+        value * background_scale for value in background_native_size
+    )
+    fill_size = tuple(value * fill_scale for value in fill_native_size)
+    marker_size = tuple(value * marker_scale for value in marker_native_size)
+    return StandardHealthGeometry(
+        position_scale=position_scale,
+        background_scale=background_scale,
+        fill_scale=fill_scale,
+        marker_scale=marker_scale,
+        background_anchor=(0.0, 0.0),
+        background_size=background_size,
+        fill_anchor=(fill_x * position_scale, fill_y * position_scale),
+        fill_size=fill_size,
+        visible_fill_width=fill_size[0] * hp,
+        # Stable's CurrentXPosition advances by DrawWidth / 1.6 in 480-space,
+        # independently of the fill sprite's 0.965 draw scale.
+        marker_center=(
+            fill_x * position_scale
+            + fill_native_size[0] * hp * texture_scale,
+            marker_y * position_scale,
+        ),
+        marker_size=marker_size,
+    )
+
+
+def standard_health_marker_slot(*, hp: float, new_default: bool) -> str:
+    """Select the exact marker family used by osu!stable's generic HpBar."""
+    if new_default:
+        return "scorebar_marker"
+    if hp < 0.2:
+        return "scorebar_kidanger2"
+    if hp < 0.5:
+        return "scorebar_kidanger"
+    return "scorebar_ki"
+
+
+def legacy_hud_geometry(
+    render_height: int,
+    score_native_height: float,
+) -> LegacyHudGeometry:
+    """Scale legacy score/accuracy/mod components from lazer's 768p space."""
+    ui_scale = render_height / 768.0
+    score_height = score_native_height * ui_scale * 0.96
+    return LegacyHudGeometry(
+        ui_scale=ui_scale,
+        score_height=score_height,
+        accuracy_height=score_native_height * ui_scale * 0.576,
+        score_right_margin=10.0 * ui_scale,
+        accuracy_right_margin=17.0 * ui_scale,
+        accuracy_top=score_height + 9.0 * ui_scale,
+        mod_height=48.0 * ui_scale,
+    )
+
+
+def _texture_size_at_height(
+    source_width: int,
+    source_height: int,
+    target_height: float,
+) -> tuple[int, int]:
+    """Fit raster text to a target height without changing its aspect."""
+    height = max(1, int(round(target_height)))
+    if source_width <= 0 or source_height <= 0:
+        return 1, height
+    width = max(1, int(round(source_width * height / source_height)))
+    return width, height
 
 
 @dataclass
@@ -150,8 +947,13 @@ class FrameRenderer:
             skin_dir=sk_dir,
             beatmap_dir=bm_dir,
             mania_section=self.mania_section,
+            score_prefix=(self.skin_ini.score_prefix
+                          if self.skin_ini is not None else "score"),
             combo_prefix=(self.skin_ini.combo_prefix
                           if self.skin_ini is not None else "score"),
+        )
+        self._legacy_scorebar_classification = (
+            self._classify_legacy_scorebar_layout()
         )
         self._make_quad_geometry()
 
@@ -233,12 +1035,79 @@ class FrameRenderer:
                 return False
         return True
 
+    def _shared_frame_context(self, scene: SceneState):
+        """Reuse the wiki element context when the GPU path shares a pass."""
+        ctx = getattr(self, "_shared_element_context", None)
+        if ctx is None:
+            from osu_mania_renderer_v2.wiki_elements.context import FrameContext
+
+            ctx = FrameContext(
+                fr=self,
+                skin=None,
+                gl=self.rc.ctx,
+                fbo=self.rc.fbo,
+                width=self.rc.width,
+                height=self.rc.height,
+                key_count=self.rc.key_count,
+            )
+            self._shared_element_context = ctx
+        ctx.scene = scene
+        ctx.t_ms = getattr(scene, "t_ms", 0)
+        return ctx
+
+    def _draw_argon_stage_decorations(self, scene: SceneState) -> None:
+        from osu_mania_renderer_v2.wiki_elements.stage import stage_decorations
+
+        stage_decorations(
+            element=None,
+            skin=None,
+            assets=None,
+            variables=None,
+            ctx=self._shared_frame_context(scene),
+        )
+
+    def _draw_argon_columns(self, scene: SceneState) -> None:
+        from osu_mania_renderer_v2.wiki_elements.stage import columns
+
+        columns(
+            element=None,
+            skin=None,
+            assets=None,
+            variables=None,
+            ctx=self._shared_frame_context(scene),
+        )
+
+    def _draw_argon_notes(self, scene: SceneState) -> None:
+        from osu_mania_renderer_v2.wiki_elements.notes import _draw_notes_body
+
+        _draw_notes_body(self._shared_frame_context(scene))
+
+    def _draw_argon_receptors(self, scene: SceneState) -> None:
+        from osu_mania_renderer_v2.wiki_elements.notes import _receptors
+
+        _receptors(self._shared_frame_context(scene))
+
+    def _draw_argon_hud(self, scene: SceneState) -> None:
+        from osu_mania_renderer_v2.wiki_elements.hud import (
+            _draw_argon_hud,
+            _draw_fallback_hud,
+        )
+
+        ctx = self._shared_frame_context(scene)
+        if ctx.has_argon_font():
+            _draw_argon_hud(ctx)
+        else:
+            _draw_fallback_hud(ctx)
+
     def _legacy_timing_overlay_visibility(self) -> tuple[bool, bool]:
-        """Gate R3D-only hit-error popups and UR text to the Argon default."""
+        """Compatibility gate for removed popups and standalone Argon UR."""
         is_argon = self._is_argon_default()
         return (
-            self.options.show_hit_error_popup and is_argon,
-            self.options.show_ur_bar and is_argon,
+            False,
+            is_argon
+            and getattr(self.options, "hud_opacity", 1.0) > 0.0
+            and getattr(self.options, "show_unstable_rate", True)
+            and getattr(self.options, "show_ur_bar", True),
         )
 
     def _compute_playfield_geometry(self) -> None:
@@ -385,36 +1254,35 @@ class FrameRenderer:
         self.upside_down = bool(
             section is not None and section.upside_down,
         )
-        # Clamp the receptor centre so the full sprite (≈ col_w_uniform
-        # tall, centred on the line) stays on-screen in either orientation.
-        # Many skins author HitPosition right at the edge (Night05=447,
-        # FNF=464, minimaly=470) — at 480-ref → 720-render that translates
-        # to ~10-25 px from the screen edge in our rendering, so the lower
-        # half of the receptor sprite ends up off-frame without a clamp.
-        # FNF-style key sprites include arrow tips, outline strokes, and
-        # animation halos that extend to the canvas edge, so we leave
-        # ~half-a-col_w of breathing room rather than the bare sprite_half.
-        clamp_margin = self.col_w_uniform + 4
+        # Legacy key sprites are screen-edge anchored by LegacyKeyArea, so a
+        # custom skin's authored HitPosition must not be moved merely to fit a
+        # formerly centre-anchored key rect. Keep the historical clamp only
+        # for the Argon/default path whose target remains centred.
         if self.upside_down:
             mirrored = rc.height - self.receptor_centre_y_gl
-            max_gl = rc.height - clamp_margin
-            self.receptor_centre_y_gl = min(mirrored, max_gl)
-        else:
-            # Normal mode: receptor near screen bottom (low gl_y). Sprite
-            # extends symmetrically about the centre; the bottom half
-            # would clip below gl_y=0 if HitPosition is near the bottom.
+            if is_argon:
+                clamp_margin = self.col_w_uniform + 4
+                mirrored = min(mirrored, rc.height - clamp_margin)
+            self.receptor_centre_y_gl = mirrored
+        elif is_argon:
+            clamp_margin = self.col_w_uniform + 4
             min_gl = clamp_margin
             self.receptor_centre_y_gl = max(self.receptor_centre_y_gl, min_gl)
 
-        # Combo counter / judgement popup Y. Defaults match pre-Phase-B
-        # placement (combo baseline ≈ 58% of frame height from bottom).
+        # Stable's combo and judgment are independent, centre-origin controls.
+        # Their 480-space positions flip before stage conversion on upscroll.
+        # Keep historical defaults only when the custom skin omits a value.
         if section is not None and section.combo_position is not None:
-            self.combo_baseline_y_gl = osu_y_to_gl(section.combo_position)
+            self.combo_baseline_y_gl = int(round(legacy_mania_position_gl(
+                section.combo_position, rc.height, self.upside_down,
+            )))
         else:
             self.combo_baseline_y_gl = int(rc.height * 0.58)
 
         if section is not None and section.score_position is not None:
-            self.score_popup_y_gl = osu_y_to_gl(section.score_position)
+            self.score_popup_y_gl = int(round(legacy_mania_position_gl(
+                section.score_position, rc.height, self.upside_down,
+            )))
         else:
             # Default lives just below combo baseline (renderer-historical).
             self.score_popup_y_gl = self.combo_baseline_y_gl - 8
@@ -497,7 +1365,7 @@ class FrameRenderer:
             w=self.rc.width, h=self.rc.height, alpha=alpha,
         )
 
-    def _draw_stage_decorations(self) -> None:
+    def _draw_stage_decorations(self, scene: SceneState | None = None) -> None:
         """Draw the four stage-decoration sprite slots — stage_left,
         stage_right, stage_bottom, stage_hint — that osu!mania skins use
         to theme the playfield (frame textures, hit-line indicators, ...).
@@ -512,8 +1380,8 @@ class FrameRenderer:
         is opt-in by what the author shipped — no per-skin special-casing.
 
         Coordinate convention:
-          stage_left  : left half of the 4:3 region, full height
-          stage_right : right half of the 4:3 region, full height
+          stage_left  : right edge at the playfield's left edge, full height
+          stage_right : left edge at the playfield's right edge, full height
           stage_bottom: horizontal strip flush with the receptor row,
                         roughly the column-width tall
           stage_hint  : thin horizontal indicator at the receptor centre
@@ -521,13 +1389,13 @@ class FrameRenderer:
         UpsideDown skins have already had `receptor_centre_y_gl` flipped
         by `_compute_geometry`, so positions tied to it automatically
         invert; left/right don't depend on orientation."""
+        if scene is not None and self._is_argon_default():
+            self._draw_argon_stage_decorations(scene)
+            return
+
         rc = self.rc
         h = rc.height
         w = rc.width
-        # The 4:3 region the playfield (and osu! coords) map into.
-        region_w = int(h * 4.0 / 3.0)
-        region_x0 = (w - region_w) // 2
-        half_w = region_w // 2
 
         # Side-panel dim: a translucent overlay covering the screen
         # area OUTSIDE the playfield column band. Suppresses the
@@ -577,31 +1445,33 @@ class FrameRenderer:
                 self.pf_x, 0, self.pf_w, h, COL_DIM,
             )
 
-        # Stage left/right sprites — drawn at native aspect, anchored
-        # to the playfield's outer edges. Per stable osu! convention
-        # they're vertical sidebars touching the column band; we scale
-        # each to the height of the 4:3 region and let width follow
-        # the source aspect. Skins that ship 1x1 transparent
-        # placeholders end up drawing essentially nothing — no
-        # visible artifact.
-        view_h = int(rc.height)
+        # Stage side sprites follow stable's distinct origins: StageLeft is
+        # TopRight-anchored at the playfield's left edge and StageRight is
+        # TopLeft-anchored at its right edge. Do not clamp the left sprite's
+        # transparent canvas into the 4:3 region; off-screen clipping is what
+        # keeps its authored right-edge artwork on the actual left side.
         sl_src = self.atlas.global_source("stage_left")
         sr_src = self.atlas.global_source("stage_right")
+        sl_w, _sl_h = self.atlas.global_native_size("stage_left")
+        sr_w, _sr_h = self.atlas.global_native_size("stage_right")
+        side_geometry = mania_stage_side_geometry(
+            playfield_left=self.pf_x,
+            playfield_right=self.pf_x + self.pf_w,
+            stage_height=float(h),
+            left_native_width=sl_w,
+            right_native_width=sr_w,
+        )
         if sl_src in ("beatmap", "user"):
-            sl_asp = self.atlas.global_aspect("stage_left") or 1.0
-            sl_w = max(1, int(view_h * sl_asp))
-            sl_x = max(region_x0, self.pf_x - sl_w)
-            self._draw_sprite(
+            self._draw_direct(
                 "stage_left",
-                sl_x, 0, sl_w, view_h, (1, 1, 1, 1),
+                *side_geometry.left_rect,
+                tint=(1, 1, 1, 1),
             )
         if sr_src in ("beatmap", "user"):
-            sr_asp = self.atlas.global_aspect("stage_right") or 1.0
-            sr_w = max(1, int(view_h * sr_asp))
-            sr_x = self.pf_x + self.pf_w
-            self._draw_sprite(
+            self._draw_direct(
                 "stage_right",
-                sr_x, 0, sr_w, view_h, (1, 1, 1, 1),
+                *side_geometry.right_rect,
+                tint=(1, 1, 1, 1),
             )
 
         # Stage-bottom + stage-hint are positioned RELATIVE TO THE
@@ -658,7 +1528,20 @@ class FrameRenderer:
         # real assets (Night05's 1200x770 starfield) get their look;
         # skins that ship 1x1 transparent placeholders (FNF) draw nothing
         # visible, so non-decorated skins are unaffected.
-        self._draw_stage_decorations()
+        self._draw_stage_decorations(scene)
+        is_argon = self._is_argon_default()
+        custom_scorebar_layout = self._selected_legacy_scorebar_layout()
+        draw_mania_side_health = (
+            self.options.show_hp_bar
+            and not is_argon
+            and self._has_custom_health_bar_assets()
+            and custom_scorebar_layout is not LegacyScorebarLayout.STANDARD_HUD
+        )
+        if draw_mania_side_health:
+            # HpBarMania belongs to StageMania.SpriteManagerBelow. Keep the
+            # authored side gauge with stage decoration, before playfield
+            # columns/notes and global HUD chrome.
+            self._draw_hp_bar(scene)
         self._draw_columns(scene)
         if self.options.show_key_overlay:
             self._draw_stage_lights(scene)
@@ -687,25 +1570,26 @@ class FrameRenderer:
         self._hd_active = False
         self._fi_active = False
 
-        # Combo + judgment text draws AFTER notes so they read ON TOP of
-        # the playfield instead of being hidden behind a fat note or a
-        # hold body. Earlier this drew BEFORE notes (so a passing note
-        # would visually consume the "111" combo), which users
-        # consistently flagged as wrong.
-        self._draw_combo_and_judgment(scene)
+        # Preserve Argon's established ordering. Custom legacy judgment lives
+        # in stable's stage-above manager, so it is drawn after receptors too.
+        if is_argon:
+            self._draw_combo_and_judgment(scene)
 
         if not keys_under_notes:
             self._draw_receptors(scene)
-        show_hit_error_popups, show_ur_summary = self._legacy_timing_overlay_visibility()
-        if show_hit_error_popups:
-            self._draw_hit_error_popups(scene)
-        if not self.options.hide_judgement_line:
-            self._draw_hit_strip(scene)
+        if not is_argon:
+            self._draw_combo_and_judgment(scene)
+        _show_hit_error_popups, show_ur_summary = self._legacy_timing_overlay_visibility()
+        if (
+            getattr(self.options, "hud_opacity", 1.0) > 0.0
+            and getattr(self.options, "show_hit_error_meter", True)
+        ):
+            self._draw_hit_error_meter(scene)
         if self.options.show_progress_bar:
             self._draw_progress_bar(scene)
         if scene.hp <= 0.001 and scene.results_opacity <= 0:
             self._draw_fail_overlay()
-        if self.options.show_hp_bar:
+        if self.options.show_hp_bar and not draw_mania_side_health:
             self._draw_hp_bar(scene)
         self._draw_banner()
         self._draw_hud(scene)
@@ -908,13 +1792,289 @@ class FrameRenderer:
             self._hud_cache[key] = entry
         return entry
 
-    def _draw_hud(self, scene: SceneState) -> None:
-        """Top-right corner, OG web-viewer style:
-          - BIG 8-digit score (~80 px, bright white, mono digits)
-          - Accuracy with a stopwatch glyph prefix (matches the OG icon)
-          - 4K + AT mode pills below the accuracy line."""
+    def _legacy_asset_is_visible(self, slot: str) -> bool:
+        checker = getattr(self.atlas, "global_has_visible_pixels", None)
+        return checker(slot) if checker is not None else True
+
+    def _legacy_font_available(self, font: str) -> bool:
+        """A usable custom font has all ten visible, skin-authored digits."""
+        for digit in "0123456789":
+            slot = f"{font}_{digit}"
+            if self.atlas.global_source(slot) not in ("user", "beatmap"):
+                return False
+            width, height = self.atlas.global_native_size(slot)
+            if width <= 0 or height <= 0 or not self._legacy_asset_is_visible(slot):
+                return False
+        return True
+
+    def _legacy_glyph_sizes(
+        self, font: str, text: str,
+    ) -> dict[str, tuple[float, float]]:
+        sizes: dict[str, tuple[float, float]] = {}
+        for character in set(text + "5"):
+            slot = legacy_glyph_slot(font, character)
+            if slot is None:
+                continue
+            if self.atlas.global_source(slot) not in ("user", "beatmap"):
+                continue
+            size = self.atlas.global_native_size(slot)
+            if size[0] <= 0 or size[1] <= 0:
+                continue
+            if not self._legacy_asset_is_visible(slot):
+                continue
+            sizes[character] = size
+        return sizes
+
+    def _draw_legacy_text(
+        self,
+        font: str,
+        text: str,
+        *,
+        anchor_x: float,
+        anchor_y: float,
+        align: str,
+        scale: float,
+        overlap: float,
+        scale_x: float = 1.0,
+        scale_y: float = 1.0,
+        tint: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0),
+        additive: bool = False,
+    ) -> LegacyTextLayout:
+        """Draw atlas-backed legacy sprite text and return its base layout."""
+        layout = legacy_text_layout(
+            text,
+            self._legacy_glyph_sizes(font, text),
+            font=font,
+            scale=scale,
+            overlap=overlap,
+            fixed_digits=True,
+        )
+        if align == "right_top":
+            center_x = anchor_x - layout.width / 2.0
+            center_y = anchor_y - layout.height / 2.0
+        elif align == "center":
+            center_x = anchor_x
+            center_y = anchor_y
+        else:
+            raise ValueError(f"unknown legacy text alignment: {align!r}")
+
+        left = center_x - layout.width / 2.0
+        top = center_y + layout.height / 2.0
+        for glyph in layout.glyphs:
+            glyph_center_x = left + glyph.x + glyph.width / 2.0
+            glyph_center_y = top - glyph.top - glyph.height / 2.0
+            glyph_center_x = center_x + (glyph_center_x - center_x) * scale_x
+            glyph_center_y = center_y + (glyph_center_y - center_y) * scale_y
+            width = glyph.width * scale_x
+            height = glyph.height * scale_y
+            rect = (
+                int(round(glyph_center_x - width / 2.0)),
+                int(round(glyph_center_y - height / 2.0)),
+                max(1, int(round(width))),
+                max(1, int(round(height))),
+            )
+            atlas_index = self.atlas.index_of(glyph.slot)
+            if additive:
+                self._draw_additive_sprite_idx(
+                    atlas_index, *rect, tint,
+                )
+            else:
+                self._draw_sprite_idx(atlas_index, *rect, tint)
+        return layout
+
+    def _draw_generated_mod_fallback(
+        self,
+        icon: LegacyModIcon,
+        *,
+        center_x: float,
+        center_y: float,
+        ui_scale: float,
+    ) -> tuple[float, float, float, float]:
+        """Keep the existing R3D badge as a missing/modern-mod fallback."""
+        body, text_colour = self._PILL_COLOURS.get(
+            icon.acronym, self._PILL_DEFAULT,
+        )
+        height = max(1, int(round(48.0 * ui_scale)))
+        texture, text_width, text_height = self._cached_text(
+            icon.acronym, 48, (*text_colour, 255),
+        )
+        text_width, text_height = _texture_size_at_height(
+            text_width, text_height, height * 0.48,
+        )
+        width = max(height, text_width + max(1, int(round(23.0 * ui_scale))))
+        x = int(round(center_x - width / 2.0))
+        y = int(round(center_y - height / 2.0))
+        border = max(1, int(round(height * 0.06)))
+        self._draw_sprite(
+            "column_bg", x, y, width, height,
+            (body[0] / 510, body[1] / 510, body[2] / 510, 0.95),
+        )
+        self._draw_sprite(
+            "column_bg", x + border, y + border,
+            width - 2 * border, height - 2 * border,
+            (body[0] / 255, body[1] / 255, body[2] / 255, 0.95),
+        )
+        self._draw_external_texture(
+            texture,
+            x=x + (width - text_width) // 2,
+            y=y + (height - text_height) // 2,
+            w=text_width,
+            h=text_height,
+            alpha=1.0,
+        )
+        return x, y, width, height
+
+    def _draw_legacy_mod_icons(
+        self, scene: SceneState, *, fallback_anchor_y: float,
+    ) -> float:
+        """Draw custom-skin mods from raw replay flags at stable positions."""
+        icons = legacy_mod_icons(int(getattr(scene, "replay_mods", 0)))
+        if not icons:
+            return fallback_anchor_y
+        lowest = fallback_anchor_y
+        for index, icon in enumerate(icons):
+            slot = (
+                legacy_mod_slot_name(icon.asset_name)
+                if icon.asset_name is not None else None
+            )
+            source = self.atlas.global_source(slot) if slot is not None else "missing"
+            if source in ("user", "beatmap"):
+                native_size = self.atlas.global_native_size(slot)
+                geometry = legacy_mod_icon_geometry(
+                    self.rc.width, self.rc.height, index, native_size,
+                )
+                self._draw_direct(slot, *geometry.rect)
+                lowest = min(lowest, geometry.rect[1])
+                continue
+
+            # Stable has no filename contract for modern-only mods, and custom
+            # skins may omit any legacy icon. Retain a generated badge in the
+            # same stable position cell as a safe fallback.
+            geometry = legacy_mod_icon_geometry(
+                self.rc.width, self.rc.height, index, (48.0, 48.0),
+            )
+            rect = self._draw_generated_mod_fallback(
+                icon,
+                center_x=geometry.center[0],
+                center_y=geometry.center[1],
+                ui_scale=geometry.texture_scale,
+            )
+            lowest = min(lowest, rect[1])
+        return lowest
+
+    def _draw_custom_legacy_hud(
+        self, scene: SceneState, display_score: int, display_acc: float,
+    ) -> None:
+        """Skin-sprite score/accuracy plus stable custom-skin mod icons."""
         rc = self.rc
-        right_pad = 28
+        ui_scale = rc.height / 768.0
+        score_bottom = rc.height - 22.0
+        if self.options.show_score:
+            if self._legacy_font_available("score"):
+                score_scale = ui_scale * 0.96
+                score_layout = self._draw_legacy_text(
+                    "score", f"{display_score:08d}",
+                    anchor_x=rc.width - 10.0 * ui_scale,
+                    anchor_y=rc.height,
+                    align="right_top",
+                    scale=score_scale,
+                    overlap=(self.skin_ini.score_overlap
+                             if self.skin_ini is not None else 0),
+                )
+                accuracy_top = (
+                    rc.height - score_layout.height - 9.0 * ui_scale
+                )
+                accuracy_layout = self._draw_legacy_text(
+                    "score", f"{display_acc:05.2f}%",
+                    anchor_x=rc.width - 17.0 * ui_scale,
+                    anchor_y=accuracy_top,
+                    align="right_top",
+                    scale=ui_scale * 0.576,
+                    overlap=(self.skin_ini.score_overlap
+                             if self.skin_ini is not None else 0),
+                    tint=(1.0, 1.0, 1.0, 0.95),
+                )
+                score_bottom = accuracy_top - accuracy_layout.height
+            else:
+                # Narrow safety fallback for partial skins: keep the prior PIL
+                # readout while all valid sprite fonts take the path above.
+                score_texture, score_width, score_height = self._cached_text(
+                    f"{display_score:08d}", 120, (255, 255, 255, 255),
+                )
+                _native_width, native_height = self.atlas.global_native_size(
+                    "score_0",
+                )
+                source = self.atlas.global_source("score_0")
+                geometry = (
+                    legacy_hud_geometry(rc.height, native_height)
+                    if source in ("user", "beatmap") and native_height > 0
+                    else None
+                )
+                if geometry is not None:
+                    score_width, score_height = _texture_size_at_height(
+                        score_width, score_height, geometry.score_height,
+                    )
+                    score_x = int(round(
+                        rc.width - geometry.score_right_margin - score_width,
+                    ))
+                    score_y = rc.height - score_height
+                else:
+                    score_x = rc.width - score_width - 28
+                    score_y = rc.height - score_height - 22
+                self._draw_external_texture(
+                    score_texture,
+                    x=score_x, y=score_y,
+                    w=score_width, h=score_height, alpha=1.0,
+                )
+                accuracy_texture, accuracy_width, accuracy_height = self._cached_text(
+                    f"{display_acc:.2f}%", 60, (235, 235, 245, 255),
+                )
+                if geometry is not None:
+                    accuracy_width, accuracy_height = _texture_size_at_height(
+                        accuracy_width,
+                        accuracy_height,
+                        geometry.accuracy_height,
+                    )
+                    accuracy_x = int(round(
+                        rc.width - geometry.accuracy_right_margin
+                        - accuracy_width,
+                    ))
+                    accuracy_y = int(round(
+                        rc.height - geometry.accuracy_top - accuracy_height,
+                    ))
+                else:
+                    accuracy_x = rc.width - accuracy_width - 28
+                    accuracy_y = score_y - accuracy_height - 8
+                self._draw_external_texture(
+                    accuracy_texture,
+                    x=accuracy_x,
+                    y=accuracy_y,
+                    w=accuracy_width, h=accuracy_height, alpha=0.95,
+                )
+                score_bottom = accuracy_y
+
+        mods_bottom = self._draw_legacy_mod_icons(
+            scene,
+            fallback_anchor_y=score_bottom - 16.0 * ui_scale,
+        )
+        if self.options.show_pp_counter and scene.max_pp > 0:
+            texture, width, height = self._cached_text(
+                f"{scene.pp:.0f}pp", 44, (255, 220, 140, 255),
+            )
+            self._draw_external_texture(
+                texture,
+                x=rc.width - width - 28,
+                y=int(round(mods_bottom - height - 14)),
+                w=width, h=height, alpha=0.95,
+            )
+
+    def _draw_hud(self, scene: SceneState) -> None:
+        """Draw the shared Argon HUD or the custom legacy Mania HUD."""
+        if self._is_argon_default():
+            if getattr(self.options, "hud_opacity", 1.0) > 0:
+                self._draw_argon_hud(scene)
+            return
+
         # Score + acc both use the *smoothed* values during gameplay so the
         # counter rolls up across frames rather than snapping each hit.
         # During the results screen we snap to the authoritative replay
@@ -927,45 +2087,7 @@ class FrameRenderer:
                              if scene.score_smoothed > 0 else scene.score)
             display_acc = scene.accuracy_smoothed
 
-        # Score + accuracy share the show_score gate — "off" hides both, since
-        # they form one readout block visually.
-        sy = rc.height - 22
-        if self.options.show_score:
-            score_str = f"{display_score:08d}"
-            score_tex, sw, sh = self._cached_text(
-                score_str, 120, (255, 255, 255, 255),
-            )
-            sx = rc.width - sw - right_pad
-            sy = rc.height - sh - 22
-            self._draw_external_texture(score_tex, x=sx, y=sy, w=sw, h=sh, alpha=1.0)
-
-            acc_str = f"{display_acc:.2f}%"
-            acc_tex, aw, ah = self._cached_text(
-                acc_str, 60, (235, 235, 245, 255),
-            )
-            ay = sy - ah - 8
-            self._draw_external_texture(
-                acc_tex, x=rc.width - aw - right_pad, y=ay,
-                w=aw, h=ah, alpha=0.95,
-            )
-        else:
-            # Pills still anchor at the top-right when score is hidden.
-            ay = sy
-
-        # 4K + AT mode pills, below the accuracy line, OG-style red+blue.
-        pills_bottom_y = self._draw_mode_pills(scene, anchor_y=ay - 16)
-
-        # Live PP: gated on the explicit setting AND on having a value.
-        if self.options.show_pp_counter and scene.max_pp > 0:
-            pp_tex, pw, ph = self._cached_text(
-                f"{scene.pp:.0f}pp", 44, (255, 220, 140, 255),
-            )
-            self._draw_external_texture(
-                pp_tex,
-                x=rc.width - pw - right_pad,
-                y=pills_bottom_y - ph - 14,
-                w=pw, h=ph, alpha=0.95,
-            )
+        self._draw_custom_legacy_hud(scene, display_score, display_acc)
 
     # Per-mod pill colour table. Key-count pill stays red (OG style);
     # other mods get colour-coded so a glance tells you what's active.
@@ -990,15 +2112,34 @@ class FrameRenderer:
     _PILL_KEYCOUNT = ((200, 60, 80), (255, 215, 225))   # red, like the OG "4K"
     _PILL_DEFAULT  = ((60, 110, 200), (215, 230, 255))  # fallback blue
 
-    def _draw_mode_pills(self, scene: SceneState, anchor_y: int) -> int:
+    def _draw_mode_pills(
+        self,
+        scene: SceneState,
+        anchor_y: int,
+        legacy_ui_scale: float | None = None,
+    ) -> int:
         """Render one pill per active mod, driven by `scene.mod_acronyms`.
         Returns the Y of the pill row's bottom edge (so callers can stack
         further HUD elements — e.g. the PP readout — directly under it)."""
         if not scene.mod_acronyms:
             return anchor_y
         rc = self.rc
-        right_pad = max(12, int(28 * self.rc.height / self._FONT_REFERENCE_HEIGHT))
-        pill_h = max(40, int(100 * self.rc.height / self._FONT_REFERENCE_HEIGHT))
+        if legacy_ui_scale is None:
+            right_pad = max(12, int(
+                28 * self.rc.height / self._FONT_REFERENCE_HEIGHT,
+            ))
+            pill_h = max(40, int(
+                100 * self.rc.height / self._FONT_REFERENCE_HEIGHT,
+            ))
+            min_pill_w = 108
+            horizontal_padding = 48
+            spacing = 12
+        else:
+            right_pad = max(1, int(round(10 * legacy_ui_scale)))
+            pill_h = max(1, int(round(48 * legacy_ui_scale)))
+            min_pill_w = max(1, int(round(pill_h * 1.08)))
+            horizontal_padding = max(1, int(round(pill_h * 0.48)))
+            spacing = max(1, int(round(pill_h * 0.12)))
         # Lay out right-to-left so the rightmost pill stays anchored.
         x_right = rc.width - right_pad
         for i, label in enumerate(reversed(scene.mod_acronyms)):
@@ -1008,13 +2149,19 @@ class FrameRenderer:
                 else self._PILL_COLOURS.get(label, self._PILL_DEFAULT)
             )
             tex, tw, th = self._cached_text(label, 48, (*text_col, 255))
-            pill_w = max(108, tw + 48)
+            if legacy_ui_scale is not None:
+                tw, th = _texture_size_at_height(tw, th, pill_h * 0.48)
+            pill_w = max(min_pill_w, tw + horizontal_padding)
             px = x_right - pill_w
             py = anchor_y - pill_h
             # Two-layer badge: a darker outer "border" sprite + a brighter
             # inner body for a flatter, icon-like look (matches the visual
             # weight of lazer's mod chips).
-            border_w = max(2, int(pill_h * 0.06))
+            border_w = (
+                max(1, int(round(pill_h * 0.06)))
+                if legacy_ui_scale is not None
+                else max(2, int(pill_h * 0.06))
+            )
             self._draw_sprite(
                 "column_bg", px, py, pill_w, pill_h,
                 (body[0] / 510, body[1] / 510, body[2] / 510, 0.95),
@@ -1031,100 +2178,136 @@ class FrameRenderer:
                 y=py + (pill_h - th) // 2,
                 w=tw, h=th, alpha=1.0,
             )
-            x_right = px - 12
+            x_right = px - spacing
         # py is the GL bottom-left Y of the last pill — same row for all.
         return py
 
-    def _draw_combo_and_judgment(self, scene: SceneState, draw_combo: bool = True) -> None:
-        """Centred combo (top) + judgment popup (below it), drawn BEHIND notes.
+    def _draw_custom_legacy_judgment(self, scene: SceneState) -> None:
+        if not self.options.show_judgment or not scene.active_judgments:
+            return
+        judgment = scene.active_judgments[-1]
+        alpha = legacy_judgment_alpha(judgment.age_ms)
+        if alpha <= 0:
+            return
+        slot = f"judgment_{judgment.judgment}"
+        native_width, native_height = self.atlas.global_native_size(slot)
+        if native_width <= 0 or native_height <= 0:
+            return
+        texture_scale = self.rc.height / 768.0
+        animation_scale = legacy_judgment_scale(
+            judgment.age_ms, miss=judgment.judgment == "miss",
+        )
+        width = max(1, int(round(
+            native_width * texture_scale * animation_scale,
+        )))
+        height = max(1, int(round(
+            native_height * texture_scale * animation_scale,
+        )))
+        center_x = self.pf_x + self.pf_w / 2.0
+        center_y = self.score_popup_y_gl
+        base = self.atlas.index_of(slot)
+        frame = legacy_judgment_frame(
+            judgment.age_ms, self.atlas.frame_count(slot),
+        )
+        self._draw_sprite_idx(
+            base + frame,
+            int(round(center_x - width / 2.0)),
+            int(round(center_y - height / 2.0)),
+            width,
+            height,
+            (1.0, 1.0, 1.0, alpha),
+        )
 
-        Combo is the running hit-without-miss count. Judgment is the value of
-        the most-recent hit (320 / 300 / 200 / 100 / 50 / MISS) and uses
-        Night05's bundled sprite. Combo sits ABOVE the judgment so the two
-        don't overlap, matching the OG web replay viewer layout.
-
-        `draw_combo=False` suppresses the PIL combo number so the wiki HUD
-        can render it from the skin's score font instead (the judgment
-        sprite, already atlas-backed, is unaffected).
-        """
-        pf_x = self.pf_x
-        pf_w = self.pf_w
-        center_x = pf_x + pf_w // 2
-        # Combo sits above judgment, tightly stacked, in the upper-middle of
-        # the playfield — same arrangement the OG web replay viewer uses.
-        # Combo baseline = bottom of the combo text, in GL (Y-up) coords; the
-        # judgment sprite is drawn directly below it. Honours ComboPosition
-        # from the skin's [Mania] block when set.
-        combo_baseline_y = self.combo_baseline_y_gl
-        # Judgment sprites (Night05's mania-hit300g etc.) are 384×384 square
-        # with the value text centred in transparent padding. pf_w * 0.55
-        # makes the visible text comparable in size to the combo number above
-        # it without dwarfing the playfield. Width is the anchor; the HEIGHT
-        # follows the sprite's native aspect (computed per-sprite below) so a
-        # custom skin's non-square hit sprite renders proportionally instead
-        # of stretched into a square. Default skins ship 384x384 squares, so
-        # aspect is 1.0 and jud_h == jud_w (unchanged).
-        jud_w = int(pf_w * 0.55)
-
-        # Judgment popup — uses the latest judgment event (most recent hit).
-        if scene.active_judgments:
-            j = scene.active_judgments[-1]
-            alpha = max(0.0, 1.0 - j.age_ms / 500.0)
-            sprite_name = f"judgment_{j.judgment}"
-            # Height from the ACTUAL sprite native aspect (width / height),
-            # mirroring the stage_left/right global_aspect handling: a wide
-            # sprite (aspect > 1) gives jud_h < jud_w; a tall one gives
-            # jud_h > jud_w; square gives jud_h == jud_w. Un-distorts the
-            # _fit_stretch'd atlas tile so custom skins are not squished.
-            jud_asp = self.atlas.global_aspect(sprite_name) or 1.0
-            jud_h = int(jud_w / jud_asp)
-            # Animated hit-burst: skin can ship `mania-hit300-0.png`,
-            # `mania-hit300-1.png`, … per the wiki. Spec says 60 fps,
-            # plays once, holds the last frame during fade-out.
-            base_idx = self.atlas.index_of(sprite_name)
-            frame_count = self.atlas.frame_count(sprite_name)
-            if frame_count > 1:
-                frame_idx = min(int(j.age_ms * 60.0 / 1000.0), frame_count - 1)
-                atlas_idx = base_idx + frame_idx
-            else:
-                atlas_idx = base_idx
-            # Judgment top-edge sits just under the combo baseline, with a
-            # small visual gap. (`_draw_sprite_idx` takes a bottom-left
-            # origin in GL coords; the sprite extends UP from there.)
-            self._draw_sprite_idx(
-                atlas_idx,
-                center_x - jud_w // 2,
-                combo_baseline_y - jud_h - 8,
-                jud_w, jud_h, (1, 1, 1, alpha),
+    def _draw_custom_legacy_combo(
+        self, scene: SceneState, *, draw_combo: bool,
+    ) -> None:
+        if not draw_combo or not self.options.show_combo:
+            return
+        center_x = self.pf_x + self.pf_w / 2.0
+        center_y = self.combo_baseline_y_gl
+        texture_scale = self.rc.height / 768.0
+        overlap = self.skin_ini.combo_overlap if self.skin_ini is not None else 0
+        if self._legacy_font_available("combo"):
+            if scene.combo > 0:
+                self._draw_legacy_text(
+                    "combo", str(scene.combo),
+                    anchor_x=center_x,
+                    anchor_y=center_y,
+                    align="center",
+                    scale=texture_scale,
+                    overlap=overlap,
+                    scale_y=legacy_combo_y_scale(scene.combo_age_ms),
+                )
+            break_scale, break_alpha = legacy_combo_break_animation(
+                getattr(scene, "combo_break_age_ms", 9999),
             )
+            previous = int(getattr(scene, "combo_break_previous_value", 0))
+            if previous > 0 and break_alpha > 0:
+                break_colour = (
+                    self.mania_section.colour_break
+                    if self.mania_section is not None
+                    and self.mania_section.colour_break is not None
+                    else DEFAULT_COLOUR_BREAK
+                )
+                self._draw_legacy_text(
+                    "combo", str(previous),
+                    anchor_x=center_x,
+                    anchor_y=center_y,
+                    align="center",
+                    scale=texture_scale,
+                    overlap=overlap,
+                    scale_x=break_scale,
+                    scale_y=break_scale,
+                    tint=(
+                        break_colour[0] / 255.0,
+                        break_colour[1] / 255.0,
+                        break_colour[2] / 255.0,
+                        break_alpha,
+                    ),
+                    additive=True,
+                )
+            return
 
-        # Combo: bold number ABOVE the judgment. "Pop" animation — the
-        # digits scale up briefly on each increment, then settle back. The
-        # text colour tiers by combo size: white at <100, gold at ≥100,
-        # cyan at ≥250, magenta at ≥500 — small visual reward for streaks.
-        if draw_combo and scene.combo > 0:
-            combo_str = f"{scene.combo}"
-            if scene.combo >= 500:
-                combo_colour = (255, 150, 230, 255)
-            elif scene.combo >= 250:
-                combo_colour = (140, 230, 255, 255)
-            elif scene.combo >= 100:
-                combo_colour = (255, 215, 100, 255)
-            else:
-                combo_colour = (255, 255, 255, 255)
-            ctex, cw, ch = self._cached_text(combo_str, 110, combo_colour)
-            pop = 1.0
-            if scene.combo_age_ms < 180:
-                t = scene.combo_age_ms / 180.0
-                # ease-out curve: starts at 1.18 (big), settles to 1.0.
-                pop = 1.0 + 0.18 * (1.0 - t) ** 2
-            pw = int(cw * pop)
-            ph = int(ch * pop)
-            self._draw_external_texture(
-                ctex, x=center_x - pw // 2,
-                y=combo_baseline_y - (ph - ch) // 2,
-                w=pw, h=ph, alpha=0.95,
-            )
+        # Partial/no legacy combo font: keep a deterministic white fallback,
+        # but still use the source position and vertical-only stretch.
+        if scene.combo <= 0:
+            return
+        texture, width, height = self._cached_text(
+            str(scene.combo), 110, (255, 255, 255, 255),
+        )
+        stretch_y = legacy_combo_y_scale(scene.combo_age_ms)
+        drawn_height = max(1, int(round(height * stretch_y)))
+        self._draw_external_texture(
+            texture,
+            x=int(round(center_x - width / 2.0)),
+            y=int(round(center_y - drawn_height / 2.0)),
+            w=width,
+            h=drawn_height,
+            alpha=0.95,
+        )
+
+    def _draw_combo_and_judgment(
+        self, scene: SceneState, draw_combo: bool = True,
+    ) -> None:
+        """Draw the shared Argon or custom legacy stage presentation."""
+        if not self._is_argon_default():
+            self._draw_custom_legacy_judgment(scene)
+            self._draw_custom_legacy_combo(scene, draw_combo=draw_combo)
+            return
+        self._draw_argon_combo_and_judgment(scene, draw_combo=draw_combo)
+
+    def _draw_argon_combo_and_judgment(
+        self, scene: SceneState, draw_combo: bool = True,
+    ) -> None:
+        """Draw the shared Argon counter and text-judgment presentation."""
+        from osu_mania_renderer_v2.wiki_elements.notes import (
+            _argon_combo_and_judgment,
+        )
+
+        _argon_combo_and_judgment(
+            self._shared_frame_context(scene),
+            draw_combo=draw_combo,
+        )
 
     def _draw_judgments(self, scene: SceneState) -> None:
         # Sprite-based per-column popups are superseded by the big centred
@@ -1171,10 +2354,183 @@ class FrameRenderer:
                 (1, 1, 1, alpha),
             )
 
+    def _draw_hit_error_meter(self, scene: SceneState) -> None:
+        """Draw Argon's dual vertical or LegacySkin's horizontal meter."""
+        if self._is_argon_default():
+            from osu_mania_renderer_v2.wiki_elements.hud import _argon_hit_error
+
+            _argon_hit_error(self._shared_frame_context(scene))
+        else:
+            self._draw_lazer_hit_error_meter(scene)
+
+    def _draw_lazer_hit_error_meter(self, scene: SceneState) -> None:
+        """Draw lazer's compact horizontal legacy BarHitErrorMeter."""
+        geometry = lazer_hit_error_meter_geometry(
+            self.rc.width, self.rc.height,
+        )
+        bands = lazer_hit_window_bands(scene.hit_error_windows)
+        if not bands:
+            return
+
+        centre_x = geometry.left + geometry.length / 2.0
+        half_length = geometry.length / 2.0
+        axis_y = geometry.axis_y
+        bar_h = max(1, int(round(geometry.bar_thickness)))
+        bar_y = int(round(axis_y - bar_h / 2.0))
+
+        def draw_band_side(
+            side: int,
+            extent: float,
+            colour: tuple[float, float, float],
+            alpha: float = 1.0,
+        ) -> None:
+            width = max(1, int(round(extent)))
+            x = centre_x if side > 0 else centre_x - extent
+            self._draw_sprite(
+                "column_bg", int(round(x)), bar_y, width, bar_h,
+                (*colour, alpha),
+            )
+
+        # The widest (Meh) layer is solid through 80% then fades to transparent
+        # over its outer 20%, matching BarHitErrorMeter.createColourBar().
+        outer = bands[-1]
+        solid_extent = half_length * 0.8
+        for side in (-1, 1):
+            draw_band_side(side, solid_extent, outer.colour)
+            gradient_start = solid_extent
+            gradient_width = half_length * 0.2
+            slices = 8
+            for index in range(slices):
+                start = gradient_start + gradient_width * index / slices
+                end = gradient_start + gradient_width * (index + 1) / slices
+                alpha = 1.0 - (index + 0.5) / slices
+                width = max(1, int(round(end - start)))
+                x = centre_x + start if side > 0 else centre_x - end
+                self._draw_sprite(
+                    "column_bg", int(round(x)), bar_y, width, bar_h,
+                    (*outer.colour, alpha),
+                )
+
+        # Overlay successively narrower windows so the visible axis reads
+        # centre → Perfect → Great → Good → Ok → Meh on both sides.
+        for band in reversed(bands[:-1]):
+            extent = half_length * band.relative_length
+            for side in (-1, 1):
+                draw_band_side(side, extent, band.colour)
+
+        # Circle-style centre marker (8-unit outer, 4-unit darkened inner).
+        outer_size = max(1, int(round(geometry.centre_outer_size)))
+        inner_size = max(1, int(round(geometry.centre_inner_size)))
+        marker_colour = outer.colour
+        self._draw_sprite(
+            "note_circle",
+            int(round(centre_x - outer_size / 2.0)),
+            int(round(axis_y - outer_size / 2.0)),
+            outer_size, outer_size, (*marker_colour, 1.0),
+        )
+
+        # Judgment lines use their real ages, result colours and additive
+        # blending. A single additive batch avoids one GL flush per event.
+        ticks: list[tuple[int, int, int, int, tuple]] = []
+        max_window = bands[-1].window_ms
+        for event in scene.hit_error_events[-50:]:
+            state = lazer_hit_error_tick_state(event.age_ms)
+            if state.alpha <= 0 or state.width_fraction <= 0:
+                continue
+            position = hit_error_offset_position(event.offset_ms, max_window)
+            x = geometry.left + position * geometry.length
+            tick_w = max(1, int(round(geometry.judgment_thickness)))
+            tick_h = max(1, int(round(
+                geometry.judgment_width * state.width_fraction,
+            )))
+            colour = LAZER_HIT_RESULT_COLOURS.get(
+                event.judgment, (1.0, 1.0, 1.0),
+            )
+            ticks.append((
+                int(round(x - tick_w / 2.0)),
+                int(round(axis_y - tick_h / 2.0)),
+                tick_w, tick_h, (*colour, state.alpha),
+            ))
+        if ticks:
+            self._flush_sprite_batch()
+            ctx = self.rc.ctx
+            ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+            try:
+                for x, y, width, height, tint in ticks:
+                    self._draw_sprite(
+                        "column_bg", x, y, width, height, tint,
+                    )
+                self._flush_sprite_batch()
+            finally:
+                ctx.blend_func = (
+                    moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA,
+                )
+
+        inner_colour = tuple(channel * 0.7 for channel in marker_colour)
+        self._draw_sprite(
+            "note_circle",
+            int(round(centre_x - inner_size / 2.0)),
+            int(round(axis_y - inner_size / 2.0)),
+            inner_size, inner_size, (*inner_colour, 1.0),
+        )
+
+        # Lazer eases this chevron over 800 ms. The renderer carries the exact
+        # EMA and positions it once per output frame, avoiding mutable draw
+        # state while retaining the same 0.9/0.1 smoothing semantics.
+        if scene.hit_error_ema_ms is not None:
+            position = hit_error_offset_position(
+                scene.hit_error_ema_ms, max_window,
+            )
+            arrow_x = geometry.left + position * geometry.length
+            size = max(2, int(round(geometry.chevron_size)))
+            row_h = max(1, int(round(size / 4.0)))
+            arrow_bottom = axis_y + geometry.centre_outer_size / 2.0 + 2
+            for row in range(4):
+                width = max(1, int(round(size * (row + 1) / 4.0)))
+                self._draw_sprite(
+                    "column_bg",
+                    int(round(arrow_x - width / 2.0)),
+                    int(round(arrow_bottom + row * row_h)),
+                    width, row_h, (1.0, 1.0, 1.0, 0.9),
+                )
+
+        # Text is the narrow fallback for lazer's upright hare/tortoise icons.
+        label_y = int(round(
+            axis_y + geometry.judgment_width / 2.0 + 4 * geometry.ui_scale,
+        ))
+        for text, x in (("EARLY", geometry.left),
+                        ("LATE", geometry.left + geometry.length)):
+            texture, width, height = self._cached_text(
+                text, 14, (225, 225, 235, 210),
+            )
+            self._draw_external_texture(
+                texture,
+                x=int(round(x - width / 2.0)), y=label_y,
+                w=width, h=height, alpha=0.82,
+            )
+
     def _draw_hp_bar(self, scene: SceneState) -> None:
-        """Vertical HP bar on the LEFT of the playfield, fed by the actual
-        per-judgment HP delta (geki +4%, 300 +2.5%, 100/50 light drain,
-        miss heavy drain) rather than the old combo-vs-max-combo proxy."""
+        """Draw the cached custom layout choice, or the procedural fallback."""
+        if not getattr(self.options, "show_hp_bar", True):
+            return
+        # The Argon health tube is part of the shared Argon HUD. Standard-mode
+        # scorebar assets do not replace it when the skin supplies no Mania
+        # presentation contract.
+        if self._is_argon_default():
+            return
+        hp = max(0.0, min(1.0, scene.hp))
+        if self._has_custom_health_bar_assets():
+            if (
+                self._selected_legacy_scorebar_layout()
+                is LegacyScorebarLayout.STANDARD_HUD
+            ):
+                self._draw_standard_legacy_health_bar(hp)
+                return
+            self._draw_mania_health_bar(hp)
+            return
+
+        # Existing R3D fallback: vertical HP track on the left of the
+        # playfield, fed by actual per-judgment HP deltas.
         rc = self.rc
         pf_x = self.pf_x
         pf_w = self.pf_w
@@ -1184,7 +2540,6 @@ class FrameRenderer:
         rec_h = int(col_w * RECEPTOR_HEIGHT_REL_COL)
         bar_y = int(rc.height * RECEPTOR_BOTTOM_OFFSET_FRAC) + rec_h + 8
         bar_h = rc.height - bar_y - 80
-        hp = max(0.0, min(1.0, scene.hp))
         # Dim track behind the fill.
         self._draw_sprite("column_bg", bar_x, bar_y, bar_w, bar_h,
                           (0.15, 0.15, 0.2, 0.6))
@@ -1199,6 +2554,230 @@ class FrameRenderer:
         fill_h = int(bar_h * hp)
         self._draw_sprite("column_bg", bar_x, bar_y, bar_w, fill_h,
                           (r, g, b, 0.95))
+
+    def _has_custom_health_bar_assets(self) -> bool:
+        """Whether a same-tier custom background/fill pair was resolved."""
+        source = self.atlas.global_source("scorebar_bg")
+        if source not in ("user", "beatmap"):
+            return False
+        bg_w, bg_h = self.atlas.global_native_size("scorebar_bg")
+        fill_w, fill_h = self.atlas.global_native_size("scorebar_colour")
+        return (
+            self.atlas.global_source("scorebar_colour") == source
+            and bg_w > 0
+            and bg_h > 0
+            and fill_w > 0
+            and fill_h > 0
+        )
+
+    def _classify_legacy_scorebar_layout(
+        self,
+    ) -> LegacyScorebarClassification | None:
+        """Classify and report a custom pair once, during renderer setup."""
+        # Structural Mania evidence is authoritative. A standard-only skin's
+        # global scorebar art neither disables Argon nor enters the legacy
+        # Mania scorebar heuristic.
+        if self._is_argon_default():
+            return None
+        if not self._has_custom_health_bar_assets():
+            return None
+        atlas = self.atlas
+        new_default = mania_health_new_default(
+            atlas.global_source("scorebar_colour"),
+            atlas.global_source("scorebar_marker"),
+        )
+        classification = classify_legacy_scorebar(
+            atlas.direct_image("scorebar_bg"),
+            atlas.direct_image("scorebar_colour"),
+            new_default=new_default,
+        )
+        action = (
+            "standard-hpbar"
+            if classification.layout is LegacyScorebarLayout.STANDARD_HUD
+            else "stable-hpbar-mania"
+        )
+        log.info(
+            "legacy scorebar: layout=%s confidence=%s bg_design=%s "
+            "fill_design=%s bg_alpha_bbox=%s fill_alpha_bbox=%s "
+            "outside_gauge_alpha=%.3f evidence=%s action=%s",
+            classification.layout.value,
+            classification.confidence,
+            classification.background.design_size,
+            classification.fill.design_size,
+            classification.background.alpha_bbox,
+            classification.fill.alpha_bbox,
+            classification.outside_gauge_alpha_ratio,
+            ",".join(classification.evidence),
+            action,
+        )
+        return classification
+
+    def _selected_legacy_scorebar_layout(self) -> LegacyScorebarLayout:
+        """Return the initialization-time choice; absent data stays faithful."""
+        classification = getattr(
+            self, "_legacy_scorebar_classification", None,
+        )
+        if classification is None:
+            return LegacyScorebarLayout.UNCERTAIN
+        return classification.layout
+
+    def _draw_mania_health_bar(self, hp: float) -> None:
+        """Draw skin-authored scorebar assets as stable's rotated side gauge."""
+        atlas = self.atlas
+        rc = self.rc
+        background_native = atlas.global_native_size("scorebar_bg")
+        fill_native = atlas.global_native_size("scorebar_colour")
+        geometry = mania_health_geometry(
+            stage_right=self.pf_x + self.pf_w,
+            stage_top=0.0,
+            stage_height=float(rc.height),
+            background_native_size=background_native,
+            fill_native_size=fill_native,
+            hp=hp,
+            new_default=mania_health_new_default(
+                atlas.global_source("scorebar_colour"),
+                atlas.global_source("scorebar_marker"),
+            ),
+        )
+
+        self._draw_mania_health_piece(
+            "scorebar_bg",
+            anchor=geometry.background_anchor,
+            source_size=geometry.background_size,
+            visible_fraction=1.0,
+        )
+        self._draw_mania_health_piece(
+            "scorebar_colour",
+            anchor=geometry.fill_anchor,
+            source_size=geometry.fill_size,
+            visible_fraction=hp,
+        )
+
+    def _draw_standard_legacy_health_bar(self, hp: float) -> None:
+        """Draw an obvious standard-mode composite using stable's HpBar."""
+        atlas = self.atlas
+        new_default = mania_health_new_default(
+            atlas.global_source("scorebar_colour"),
+            atlas.global_source("scorebar_marker"),
+        )
+        marker_slot = standard_health_marker_slot(
+            hp=hp, new_default=new_default,
+        )
+        marker_source = atlas.global_source(marker_slot)
+        marker_native = atlas.global_native_size(marker_slot)
+        marker_visible = getattr(atlas, "global_has_visible_pixels", None)
+        marker_is_usable = (
+            marker_source in ("user", "beatmap")
+            and marker_native[0] > 0
+            and marker_native[1] > 0
+            and (
+                marker_visible(marker_slot)
+                if callable(marker_visible)
+                else True
+            )
+        )
+        if not marker_is_usable:
+            marker_native = (0.0, 0.0)
+
+        geometry = standard_health_geometry(
+            render_height=self.rc.height,
+            background_native_size=atlas.global_native_size("scorebar_bg"),
+            fill_native_size=atlas.global_native_size("scorebar_colour"),
+            marker_native_size=marker_native,
+            hp=hp,
+            new_default=new_default,
+        )
+        background_x, background_top = geometry.background_anchor
+        background_width, background_height = geometry.background_size
+        self._draw_direct(
+            "scorebar_bg",
+            background_x,
+            self.rc.height - background_top - background_height,
+            background_width,
+            background_height,
+            tint=(1.0, 1.0, 1.0, 1.0),
+        )
+
+        fill_x, fill_top = geometry.fill_anchor
+        fill_width, fill_height = geometry.fill_size
+        self._draw_direct_clipped_x(
+            "scorebar_colour",
+            x=fill_x,
+            y=self.rc.height - fill_top - fill_height,
+            full_width=fill_width,
+            height=fill_height,
+            visible_fraction=hp,
+            tint=(1.0, 1.0, 1.0, 1.0),
+            rotation_deg=0.0,
+        )
+
+        if marker_is_usable:
+            marker_width, marker_height = geometry.marker_size
+            marker_x, marker_top = geometry.marker_center
+            marker_rect = (
+                marker_x - marker_width / 2.0,
+                self.rc.height - marker_top - marker_height / 2.0,
+                marker_width,
+                marker_height,
+            )
+            self._draw_standard_health_marker(
+                marker_slot,
+                marker_rect,
+                additive=new_default,
+            )
+
+    def _draw_standard_health_marker(
+        self,
+        slot: str,
+        rect: tuple[float, float, float, float],
+        *,
+        additive: bool,
+    ) -> None:
+        """Draw stable's standard marker without leaking its blend mode."""
+        if not additive:
+            self._draw_direct(slot, *rect)
+            return
+        self._flush_sprite_batch()
+        self.rc.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+        try:
+            self._draw_direct(slot, *rect)
+        finally:
+            self.rc.ctx.blend_func = (
+                moderngl.SRC_ALPHA,
+                moderngl.ONE_MINUS_SRC_ALPHA,
+            )
+
+    def _draw_mania_health_piece(
+        self,
+        name: str,
+        *,
+        anchor: tuple[float, float],
+        source_size: tuple[float, float],
+        visible_fraction: float,
+    ) -> None:
+        """Rotate a source-X crop upward from a stable top-left-space anchor."""
+        visible_fraction = max(0.0, min(1.0, visible_fraction))
+        visible_width = source_size[0] * visible_fraction
+        if visible_width <= 0 or source_size[1] <= 0:
+            return
+
+        # Stable's -90-degree screen-space rotation is +90 degrees in this
+        # OpenGL bottom-left coordinate system. Re-centre the pre-rotation
+        # rectangle so its rotated bottom-left corner remains at ``anchor``.
+        anchor_x, anchor_top_y = anchor
+        anchor_y_gl = self.rc.height - anchor_top_y
+        draw_x = anchor_x + (source_size[1] - visible_width) / 2.0
+        draw_y = anchor_y_gl + (visible_width - source_size[1]) / 2.0
+        self._draw_direct_clipped_x(
+            name,
+            x=draw_x,
+            y=draw_y,
+            full_width=source_size[0],
+            height=source_size[1],
+            visible_fraction=visible_fraction,
+            tint=(1.0, 1.0, 1.0, 1.0),
+            rotation_deg=90.0,
+        )
 
     HIT_ERROR_FADE_MS = 600
     HIT_ERROR_RISE_PX = 80   # how far the label drifts upward over its life
@@ -1389,13 +2968,15 @@ class FrameRenderer:
         vao.render(moderngl.TRIANGLES)
 
     def _draw_direct(
-        self, name: str, x: int, y: int, w: int, h: int,
+        self, name: str, x: float, y: float, w: float, h: float,
         tint: tuple = (1.0, 1.0, 1.0, 1.0),
+        source_u_end: float = 1.0,
+        rotation_deg: float = 0.0,
     ) -> None:
         """Draw a wide skin sprite (scorebar / stage panel) at full resolution,
         bypassing the layered 256² atlas (which would crush a 1366-wide bar).
-        The source texture is cached as a single-layer array; `tint` (RGBA)
-        multiplies the texture so the scorebar fill can be coloured."""
+        The source texture is cached as a single-layer array. Source-U cropping
+        happens before optional centre rotation, preserving authored pixels."""
         if w <= 0 or h <= 0:
             return
         arr = self._direct_arr_cache.get(name)
@@ -1406,8 +2987,7 @@ class FrameRenderer:
             arr = self.rc.ctx.texture_array(
                 size=(img.width, img.height, 1), components=4, data=img.tobytes(),
             )
-            arr.build_mipmaps()
-            arr.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+            configure_direct_texture_sampling(name, arr)
             self._direct_arr_cache[name] = arr
         # Land on top of the queued batch (correct alpha order).
         self._flush_sprite_batch()
@@ -1416,6 +2996,29 @@ class FrameRenderer:
         sw, sh = self.rc.width, self.rc.height
         x0, x1 = (x / sw) * 2 - 1, ((x + w) / sw) * 2 - 1
         y0, y1 = (y / sh) * 2 - 1, ((y + h) / sh) * 2 - 1
+        if rotation_deg:
+            import math as _m
+
+            centre_x, centre_y = x + w / 2.0, y + h / 2.0
+            cos_theta = _m.cos(_m.radians(rotation_deg))
+            sin_theta = _m.sin(_m.radians(rotation_deg))
+
+            def _rot(px: float, py: float) -> tuple[float, float]:
+                dx, dy = px - centre_x, py - centre_y
+                rotated_x = centre_x + dx * cos_theta - dy * sin_theta
+                rotated_y = centre_y + dx * sin_theta + dy * cos_theta
+                return (rotated_x / sw) * 2 - 1, (rotated_y / sh) * 2 - 1
+
+            bottom_left = _rot(x, y)
+            bottom_right = _rot(x + w, y)
+            top_right = _rot(x + w, y + h)
+            top_left = _rot(x, y + h)
+        else:
+            bottom_left = (x0, y0)
+            bottom_right = (x1, y0)
+            top_right = (x1, y1)
+            top_left = (x0, y1)
+        source_u_end = max(0.0, min(1.0, source_u_end))
         if len(tint) == 3:
             r, g, b, a = tint[0], tint[1], tint[2], 1.0
         else:
@@ -1423,16 +3026,44 @@ class FrameRenderer:
         arr.use(0)
         self._set_sprite_prog_uniforms(prog, sh)
         verts = _EXT_QUAD_PACK(
-            x0, y0, 0, 1, 0, r, g, b, a,
-            x1, y0, 1, 1, 0, r, g, b, a,
-            x1, y1, 1, 0, 0, r, g, b, a,
-            x0, y0, 0, 1, 0, r, g, b, a,
-            x1, y1, 1, 0, 0, r, g, b, a,
-            x0, y1, 0, 0, 0, r, g, b, a,
+            bottom_left[0], bottom_left[1], 0, 1, 0, r, g, b, a,
+            bottom_right[0], bottom_right[1], source_u_end, 1, 0, r, g, b, a,
+            top_right[0], top_right[1], source_u_end, 0, 0, r, g, b, a,
+            bottom_left[0], bottom_left[1], 0, 1, 0, r, g, b, a,
+            top_right[0], top_right[1], source_u_end, 0, 0, r, g, b, a,
+            top_left[0], top_left[1], 0, 0, 0, r, g, b, a,
         )
         vbo, vao = self._ext_quad_buffers()
         vbo.write(verts)
         vao.render(moderngl.TRIANGLES)
+
+    def _draw_direct_clipped_x(
+        self,
+        name: str,
+        *,
+        x: float,
+        y: float,
+        full_width: float,
+        height: float,
+        visible_fraction: float,
+        tint: tuple = (1.0, 1.0, 1.0, 1.0),
+        rotation_deg: float = 0.0,
+    ) -> None:
+        """Reveal a direct texture left-to-right without squashing its UVs."""
+        visible_fraction = max(0.0, min(1.0, visible_fraction))
+        visible_width = full_width * visible_fraction
+        if visible_width <= 0:
+            return
+        self._draw_direct(
+            name,
+            x,
+            y,
+            visible_width,
+            height,
+            tint=tint,
+            source_u_end=visible_fraction,
+            rotation_deg=rotation_deg,
+        )
 
     _GRADE_COLOURS: dict[str, tuple[int, int, int]] = {
         "SS": (240, 220, 120),   # gold
@@ -1444,28 +3075,12 @@ class FrameRenderer:
     }
 
     def _draw_ur_summary(self, scene: SceneState) -> None:
-        """Glance-readable `UR · Avg` readout. Placed ABOVE the receptor
-        row (so it doesn't clip against the rainbow timing strip at the
-        very bottom of the frame and isn't overdrawn by hit lights)."""
-        if not scene.recent_offsets:
+        """Draw the shared standalone Argon UR readout (never average text)."""
+        if not self._is_argon_default():
             return
-        rc = self.rc
-        pf_x = self.pf_x
-        pf_w = self.pf_w
-        col_w = self.col_w_uniform
-        rec_h = int(col_w * RECEPTOR_HEIGHT_REL_COL)
-        rec_top_y = int(rc.height * RECEPTOR_BOTTOM_OFFSET_FRAC) + rec_h
-        ur_text = (
-            f"UR {scene.unstable_rate:.1f}  "
-            f"Avg {scene.avg_hit_offset_ms:+.1f} ms"
-        )
-        tex, w, h = self._cached_text(ur_text, 28, (220, 230, 255, 235))
-        x = pf_x + (pf_w - w) // 2
-        # GL Y-up: sit a small gap ABOVE the top of the receptor row.
-        y = rec_top_y + 18
-        self._draw_external_texture(
-            tex, x=x, y=y, w=w, h=h, alpha=0.95,
-        )
+        from osu_mania_renderer_v2.wiki_elements.hud import _argon_unstable_rate
+
+        _argon_unstable_rate(self._shared_frame_context(scene))
 
     def _results_avatar_texture(self) -> "moderngl.Texture | None":
         """Load the featured player's osu! avatar (options.featured_avatar_png)
@@ -1787,12 +3402,14 @@ class FrameRenderer:
         playfield a much more reactive feel during streams.
 
         Tinted by `ColourLight{N}` from the skin's [Mania] block when
-        the author set it; otherwise plain white so non-skinned renders
-        look unchanged. If the skin authored `mania-stage-light.png`
+        the author set it; otherwise plain white for the legacy fallback.
+        If the skin authored `mania-stage-light.png`
         (animated or static), that sprite is used; else the flat
         `column_bg` rectangle is drawn at full column height (the
         renderer's pre-skinning default look)."""
-        if not scene.key_press_age_ms:
+        # Argon press illumination is owned by the shared key-area renderer.
+        # Do not layer the old full-column synthetic flash on top of it.
+        if self._is_argon_default() or not scene.key_press_age_ms:
             return
         rc = self.rc
         src = self.atlas.global_source("stage_light")
@@ -1895,6 +3512,10 @@ class FrameRenderer:
         alternating-shade palette is used. Kiai lifts each column's tint
         slightly so the playfield brightens during chorus parts of the
         song (osu!'s kiai highlight)."""
+        if scene is not None and self._is_argon_default():
+            self._draw_argon_columns(scene)
+            return
+
         rc = self.rc
         w = rc.width
         h = rc.height
@@ -1971,6 +3592,10 @@ class FrameRenderer:
         # ColumnLineWidth (even all-zero suppresses dividers explicitly).
 
     def _draw_notes(self, scene: SceneState) -> None:
+        if self._is_argon_default():
+            self._draw_argon_notes(scene)
+            return
+
         rc = self.rc
         w = rc.width
         h = rc.height
@@ -2180,8 +3805,12 @@ class FrameRenderer:
     HIT_LIGHT_DURATION_MS = 320
 
     def _draw_receptors(self, scene: SceneState) -> None:
+        if self._is_argon_default():
+            self._draw_argon_receptors(scene)
+            return
+
         rc = self.rc
-        w, h = rc.width, rc.height
+        h = rc.height
         centre_y = self.receptor_centre_y_gl
         for c in range(rc.key_count):
             x0 = self.col_x[c]
@@ -2189,116 +3818,148 @@ class FrameRenderer:
             held = scene.keys_held[c]
             kind = "receptor_on" if held else "receptor_off"
             slot_idx = self.atlas.column_slot_index(kind, c)
-            # Lazer/Quaver model: receptor X locks to column width,
-            # height preserves the sprite's native aspect (cw * tex.h /
-            # tex.w == cw / aspect), and the BOTTOM edge anchors to the
-            # hit line — same line the note's bottom touches at hit time,
-            # which in our coord system is `centre_y - cw/2` (notes are
-            # square-cw tall, centred on centre_y). Square sprites
-            # collapse to the previous square-crush behaviour (no
-            # regression for Night05-style skins); tall-aspect sprites
-            # (e.g. FFR/Pii AR11 arrow keys 150×375 → aspect 0.4)
-            # extend upward into the column as the artist intended.
-            # See ppy/osu LegacyKeyArea.cs for the reference impl.
-            asp = self.atlas.column_aspect(kind, c)
-            if asp and asp > 0:
-                rec_h = max(1, int(cw / asp))
+
+            # LegacyKeyArea stretches the key image across the column but
+            # keeps its native DESIGN height (Texture.DisplaySize), scaled
+            # from lazer's 768-unit stage. This is important for padded
+            # receptor canvases: deriving height from the whole-canvas
+            # aspect stretches otherwise circular visible artwork. Atlas
+            # native sizes already divide @2x assets by ScaleAdjust.
+            _native_w, native_h = self.atlas.column_native_size(kind, c)
+            tex_scale = h / 768.0
+            if native_h > 0:
+                rec_h = max(1, int(round(native_h * tex_scale)))
             else:
-                rec_h = int(cw * RECEPTOR_HEIGHT_REL_COL)
-            # UpsideDown skins flip the scroll direction; lazer's upscroll
-            # case anchors the TOP edge at the hit line and v-flips the
-            # sprite. Our `_draw_sprite_idx` primitive doesn't support
-            # v-flip yet, so FNF-style flipped skins regress to centred-
-            # square. Non-flipped skins (the overwhelming majority) get
-            # the lazer-faithful bottom-anchor.
-            if self.upside_down:
-                rec_y = centre_y - rec_h // 2  # legacy centred behaviour
-            else:
-                rec_y = centre_y - cw // 2     # hit-line bottom-anchor
-            # "Press pulse": when the key is held, scale the receptor +6%
-            # so it feels mashed.
-            if held:
-                bump = max(2, int(cw * 0.03))
-                self._draw_sprite_idx(
-                    slot_idx,
-                    x0 - bump, rec_y - bump,
-                    cw + 2 * bump, rec_h + 2 * bump, (1, 1, 1, 1),
+                asp = self.atlas.column_aspect(kind, c)
+                rec_h = (
+                    max(1, int(cw / asp))
+                    if asp > 0
+                    else int(cw * RECEPTOR_HEIGHT_REL_COL)
                 )
-            else:
-                self._draw_sprite_idx(slot_idx, x0, rec_y,
-                                      cw, rec_h, (1, 1, 1, 1))
+            # LegacyKeyArea is anchored to the stage edge: BottomCentre for
+            # downscroll, TopCentre for upscroll. Pressing only swaps
+            # KeyImage -> KeyImageD; it never resizes the authored key.
+            rec_y = h - rec_h if self.upside_down else 0
+            self._draw_sprite_idx(
+                slot_idx, x0, rec_y, cw, rec_h, (1, 1, 1, 1),
+            )
+            self._draw_custom_legacy_lighting(
+                scene, c=c, x0=x0, cw=cw, centre_y=centre_y, held=held,
+            )
 
-            # Lighting effects (lighting_l + lighting_n) anchor at the
-            # HIT centre — where the note's midpoint sits at hit time —
-            # not the receptor sprite rect. Otherwise tall-aspect key
-            # sprites would balloon the flash to cover the entire
-            # upward extent of the receptor. Hit zone = cw × cw centred
-            # on centre_y, matching the note-at-hit-time footprint.
-            hit_h = cw
-            hit_y = centre_y - cw // 2
+    def _legacy_lighting_rect(
+        self, slot: str, *, c: int, x0: int, cw: int, centre_y: int,
+    ) -> tuple[int, int, int, int] | None:
+        """Native-aspect rect for a custom legacy LightingN/L sprite."""
+        native_w, native_h = self.atlas.global_native_size(slot)
+        if native_w <= 0 or native_h <= 0:
+            return None
+        kind = "n" if slot == "lighting_n" else "l"
+        px_per_ref = self.rc.height / 480.0
+        effective_column_width = cw / px_per_ref
+        scale = legacy_lighting_scale(
+            self.mania_section,
+            c,
+            kind,
+            effective_column_width=effective_column_width,
+            legacy_version=(
+                self.skin_ini.legacy_version
+                if self.skin_ini is not None
+                else None
+            ),
+        )
+        tex_scale = self.rc.height / 768.0
+        light_w = max(1, int(round(native_w * tex_scale * scale)))
+        light_h = max(1, int(round(native_h * tex_scale * scale)))
+        return (
+            x0 + (cw - light_w) // 2,
+            centre_y - light_h // 2,
+            light_w,
+            light_h,
+        )
 
-            # Lighting_L — sustained flash while a key is held. Loops
-            # at AnimationFramerate. Only drawn when the skin author
-            # ships a real lightingL sprite (no synthesised fallback).
-            if held and self.atlas.global_source("lighting_l") in ("beatmap", "user"):
-                ll_base = self.atlas.index_of("lighting_l")
-                ll_frames = self.atlas.frame_count("lighting_l")
-                if ll_frames > 1:
-                    fps = self._stage_light_fps(ll_frames)
-                    age_for_l = scene.key_press_age_ms[c] if c < len(scene.key_press_age_ms) else 0
-                    frame_idx = int(age_for_l * fps / 1000.0) % ll_frames
-                else:
-                    frame_idx = 0
-                tint = self._stage_light_tint(c)
-                self._draw_sprite_idx(
-                    ll_base + frame_idx,
-                    x0, hit_y,
-                    cw, hit_h, (tint[0], tint[1], tint[2], 0.8),
+    def _draw_custom_legacy_lighting(
+        self,
+        scene: SceneState,
+        *,
+        c: int,
+        x0: int,
+        cw: int,
+        centre_y: int,
+        held: bool,
+    ) -> None:
+        """Draw only skin-authored custom legacy hold / hit lighting."""
+        if held and self.atlas.global_source("lighting_l") in ("beatmap", "user"):
+            rect = self._legacy_lighting_rect(
+                "lighting_l", c=c, x0=x0, cw=cw, centre_y=centre_y,
+            )
+            if rect is not None:
+                base = self.atlas.index_of("lighting_l")
+                frames = self.atlas.frame_count("lighting_l")
+                frame = 0
+                if frames > 1:
+                    fps = self._stage_light_fps(frames)
+                    age = scene.key_press_age_ms[c] if c < len(scene.key_press_age_ms) else 0
+                    frame = int(age * fps / 1000.0) % frames
+                press_age = (
+                    scene.key_press_age_ms[c]
+                    if c < len(scene.key_press_age_ms)
+                    else LEGACY_HIT_EXPLOSION_FADE_IN_MS
+                )
+                alpha = min(1.0, max(0.0, press_age / LEGACY_HIT_EXPLOSION_FADE_IN_MS))
+                self._draw_additive_sprite_idx(
+                    base + frame, *rect, (1.0, 1.0, 1.0, alpha),
                 )
 
-            # Hit lighting: a colour flash growing outward from the receptor.
-            if c < len(scene.hit_light_age_ms):
-                age = scene.hit_light_age_ms[c]
-                jud = scene.hit_light_judgment[c] if c < len(scene.hit_light_judgment) else ""
-                if 0 <= age < self.HIT_LIGHT_DURATION_MS and jud in self._JUDGMENT_LIGHT:
-                    r, g, b = self._JUDGMENT_LIGHT[jud]
-                    fade = 1.0 - (age / self.HIT_LIGHT_DURATION_MS)
-                    scale = 1.4 + 0.3 * (1.0 - fade)
-                    lw = int(cw * scale)
-                    lh = int(hit_h * scale)
-                    # Use skin-authored `lightingN` sprite when present
-                    # (animated, 60fps one-shot); else fall back to the
-                    # synthesized note_circle so non-skinned renders look
-                    # unchanged.
-                    ln_src = self.atlas.global_source("lighting_n")
-                    if ln_src in ("beatmap", "user"):
-                        ln_base = self.atlas.index_of("lighting_n")
-                        ln_frames = self.atlas.frame_count("lighting_n")
-                        if ln_frames > 1:
-                            f = min(int(age * 60.0 / 1000.0), ln_frames - 1)
-                        else:
-                            f = 0
-                        self._draw_sprite_idx(
-                            ln_base + f,
-                            x0 + (cw - lw) // 2,
-                            hit_y + (hit_h - lh) // 2,
-                            lw, lh,
-                            (r / 255, g / 255, b / 255, 0.7 * fade),
-                        )
-                    else:
-                        self._draw_sprite(
-                            "note_circle",
-                            x0 + (cw - lw) // 2,
-                            hit_y + (hit_h - lh) // 2,
-                            lw, lh,
-                            (r / 255, g / 255, b / 255, 0.55 * fade),
-                        )
+        if c >= len(scene.hit_light_age_ms):
+            return
+        age = scene.hit_light_age_ms[c]
+        judgment = (
+            scene.hit_light_judgment[c]
+            if c < len(scene.hit_light_judgment)
+            else ""
+        )
+        alpha = legacy_hit_explosion_alpha(age)
+        if alpha <= 0 or judgment not in self._JUDGMENT_LIGHT:
+            return
+        if self.atlas.global_source("lighting_n") not in ("beatmap", "user"):
+            # A custom skin with no authored LightingN gets no fabricated R3D
+            # note-circle flash. Explicit transparent assets remain authoritative.
+            return
+        rect = self._legacy_lighting_rect(
+            "lighting_n", c=c, x0=x0, cw=cw, centre_y=centre_y,
+        )
+        if rect is None:
+            return
+        base = self.atlas.index_of("lighting_n")
+        frames = self.atlas.frame_count("lighting_n")
+        frame = legacy_hit_explosion_frame(age, frames)
+        self._draw_additive_sprite_idx(
+            base + frame, *rect, (1.0, 1.0, 1.0, alpha),
+        )
 
     def _draw_sprite(
         self, name: str, x: int, y: int, w: int, h: int, tint: tuple,
     ) -> None:
         """Append one quad to the instance buffer by named atlas slot."""
         self._draw_sprite_idx(self.atlas.index_of(name), x, y, w, h, tint)
+
+    def _draw_additive_sprite_idx(
+        self, atlas_idx: int, x: int, y: int, w: int, h: int, tint: tuple,
+    ) -> None:
+        """Draw one atlas sprite additively without leaking blend state."""
+        if w <= 0 or h <= 0:
+            return
+        # Queued instances inherit blend state at flush time. Flush the normal
+        # batch first, then flush this sprite while additive blending is active.
+        self._flush_sprite_batch()
+        ctx = self.rc.ctx
+        ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+        try:
+            self._draw_sprite_idx(atlas_idx, x, y, w, h, tint)
+            self._flush_sprite_batch()
+        finally:
+            ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
 
     def _draw_sprite_idx(
         self, atlas_idx: int, x: int, y: int, w: int, h: int, tint: tuple,

@@ -30,6 +30,9 @@ Coverage (Phase A — the keys that make a skin "actually take effect"):
     StageLeft / StageRight    → stage-frame path overrides
     StageBottom / StageHint
     StageLight
+    LightingN / LightingL    → hit / hold-light path overrides
+    LightingNWidth / LightingLWidth
+                              → per-column light scale widths
     Hit0 / Hit50 / Hit100     → judgement-popup path overrides
     Hit200 / Hit300 / Hit300g
 
@@ -59,6 +62,7 @@ DEFAULT_COLOUR_COLUMN_LINE  = (255, 255, 255, 255)
 DEFAULT_COLOUR_BARLINE      = (255, 255, 255, 255)
 DEFAULT_COLOUR_HOLD         = (255, 191, 51, 255)
 DEFAULT_COLOUR_BREAK        = (255, 0, 0)
+LATEST_LEGACY_SKIN_VERSION  = 2.7
 
 
 # ───── Output dataclasses ─────
@@ -145,6 +149,15 @@ class ManiaSection:
     # seam artefacts. `None` ⇒ caller picks the default (= 1, per peppy).
     note_body_style: int | None = None
 
+    # Legacy hit / hold-light asset overrides and their per-column widths.
+    # Width entries deliberately preserve malformed positions as 0.0, matching
+    # osu!'s legacy decoder instead of shifting later columns left. These are
+    # appended to preserve positional construction of the established fields.
+    lighting_n:       str | None = None
+    lighting_l:       str | None = None
+    lighting_n_width: tuple[float, ...] = ()
+    lighting_l_width: tuple[float, ...] = ()
+
 
 @dataclass(frozen=True)
 class SkinIni:
@@ -168,6 +181,12 @@ class SkinIni:
     # separate combo font (e.g. Night05's `combo-N.png`).
     score_prefix: str = "score"
     combo_prefix: str = "score"
+
+    # [General] Version. osu! treats an omitted version as 1.0 and `latest`
+    # as the current legacy contract (2.7). Lighting width scaling changed at
+    # 2.5, so retaining this prevents latest-skin ratios leaking into old skins.
+    # Kept after the established fields to preserve positional construction.
+    legacy_version: float = 1.0
 
     def mania_for_keycount(self, keys: int) -> ManiaSection | None:
         for m in self.mania:
@@ -204,6 +223,7 @@ def parse_skin_ini(skin_dir: Path) -> SkinIni:
     combo_colours: list[tuple[int, int, int]] = []
     mania_blocks:  list[_ManiaBuilder]         = []
     animation_framerate: int | None = None
+    legacy_version: float = 1.0
     score_overlap: int = 0
     combo_overlap: int = 0
     score_prefix: str = "score"
@@ -251,8 +271,16 @@ def parse_skin_ini(skin_dir: Path) -> SkinIni:
                 if rgb is not None:
                     combo_colours.append(rgb)
         elif current_section == "general":
-            if key.strip().lower() == "animationframerate":
+            general_key = key.strip().lower()
+            if general_key == "animationframerate":
                 animation_framerate = _parse_int(value)
+            elif general_key == "version":
+                if value.strip().lower() == "latest":
+                    legacy_version = LATEST_LEGACY_SKIN_VERSION
+                else:
+                    parsed_version = _parse_float(value)
+                    if parsed_version is not None:
+                        legacy_version = parsed_version
         elif current_section == "fonts":
             k = key.strip().lower()
             if k == "scoreoverlap":
@@ -282,6 +310,7 @@ def parse_skin_ini(skin_dir: Path) -> SkinIni:
         combo_colours=tuple(combo_colours),
         mania=mania,
         animation_framerate=animation_framerate,
+        legacy_version=legacy_version,
         score_overlap=score_overlap,
         combo_overlap=combo_overlap,
         score_prefix=score_prefix,
@@ -319,6 +348,11 @@ class _ManiaBuilder:
         self.stage_bottom: str | None = None
         self.stage_hint:   str | None = None
         self.stage_light:  str | None = None
+
+        self.lighting_n:       str | None = None
+        self.lighting_l:       str | None = None
+        self.lighting_n_width: tuple[float, ...] = ()
+        self.lighting_l_width: tuple[float, ...] = ()
 
         self.hit_0:     str | None = None
         self.hit_50:    str | None = None
@@ -430,6 +464,18 @@ class _ManiaBuilder:
         if lk == "stagelight":
             self.stage_light = value
             return
+        if lk == "lightingn":
+            self.lighting_n = value
+            return
+        if lk == "lightingl":
+            self.lighting_l = value
+            return
+        if lk == "lightingnwidth":
+            self.lighting_n_width = _parse_csv_floats_preserving_positions(value)
+            return
+        if lk == "lightinglwidth":
+            self.lighting_l_width = _parse_csv_floats_preserving_positions(value)
+            return
 
         # Playfield geometry (osu! 480-ref pixels).
         if lk == "columnstart":
@@ -498,6 +544,10 @@ class _ManiaBuilder:
             stage_bottom=self.stage_bottom,
             stage_hint=self.stage_hint,
             stage_light=self.stage_light,
+            lighting_n=self.lighting_n,
+            lighting_l=self.lighting_l,
+            lighting_n_width=self.lighting_n_width,
+            lighting_l_width=self.lighting_l_width,
             hit_0=self.hit_0, hit_50=self.hit_50, hit_100=self.hit_100,
             hit_200=self.hit_200, hit_300=self.hit_300, hit_300g=self.hit_300g,
             column_start=self.column_start,
@@ -603,4 +653,21 @@ def _parse_csv_ints(value: str) -> tuple[int, ...]:
             out.append(int(part.strip()))
         except ValueError:
             continue
+    return tuple(out)
+
+
+def _parse_csv_floats_preserving_positions(value: str) -> tuple[float, ...]:
+    """Parse a legacy per-column float list without shifting bad entries.
+
+    osu!'s decoder writes ``0`` into the corresponding output position when a
+    value is malformed. This matters for light widths because each CSV index is
+    a column identity; dropping a bad value would apply every later width to the
+    wrong column.
+    """
+    out: list[float] = []
+    for part in value.split(","):
+        try:
+            out.append(float(part.strip()))
+        except (TypeError, ValueError):
+            out.append(0.0)
     return tuple(out)

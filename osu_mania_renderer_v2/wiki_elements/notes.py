@@ -8,14 +8,11 @@ from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
 from osu_mania_renderer_v2.wiki_elements._common import (
-    HIT_LIGHT_DURATION_MS,
     JUDGMENT_LIGHT,
     RECEPTOR_HEIGHT_REL_COL,
     argon_accent,
     is_argon_default,
     note_anim_fps,
-    stage_light_fps,
-    stage_light_tint,
 )
 
 # osu!stable default mania note palette by column variant.
@@ -140,55 +137,12 @@ def _receptors(ctx) -> None:
         rec_y = (ctx.height - rec_h) if ctx.upside_down else 0
         ctx.draw_sprite_idx(slot_idx, x0, rec_y, cw, rec_h, (1, 1, 1, 1))
 
-        # Lighting anchors at the HIT centre (cw × cw centred on centre_y).
-        hit_h = cw
-        hit_y = centre_y - cw // 2
-
-        # lighting_l — sustained flash while held (skin-authored only).
-        if held and atlas.global_source("lighting_l") in ("beatmap", "user"):
-            ll_base = atlas.index_of("lighting_l")
-            ll_frames = atlas.frame_count("lighting_l")
-            if ll_frames > 1:
-                fps = stage_light_fps(ctx, ll_frames)
-                age_for_l = scene.key_press_age_ms[c] if c < len(scene.key_press_age_ms) else 0
-                frame_idx = int(age_for_l * fps / 1000.0) % ll_frames
-            else:
-                frame_idx = 0
-            tint = stage_light_tint(ctx, c)
-            ctx.draw_sprite_idx(
-                ll_base + frame_idx, x0, hit_y, cw, hit_h,
-                (tint[0], tint[1], tint[2], 0.8),
-            )
-
-        # Hit lighting: colour flash growing outward from the receptor.
-        if c < len(scene.hit_light_age_ms):
-            age = scene.hit_light_age_ms[c]
-            jud = scene.hit_light_judgment[c] if c < len(scene.hit_light_judgment) else ""
-            if 0 <= age < HIT_LIGHT_DURATION_MS and jud in JUDGMENT_LIGHT:
-                r, g, b = JUDGMENT_LIGHT[jud]
-                fade = 1.0 - (age / HIT_LIGHT_DURATION_MS)
-                scale = 1.4 + 0.3 * (1.0 - fade)
-                lw = int(cw * scale)
-                lh = int(hit_h * scale)
-                ln_src = atlas.global_source("lighting_n")
-                if ln_src in ("beatmap", "user"):
-                    ln_base = atlas.index_of("lighting_n")
-                    ln_frames = atlas.frame_count("lighting_n")
-                    if ln_frames > 1:
-                        f = min(int(age * 60.0 / 1000.0), ln_frames - 1)
-                    else:
-                        f = 0
-                    ctx.draw_sprite_idx(
-                        ln_base + f,
-                        x0 + (cw - lw) // 2, hit_y + (hit_h - lh) // 2,
-                        lw, lh, (r / 255, g / 255, b / 255, 0.7 * fade),
-                    )
-                else:
-                    ctx.draw_sprite(
-                        "note_circle",
-                        x0 + (cw - lw) // 2, hit_y + (hit_h - lh) // 2,
-                        lw, lh, (r / 255, g / 255, b / 255, 0.55 * fade),
-                    )
+        # Share the custom-legacy lighting authority with the monolithic GPU
+        # path: authored native-aspect sprites only, additive blend, no tint,
+        # growth, or synthetic note-circle fallback.
+        ctx.fr._draw_custom_legacy_lighting(
+            scene, c=c, x0=x0, cw=cw, centre_y=centre_y, held=held,
+        )
 
 
 def receptors_under(*, element, skin, assets, variables, ctx) -> None:
@@ -525,7 +479,7 @@ def _argon_ring_explosion(ctx, j, cx, cy, col):
         gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
 
 
-def _argon_combo_and_judgment(ctx) -> None:
+def _argon_combo_and_judgment(ctx, *, draw_combo: bool = True) -> None:
     """Argon default combo + judgement over the playfield. Combo in the
     argon-counter font (with wireframe backing), the judgement as Argon
     text below it. Positioned at the legacy stage combo line (ComboPosition,
@@ -596,7 +550,7 @@ def _argon_combo_and_judgment(ctx) -> None:
                     alpha=alpha, rotation_deg=-rot)
             _argon_ring_explosion(ctx, j, center_x, jcy_gl, col)
 
-    if s.combo <= 0 or not ctx.options.show_combo:
+    if not draw_combo or s.combo <= 0 or not ctx.options.show_combo:
         return
     pop = 1.0
     if s.combo_age_ms < 180:
