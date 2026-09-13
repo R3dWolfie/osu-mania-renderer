@@ -65,7 +65,7 @@ def test_custom_hud_draws_actual_score_assets_with_source_geometry():
     renderer = object.__new__(FrameRenderer)
     renderer.rc = SimpleNamespace(width=1024, height=768)
     renderer.options = SimpleNamespace(
-        show_score=True, show_pp_counter=False,
+        show_score=True, show_pp_counter=False, show_mods=True,
     )
     renderer.skin_ini = SimpleNamespace(score_overlap=0)
     renderer.atlas = _HudAtlas()

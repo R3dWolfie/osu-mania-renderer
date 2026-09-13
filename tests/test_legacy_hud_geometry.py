@@ -74,7 +74,7 @@ class _HudAtlas:
 def _old_gpu_hud_renderer(*, height=768, score_source="user"):
     renderer = object.__new__(FrameRenderer)
     renderer.rc = SimpleNamespace(width=1280, height=height)
-    renderer.options = SimpleNamespace(show_score=True, show_pp_counter=False)
+    renderer.options = SimpleNamespace(show_score=True, show_pp_counter=False, show_mods=True)
     renderer.atlas = _HudAtlas(score_source=score_source)
     renderer._is_argon_default = lambda: score_source == "bundle"
     renderer.draws = []
