@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
 from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
+from osu_mania_renderer_v2.gpu.legacy_mania import (
+    LEGACY_NOTE_BODY_STRETCH,
+    legacy_hold_body_segments,
+    legacy_note_body_style,
+)
 from osu_mania_renderer_v2.wiki_elements._common import (
     JUDGMENT_LIGHT,
     RECEPTOR_HEIGHT_REL_COL,
@@ -256,26 +261,42 @@ def _draw_notes_body(ctx) -> None:
             body_top = min(y_head, y_tail)
             body_h = abs(y_head - y_tail)
             if col_has_skin_hold:
-                body_idx = _animated_idx("note_hold_body", n.column, n.time_ms)
+                body_base_idx = atlas.column_slot_index(
+                    "note_hold_body", n.column,
+                )
+                body_frames = atlas.column_frame_count(
+                    "note_hold_body", n.column,
+                )
+                body_idx = body_base_idx + ctx.fr._legacy_hold_body_frame_index(
+                    scene, n, body_frames,
+                )
                 head_idx = _animated_idx("note_hold_head", n.column, n.time_ms)
                 tail_idx = _animated_idx("note_hold_tail", n.column, n.time_ms)
-                body_style = (
-                    ctx.mania_section.note_body_style
-                    if ctx.mania_section is not None
-                    and ctx.mania_section.note_body_style is not None
-                    else 0
+                body_style = legacy_note_body_style(
+                    ctx.mania_section,
+                    n.column,
+                    ctx.skin_ini.legacy_version
+                    if ctx.skin_ini is not None else 1.0,
                 )
-                if body_style != 0:
+                if body_style != LEGACY_NOTE_BODY_STRETCH:
                     body_aspect = atlas.column_aspect("note_hold_body", n.column)
                     tile_h = (
-                        max(1, int(round(cw / body_aspect)))
-                        if body_aspect > 0 else cw
+                        max(1.0, cw / body_aspect)
+                        if body_aspect > 0 else float(cw)
                     )
-                    seg_y = body_top
-                    while seg_y < body_top + body_h:
-                        seg_h = min(tile_h, body_top + body_h - seg_y)
-                        ctx.draw_sprite_idx(body_idx, x0, seg_y, cw, seg_h, (1, 1, 1, 1))
-                        seg_y += tile_h
+                    for segment in legacy_hold_body_segments(
+                        body_top, body_h, tile_h, body_style,
+                    ):
+                        ctx.fr._draw_sprite_idx_cropped_y(
+                            body_idx,
+                            x0,
+                            segment.y,
+                            cw,
+                            segment.height,
+                            (1, 1, 1, 1),
+                            source_bottom=segment.source_bottom,
+                            source_top=segment.source_top,
+                        )
                 else:
                     ctx.draw_sprite_idx(body_idx, x0, body_top, cw, body_h, (1, 1, 1, 1))
                 ctx.draw_sprite_idx(
@@ -595,7 +616,7 @@ def _argon_combo_and_judgment(ctx, *, draw_combo: bool = True) -> None:
 
 
 def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
-    """Judgment burst (atlas sprite) + centred combo counter.
+    """Judgment burst (native sprite) + centred combo counter.
 
     When the skin ships the score font, the combo is composed from those
     glyphs — lazer's mania combo uses `LegacyFont.Combo`, which defaults to
@@ -646,9 +667,8 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
         if atlas.global_source(name) in ("user", "beatmap", "bundle"):
             nw, nh = atlas.global_native_size(name)
             if nw > 0:
-                base = atlas.index_of(name)
                 fc = atlas.frame_count(name)
-                idx = base + (min(int(j.age_ms * 60.0 / 1000.0), fc - 1) if fc > 1 else 0)
+                frame = min(int(j.age_ms * 60.0 / 1000.0), fc - 1) if fc > 1 else 0
                 alpha = max(0.0, 1.0 - j.age_ms / 500.0)
                 # Judgement is a stage-space element (like the combo), so it
                 # gets the ×1.6 POSITION_SCALE_FACTOR → native px × (height/480),
@@ -657,9 +677,14 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
                 jw, jh = nw * px, nh * px
                 # Centre below the combo: combo bottom − gap − half judgment.
                 jcy = centre_y_gl - combo_h / 2.0 - jh / 2.0 - max(4, int(h * 0.01))
-                fr._draw_sprite_idx(
-                    idx, int(center_x - jw / 2), int(jcy - jh / 2),
-                    int(jw), int(jh), (1, 1, 1, alpha),
+                fr._draw_direct(
+                    name,
+                    int(center_x - jw / 2),
+                    int(jcy - jh / 2),
+                    int(jw),
+                    int(jh),
+                    (1, 1, 1, alpha),
+                    frame_index=frame,
                 )
 
     if s.combo <= 0 or not ctx.options.show_combo:

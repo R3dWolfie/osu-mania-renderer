@@ -31,6 +31,17 @@ from osu_mania_renderer_v2.gpu.atlas import (
     legacy_mod_slot_name,
 )
 from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
+from osu_mania_renderer_v2.gpu.legacy_mania import (
+    LEGACY_NOTE_BODY_STRETCH,
+    legacy_disallow_zero_alpha_colour,
+    legacy_doubled_alpha_colour,
+    legacy_hold_body_frame,
+    legacy_hold_body_segments,
+    legacy_note_body_style,
+    legacy_stage_light_fps,
+    legacy_stage_light_geometry,
+    legacy_stage_light_presentation,
+)
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
 from osu_mania_renderer_v2.render.dim import build_dim_envelope
@@ -62,6 +73,7 @@ LAZER_DEFAULT_COLUMN_SIZE_REF = 42      # widened to match Argon's playfield pro
                                         # made the field read too narrow at the 30-ref value)
 LAZER_DEFAULT_COLUMN_SPACING_REF = 0    # legacy default (Argon spacing set in argon branch)
 LAZER_DEFAULT_COLUMN_LINE_WIDTH_REF = 2 # Hairline divider
+LAZER_DEFAULT_LIGHT_POSITION_REF = 413
 # Notes fill the column width — height ≈ column width, like in-game mania.
 NOTE_HEIGHT_REL_COL = 0.95
 # Receptor strip lives at the bottom; ≈ column-width tall so receptors are
@@ -98,6 +110,48 @@ def legacy_judgment_frame(age_ms: float, frame_count: int) -> int:
     if frame_count <= 1 or age_ms <= 0:
         return 0
     return int(age_ms / LEGACY_JUDGMENT_FRAME_MS) % frame_count
+
+
+def legacy_scorebar_frame(
+    t_ms: float,
+    frame_count: int,
+    animation_framerate: int | None,
+) -> int:
+    """Select a looping legacy scorebar frame using stable skin timing."""
+    if frame_count <= 1:
+        return 0
+    frames_per_second = (
+        animation_framerate
+        if animation_framerate is not None and animation_framerate > 0
+        else frame_count
+    )
+    frame_length_ms = 1000.0 / frames_per_second
+    return int(max(0.0, t_ms) / frame_length_ms) % frame_count
+
+
+def legacy_display_hp_step(
+    display_hp: float,
+    target_hp: float,
+    elapsed_ms: float,
+) -> float:
+    """Advance stable's presentation-only HP carrier toward raw health.
+
+    Gain closes one quarter of the gap per 60 Hz frame and loss closes one
+    sixth. Clamping at the target keeps large render-time jumps monotonic.
+    """
+    display = max(0.0, min(1.0, display_hp))
+    target = max(0.0, min(1.0, target_hp))
+    if elapsed_ms <= 0 or display == target:
+        return display
+    frame_ratio = elapsed_ms / (1000.0 / 60.0)
+    if display < target:
+        return min(target, display + (target - display) / 4.0 * frame_ratio)
+    return max(target, display - (display - target) / 6.0 * frame_ratio)
+
+
+def legacy_fail_overlay_visible(hp: float, results_opacity: float) -> bool:
+    """Keep failure presentation tied to authoritative, unsmoothed HP."""
+    return hp <= 0.001 and results_opacity <= 0
 
 
 def legacy_judgment_alpha(age_ms: float) -> float:
@@ -828,11 +882,21 @@ def standard_health_marker_slot(*, hp: float, new_default: bool) -> str:
     return "scorebar_ki"
 
 
+def legacy_score_accuracy_gap(
+    render_height: int,
+    legacy_version: float | None,
+) -> float:
+    """Stable's optional three-unit new-layout offset in 480-space."""
+    version = 1.0 if legacy_version is None else legacy_version
+    return 3.0 * render_height / 480.0 if version > 1.0 else 0.0
+
+
 def legacy_hud_geometry(
     render_height: int,
     score_native_height: float,
+    legacy_version: float | None = 1.0,
 ) -> LegacyHudGeometry:
-    """Scale legacy score/accuracy/mod components from lazer's 768p space."""
+    """Scale legacy counters and stable's versioned vertical stack."""
     ui_scale = render_height / 768.0
     score_height = score_native_height * ui_scale * 0.96
     return LegacyHudGeometry(
@@ -841,7 +905,10 @@ def legacy_hud_geometry(
         accuracy_height=score_native_height * ui_scale * 0.576,
         score_right_margin=10.0 * ui_scale,
         accuracy_right_margin=17.0 * ui_scale,
-        accuracy_top=score_height + 9.0 * ui_scale,
+        accuracy_top=(
+            score_height
+            + legacy_score_accuracy_gap(render_height, legacy_version)
+        ),
         mod_height=48.0 * ui_scale,
     )
 
@@ -869,8 +936,8 @@ class RenderContext:
 
 
 class FrameRenderer:
-    # Per-instance: x, y, w, h, atlas_idx, r, g, b, a = 9 floats.
-    _FLOATS_PER_INSTANCE = 9
+    # Per-instance: rect(4), atlas index, colour(4), source-Y bounds(2).
+    _FLOATS_PER_INSTANCE = 11
     _INSTANCE_CAP = 4096     # safety cap; auto-flushes if exceeded.
 
     def __init__(
@@ -978,12 +1045,12 @@ class FrameRenderer:
             [
                 (self._unit_quad_vbo, "2f", "in_corner"),
                 # `/i` = instance divisor 1 (advance one entry per instance).
-                (self._instance_vbo, "4f 1f 4f /i",
-                 "in_rect", "in_atlas", "in_color"),
+                (self._instance_vbo, "4f 1f 4f 2f /i",
+                 "in_rect", "in_atlas", "in_color", "in_v_bounds"),
             ],
         )
         # Pre-allocated CPU-side instance buffer. Slice-assigning a tuple
-        # of 9 floats into a row of a typed numpy array is one C call
+        # of 11 floats into a row of a typed numpy array is one C call
         # (much faster than building a Python list and `np.asarray`'ing
         # it, which is the regression that killed the previous attempt).
         self._instance_arr = np.zeros(
@@ -998,8 +1065,18 @@ class FrameRenderer:
         self._cov_grad_px: float = 0.0
         self._cov_recep: float = 0.0
         # Cached single-layer texture arrays for full-res direct-draw sprites
-        # (scorebar / stage panels) — built once, reused every frame.
-        self._direct_arr_cache: dict = {}
+        # and finite animation frames — built once, reused every video frame.
+        self._direct_arr_cache: dict[
+            str | tuple[str, int], moderngl.TextureArray
+        ] = {}
+        # Presentation-only legacy hold animation caches. These are local to
+        # this renderer and never modify SceneState/replay truth.
+        self._legacy_hold_body_started_ms: dict[tuple[int, int], float] = {}
+        self._legacy_hold_body_last_ms: dict[tuple[int, int], float] = {}
+        # Stable's presentation carrier resets empty and chases raw health;
+        # HpBarMania disables only the separate InitialIncrease effect.
+        self._legacy_display_hp = 0.0
+        self._legacy_display_hp_last_t_ms: float | None = None
         # Compute playfield geometry once. Honoured by all per-frame
         # draws via self.pf_x / self.pf_w / self.col_x / self.col_w.
         self._compute_playfield_geometry()
@@ -1588,11 +1665,10 @@ class FrameRenderer:
             self._draw_hit_error_meter(scene)
         if self.options.show_progress_bar:
             self._draw_progress_bar(scene)
-        if scene.hp <= 0.001 and scene.results_opacity <= 0:
+        if legacy_fail_overlay_visible(scene.hp, scene.results_opacity):
             self._draw_fail_overlay()
         if self.options.show_hp_bar and not draw_mania_side_health:
             self._draw_hp_bar(scene)
-        self._draw_banner()
         self._draw_hud(scene)
         self._draw_top_chrome(scene)
         if scene.visual_mods.flashlight:
@@ -1841,7 +1917,7 @@ class FrameRenderer:
         tint: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0),
         additive: bool = False,
     ) -> LegacyTextLayout:
-        """Draw atlas-backed legacy sprite text and return its base layout."""
+        """Draw native legacy glyph textures and return their base layout."""
         layout = legacy_text_layout(
             text,
             self._legacy_glyph_sizes(font, text),
@@ -1874,13 +1950,10 @@ class FrameRenderer:
                 max(1, int(round(width))),
                 max(1, int(round(height))),
             )
-            atlas_index = self.atlas.index_of(glyph.slot)
             if additive:
-                self._draw_additive_sprite_idx(
-                    atlas_index, *rect, tint,
-                )
+                self._draw_additive_direct(glyph.slot, *rect, tint=tint)
             else:
-                self._draw_sprite_idx(atlas_index, *rect, tint)
+                self._draw_direct(glyph.slot, *rect, tint=tint)
         return layout
 
     def _draw_generated_mod_fallback(
@@ -1969,6 +2042,14 @@ class FrameRenderer:
         """Skin-sprite score/accuracy plus stable custom-skin mod icons."""
         rc = self.rc
         ui_scale = rc.height / 768.0
+        legacy_version = (
+            getattr(self.skin_ini, "legacy_version", 1.0)
+            if getattr(self, "skin_ini", None) is not None
+            else 1.0
+        )
+        score_accuracy_gap = legacy_score_accuracy_gap(
+            rc.height, legacy_version,
+        )
         score_bottom = rc.height - 22.0
         if self.options.show_score:
             if self._legacy_font_available("score"):
@@ -1983,7 +2064,7 @@ class FrameRenderer:
                              if self.skin_ini is not None else 0),
                 )
                 accuracy_top = (
-                    rc.height - score_layout.height - 9.0 * ui_scale
+                    rc.height - score_layout.height - score_accuracy_gap
                 )
                 accuracy_layout = self._draw_legacy_text(
                     "score", f"{display_acc:05.2f}%",
@@ -2007,7 +2088,9 @@ class FrameRenderer:
                 )
                 source = self.atlas.global_source("score_0")
                 geometry = (
-                    legacy_hud_geometry(rc.height, native_height)
+                    legacy_hud_geometry(
+                        rc.height, native_height, legacy_version,
+                    )
                     if source in ("user", "beatmap") and native_height > 0
                     else None
                 )
@@ -2209,17 +2292,17 @@ class FrameRenderer:
         )))
         center_x = self.pf_x + self.pf_w / 2.0
         center_y = self.score_popup_y_gl
-        base = self.atlas.index_of(slot)
         frame = legacy_judgment_frame(
             judgment.age_ms, self.atlas.frame_count(slot),
         )
-        self._draw_sprite_idx(
-            base + frame,
+        self._draw_direct(
+            slot,
             int(round(center_x - width / 2.0)),
             int(round(center_y - height / 2.0)),
             width,
             height,
             (1.0, 1.0, 1.0, alpha),
+            frame_index=frame,
         )
 
     def _draw_custom_legacy_combo(
@@ -2513,6 +2596,52 @@ class FrameRenderer:
                 w=width, h=height, alpha=0.82,
             )
 
+    def _legacy_display_hp_for_scene(self, scene: SceneState) -> float:
+        """Return renderer-local legacy HP presentation without mutating scene."""
+        target = max(0.0, min(1.0, float(scene.hp)))
+        now_ms = float(getattr(scene, "t_ms", 0.0))
+        previous_ms = getattr(self, "_legacy_display_hp_last_t_ms", None)
+        display = max(0.0, min(
+            1.0, float(getattr(self, "_legacy_display_hp", 0.0)),
+        ))
+        if previous_ms is None or now_ms < previous_ms:
+            # A fresh renderer/re-entry starts from the empty stable carrier.
+            # Backwards clocks restart it identically rather than applying a
+            # negative frame ratio to presentation state.
+            display = 0.0
+        else:
+            display = legacy_display_hp_step(
+                display, target, now_ms - previous_ms,
+            )
+        self._legacy_display_hp = display
+        self._legacy_display_hp_last_t_ms = now_ms
+        return display
+
+    def _legacy_scorebar_frame_for_scene(self, scene: SceneState) -> int:
+        direct_count = getattr(self.atlas, "direct_frame_count", None)
+        frame_count = (
+            direct_count("scorebar_colour")
+            if callable(direct_count)
+            else 0
+        )
+        if frame_count <= 0:
+            atlas_frame_count = getattr(self.atlas, "frame_count", None)
+            frame_count = (
+                atlas_frame_count("scorebar_colour")
+                if callable(atlas_frame_count)
+                else 1
+            )
+        skin_ini = getattr(self, "skin_ini", None)
+        return legacy_scorebar_frame(
+            float(getattr(scene, "t_ms", 0.0)),
+            frame_count,
+            (
+                skin_ini.animation_framerate
+                if skin_ini is not None
+                else None
+            ),
+        )
+
     def _draw_hp_bar(self, scene: SceneState) -> None:
         """Draw the cached custom layout choice, or the procedural fallback."""
         if not getattr(self.options, "show_hp_bar", True):
@@ -2524,13 +2653,19 @@ class FrameRenderer:
             return
         hp = max(0.0, min(1.0, scene.hp))
         if self._has_custom_health_bar_assets():
+            display_hp = self._legacy_display_hp_for_scene(scene)
+            fill_frame = self._legacy_scorebar_frame_for_scene(scene)
             if (
                 self._selected_legacy_scorebar_layout()
                 is LegacyScorebarLayout.STANDARD_HUD
             ):
-                self._draw_standard_legacy_health_bar(hp)
+                self._draw_standard_legacy_health_bar(
+                    display_hp, frame_index=fill_frame,
+                )
                 return
-            self._draw_mania_health_bar(hp)
+            self._draw_mania_health_bar(
+                display_hp, frame_index=fill_frame,
+            )
             return
 
         # Existing R3D fallback: vertical HP track on the left of the
@@ -2625,7 +2760,9 @@ class FrameRenderer:
             return LegacyScorebarLayout.UNCERTAIN
         return classification.layout
 
-    def _draw_mania_health_bar(self, hp: float) -> None:
+    def _draw_mania_health_bar(
+        self, hp: float, *, frame_index: int = 0,
+    ) -> None:
         """Draw skin-authored scorebar assets as stable's rotated side gauge."""
         atlas = self.atlas
         rc = self.rc
@@ -2655,9 +2792,12 @@ class FrameRenderer:
             anchor=geometry.fill_anchor,
             source_size=geometry.fill_size,
             visible_fraction=hp,
+            frame_index=frame_index,
         )
 
-    def _draw_standard_legacy_health_bar(self, hp: float) -> None:
+    def _draw_standard_legacy_health_bar(
+        self, hp: float, *, frame_index: int = 0,
+    ) -> None:
         """Draw an obvious standard-mode composite using stable's HpBar."""
         atlas = self.atlas
         new_default = mania_health_new_default(
@@ -2713,6 +2853,7 @@ class FrameRenderer:
             visible_fraction=hp,
             tint=(1.0, 1.0, 1.0, 1.0),
             rotation_deg=0.0,
+            frame_index=frame_index,
         )
 
         if marker_is_usable:
@@ -2758,6 +2899,7 @@ class FrameRenderer:
         anchor: tuple[float, float],
         source_size: tuple[float, float],
         visible_fraction: float,
+        frame_index: int | None = None,
     ) -> None:
         """Rotate a source-X crop upward from a stable top-left-space anchor."""
         visible_fraction = max(0.0, min(1.0, visible_fraction))
@@ -2772,8 +2914,7 @@ class FrameRenderer:
         anchor_y_gl = self.rc.height - anchor_top_y
         draw_x = anchor_x + (source_size[1] - visible_width) / 2.0
         draw_y = anchor_y_gl + (visible_width - source_size[1]) / 2.0
-        self._draw_direct_clipped_x(
-            name,
+        draw_kwargs = dict(
             x=draw_x,
             y=draw_y,
             full_width=source_size[0],
@@ -2782,6 +2923,9 @@ class FrameRenderer:
             tint=(1.0, 1.0, 1.0, 1.0),
             rotation_deg=90.0,
         )
+        if frame_index is not None:
+            draw_kwargs["frame_index"] = frame_index
+        self._draw_direct_clipped_x(name, **draw_kwargs)
 
     HIT_ERROR_FADE_MS = 600
     HIT_ERROR_RISE_PX = 80   # how far the label drifts upward over its life
@@ -2971,28 +3115,45 @@ class FrameRenderer:
         vbo.write(verts)
         vao.render(moderngl.TRIANGLES)
 
+    def _direct_texture_array(
+        self, name: str, *, frame_index: int | None = None,
+    ) -> moderngl.TextureArray | None:
+        """Upload and cache one full-resolution direct texture source."""
+        cache_key = name if frame_index is None else (name, frame_index)
+        arr = self._direct_arr_cache.get(cache_key)
+        if arr is None:
+            img = (
+                self.atlas.direct_image(name)
+                if frame_index is None
+                else self.atlas.direct_frame_image(name, frame_index)
+            )
+            if img is None:
+                return None
+            arr = self.rc.ctx.texture_array(
+                size=(img.width, img.height, 1), components=4, data=img.tobytes(),
+            )
+            configure_direct_texture_sampling(name, arr)
+            self._direct_arr_cache[cache_key] = arr
+        return arr
+
     def _draw_direct(
         self, name: str, x: float, y: float, w: float, h: float,
         tint: tuple = (1.0, 1.0, 1.0, 1.0),
         source_u_end: float = 1.0,
         rotation_deg: float = 0.0,
+        frame_index: int | None = None,
     ) -> None:
-        """Draw a wide skin sprite (scorebar / stage panel) at full resolution,
-        bypassing the layered 256² atlas (which would crush a 1366-wide bar).
-        The source texture is cached as a single-layer array. Source-U cropping
-        happens before optional centre rotation, preserving authored pixels."""
+        """Draw full-resolution skin art outside the shared 256² atlas.
+
+        Static direct slots cache by name; retained animation frames cache by
+        ``(name, frame_index)``. Source-U cropping happens before optional
+        centre rotation, preserving authored pixels.
+        """
         if w <= 0 or h <= 0:
             return
-        arr = self._direct_arr_cache.get(name)
+        arr = self._direct_texture_array(name, frame_index=frame_index)
         if arr is None:
-            img = self.atlas.direct_image(name)
-            if img is None:
-                return
-            arr = self.rc.ctx.texture_array(
-                size=(img.width, img.height, 1), components=4, data=img.tobytes(),
-            )
-            configure_direct_texture_sampling(name, arr)
-            self._direct_arr_cache[name] = arr
+            return
         # Land on top of the queued batch (correct alpha order).
         self._flush_sprite_batch()
         ctx = self.rc.ctx
@@ -3052,22 +3213,44 @@ class FrameRenderer:
         visible_fraction: float,
         tint: tuple = (1.0, 1.0, 1.0, 1.0),
         rotation_deg: float = 0.0,
+        frame_index: int | None = None,
     ) -> None:
         """Reveal a direct texture left-to-right without squashing its UVs."""
         visible_fraction = max(0.0, min(1.0, visible_fraction))
         visible_width = full_width * visible_fraction
         if visible_width <= 0:
             return
+        draw_kwargs = {
+            "tint": tint,
+            "source_u_end": visible_fraction,
+            "rotation_deg": rotation_deg,
+        }
+        if frame_index is not None:
+            draw_kwargs["frame_index"] = frame_index
         self._draw_direct(
-            name,
-            x,
-            y,
-            visible_width,
-            height,
-            tint=tint,
-            source_u_end=visible_fraction,
-            rotation_deg=rotation_deg,
+            name, x, y, visible_width, height, **draw_kwargs,
         )
+
+    def _draw_additive_direct(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        *,
+        tint: tuple = (1.0, 1.0, 1.0, 1.0),
+    ) -> None:
+        """Draw one native texture additively without leaking blend state."""
+        self._flush_sprite_batch()
+        self.rc.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+        try:
+            self._draw_direct(name, x, y, w, h, tint=tint)
+        finally:
+            self.rc.ctx.blend_func = (
+                moderngl.SRC_ALPHA,
+                moderngl.ONE_MINUS_SRC_ALPHA,
+            )
 
     _GRADE_COLOURS: dict[str, tuple[int, int, int]] = {
         "SS": (240, 220, 120),   # gold
@@ -3398,63 +3581,64 @@ class FrameRenderer:
         w = rc.width
         self._draw_sprite("bg_vignette", 0, 0, w, h, (0, 0, 0, 0.65))
 
-    STAGE_LIGHT_DURATION_MS = 200
-
     def _draw_stage_lights(self, scene: SceneState) -> None:
-        """Bright vertical strip in any column that has just had a key
-        press, fading over ~200 ms. Lazer-style "stage light" — gives the
-        playfield a much more reactive feel during streams.
-
-        Tinted by `ColourLight{N}` from the skin's [Mania] block when
-        the author set it; otherwise plain white for the legacy fallback.
-        If the skin authored `mania-stage-light.png`
-        (animated or static), that sprite is used; else the flat
-        `column_bg` rectangle is drawn at full column height (the
-        renderer's pre-skinning default look)."""
+        """Draw legacy stage lights from exact replay transition evidence."""
         # Argon press illumination is owned by the shared key-area renderer.
-        # Do not layer the old full-column synthetic flash on top of it.
-        if self._is_argon_default() or not scene.key_press_age_ms:
+        # Custom legacy uses authored content or osu!'s real classic fallback;
+        # the old synthetic R3D cyan rectangle is intentionally not eligible.
+        if self._is_argon_default():
             return
-        rc = self.rc
         src = self.atlas.global_source("stage_light")
-        use_skin_sprite = src in ("beatmap", "user")
-        sl_frames = self.atlas.frame_count("stage_light") if use_skin_sprite else 1
-        sl_base_idx = self.atlas.index_of("stage_light") if use_skin_sprite else 0
+        if src not in ("beatmap", "user", "classic"):
+            return
+
+        rc = self.rc
+        frames = self.atlas.frame_count("stage_light")
+        base_idx = self.atlas.index_of("stage_light")
+        fps = self._stage_light_fps(frames)
+        native_size = self.atlas.global_native_size("stage_light")
+        section = self.mania_section
+        light_position = (
+            section.light_position
+            if section is not None and section.light_position is not None
+            else LAZER_DEFAULT_LIGHT_POSITION_REF
+        )
+        keys_held = scene.keys_held
+        release_ages = getattr(scene, "key_release_age_ms", ())
         for c in range(rc.key_count):
-            if c >= len(scene.key_press_age_ms):
-                break
-            age = scene.key_press_age_ms[c]
-            if age >= self.STAGE_LIGHT_DURATION_MS:
+            held = c < len(keys_held) and bool(keys_held[c])
+            release_age = release_ages[c] if c < len(release_ages) else None
+            presentation = legacy_stage_light_presentation(
+                held=held,
+                release_age_ms=release_age,
+                time_ms=scene.t_ms,
+                frame_count=frames,
+                fps=fps,
+            )
+            if not presentation.visible:
                 continue
-            t = age / self.STAGE_LIGHT_DURATION_MS
-            alpha = 0.35 * (1.0 - t)
+
+            geometry = legacy_stage_light_geometry(
+                column_x=self.col_x[c],
+                column_width=self.col_w[c],
+                native_size=native_size,
+                light_position=light_position,
+                render_height=rc.height,
+                upside_down=self.upside_down,
+                vertical_scale=presentation.vertical_scale,
+            )
+            if geometry.height <= 0:
+                continue
             tint = self._stage_light_tint(c)
-            tint_rgba = (tint[0], tint[1], tint[2], alpha)
-            if use_skin_sprite:
-                # Animated mania-stage-light loops at LightFramePerSecond
-                # if the skin set it; else 60fps (spec default). Each
-                # column has its own age, so columns at different phases
-                # of the animation show different frames.
-                if sl_frames > 1:
-                    fps = self._stage_light_fps(sl_frames)
-                    frame_idx = int(age * fps / 1000.0) % sl_frames
-                else:
-                    frame_idx = 0
-                # Stage-light typically sits in the lower portion of the
-                # column from `LightPosition` upward. Approximate: draw
-                # from y=0 up to receptor centre + col_w height.
-                sl_top = self.receptor_centre_y_gl + self.col_w[c]
-                self._draw_sprite_idx(
-                    sl_base_idx + frame_idx,
-                    self.col_x[c], 0,
-                    self.col_w[c], sl_top, tint_rgba,
-                )
-            else:
-                # Backward-compat: flat tinted rectangle, full height.
-                self._draw_sprite(
-                    "column_bg", self.col_x[c], 0,
-                    self.col_w[c], rc.height, tint_rgba,
-                )
+            tint_alpha = tint[3] if len(tint) > 3 else 1.0
+            self._draw_sprite_idx(
+                base_idx + presentation.frame,
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                (tint[0], tint[1], tint[2], presentation.alpha * tint_alpha),
+            )
 
     def _note_anim_fps(self, frame_count: int) -> float:
         """FPS for tap-note / hold-head / hold-tail animations.
@@ -3473,49 +3657,50 @@ class FrameRenderer:
         return 60.0
 
     def _stage_light_fps(self, frame_count: int) -> float:
-        """Frames-per-second for the stage-light animation.
+        """Current lazer legacy stage-light FPS; frame count is irrelevant."""
+        del frame_count
+        return legacy_stage_light_fps(self.mania_section)
 
-        Precedence per the osu! wiki + danser parity rules:
-          1. [Mania] LightFramePerSecond (positive) — explicit override
-          2. -1 → derive (danser: 1000/frame_count ms per frame ⇒ fps == frame_count)
-          3. [General] AnimationFramerate — global default
-          4. 60 fps — spec hard default for hit-burst/lighting class
-        """
+    def _legacy_hold_light_fps(self, frame_count: int) -> float:
+        """Preserve the pre-existing LightingL cadence outside this fix."""
         section = self.mania_section
         if section is not None and section.light_frame_per_second is not None:
-            v = section.light_frame_per_second
-            if v > 0:
-                return float(v)
-            if v == -1 and frame_count > 1:
+            value = section.light_frame_per_second
+            if value > 0:
+                return float(value)
+            if value == -1 and frame_count > 1:
                 return float(frame_count)
-        if self.skin_ini is not None and self.skin_ini.animation_framerate:
-            af = self.skin_ini.animation_framerate
+        skin_ini = getattr(self, "skin_ini", None)
+        if skin_ini is not None and skin_ini.animation_framerate:
+            af = skin_ini.animation_framerate
             if af > 0:
                 return float(af)
             if af == -1 and frame_count > 1:
                 return float(frame_count)
         return 60.0
 
-    def _stage_light_tint(self, col: int) -> tuple[float, float, float]:
-        """RGB tint for a column's stage-light press flash.
+    def _stage_light_tint(self, col: int) -> tuple[float, float, float, float]:
+        """RGBA tint for a column's authored stage-light.
 
         Priority: skin's `ColourLight{N}` (1-indexed → 0-indexed
-        fallback) → plain white (backward-compat for non-skinned)."""
+        fallback) → plain white. Zero authored alpha follows stable's
+        post-construction ``DisallowZeroAlpha`` compatibility rule."""
         section = self.mania_section
         if section is not None:
-            rgb = section.colour_light.get(col + 1)
-            if rgb is None:
-                rgb = section.colour_light.get(col)
-            if rgb is not None:
-                return rgb[0] / 255, rgb[1] / 255, rgb[2] / 255
-        return 1.0, 1.0, 1.0
+            rgba = section.colour_light.get(col + 1)
+            if rgba is None:
+                rgba = section.colour_light.get(col)
+            if rgba is not None:
+                return legacy_disallow_zero_alpha_colour(rgba)
+        return 1.0, 1.0, 1.0, 1.0
 
     def _draw_columns(self, scene: SceneState | None = None) -> None:
         """Per-column lane backgrounds. If the skin authors `Colour{N}` in
         skin.ini, that tint wins; otherwise the renderer's default
         alternating-shade palette is used. Kiai lifts each column's tint
         slightly so the playfield brightens during chorus parts of the
-        song (osu!'s kiai highlight)."""
+        song (osu!'s kiai highlight). Authored legacy colours retain their
+        exact RGB and constructor-era doubled-alpha behaviour."""
         if scene is not None and self._is_argon_default():
             self._draw_argon_columns(scene)
             return
@@ -3537,11 +3722,8 @@ class FrameRenderer:
                     # Some skins use 0-indexed Colour entries — accept both.
                     skin_colour = section.colour.get(c)
             if skin_colour is not None:
-                sr, sg, sb, sa = skin_colour
-                r = sr / 255
-                g = sg / 255
-                b = sb / 255
-                a = sa / 255
+                r, g, b, a = legacy_doubled_alpha_colour(skin_colour)
+                colour_boost = 0.0
             else:
                 variant = column_variant(c, rc.key_count)
                 if variant == "outer":
@@ -3550,10 +3732,11 @@ class FrameRenderer:
                     r, g, b, a = 0.07, 0.06, 0.12, 0.55
                 else:
                     r, g, b, a = 0.05, 0.05, 0.11, 0.45
+                colour_boost = kiai_boost
             self._draw_sprite("column_bg", self.col_x[c], 0,
                               self.col_w[c], h,
-                              (r + kiai_boost, g + kiai_boost,
-                               b + kiai_boost * 1.5, a))
+                              (r + colour_boost, g + colour_boost,
+                               b + colour_boost * 1.5, a))
 
         # Column dividers + outer borders. Spec: ColumnLineWidth is a
         # csv of (N+1) ints — width per divider in 480-ref pixels — and
@@ -3562,8 +3745,9 @@ class FrameRenderer:
         # dividers", matching the renderer's pre-Phase-B look.
         line_widths = section.column_line_width if section else ()
         if section is not None and section.colour_column_line is not None:
-            sr, sg, sb, sa = section.colour_column_line
-            line_tint = (sr / 255, sg / 255, sb / 255, sa / 255)
+            line_tint = legacy_doubled_alpha_colour(
+                section.colour_column_line,
+            )
         else:
             line_tint = (1.0, 1.0, 1.0, 0.9)
 
@@ -3594,6 +3778,48 @@ class FrameRenderer:
         # polished with those uninvited lines. The user explicitly asked
         # to suppress them ("Lines"). Skins that WANT dividers ship a
         # ColumnLineWidth (even all-zero suppresses dividers explicitly).
+
+    def _legacy_hold_body_frame_index(
+        self,
+        scene: SceneState,
+        note,
+        frame_count: int,
+    ) -> int:
+        """Renderer-local 30ms hold-body animation, active only while held."""
+        active = (
+            0 <= note.column < len(scene.keys_held)
+            and scene.keys_held[note.column]
+            and note.head_y_fraction >= 1.0
+            and note.tail_y_fraction < 1.0
+        )
+        key = (note.column, note.time_ms)
+        starts = getattr(self, "_legacy_hold_body_started_ms", None)
+        lasts = getattr(self, "_legacy_hold_body_last_ms", None)
+        if starts is None:
+            starts = {}
+            self._legacy_hold_body_started_ms = starts
+        if lasts is None:
+            lasts = {}
+            self._legacy_hold_body_last_ms = lasts
+
+        if not active:
+            starts.pop(key, None)
+            lasts.pop(key, None)
+            return legacy_hold_body_frame(
+                active=False,
+                elapsed_active_ms=0.0,
+                frame_count=frame_count,
+            )
+
+        now = float(scene.t_ms)
+        if key not in starts or now < lasts.get(key, now):
+            starts[key] = now
+        lasts[key] = now
+        return legacy_hold_body_frame(
+            active=True,
+            elapsed_active_ms=now - starts[key],
+            frame_count=frame_count,
+        )
 
     def _draw_notes(self, scene: SceneState) -> None:
         if self._is_argon_default():
@@ -3699,48 +3925,47 @@ class FrameRenderer:
                 body_top = min(y_head, y_tail)
                 body_h = abs(y_head - y_tail)
                 if col_has_skin_hold:
-                    body_idx = _animated_idx("note_hold_body", n.column, n.time_ms)
+                    body_base_idx = self.atlas.column_slot_index(
+                        "note_hold_body", n.column,
+                    )
+                    body_frames = self.atlas.column_frame_count(
+                        "note_hold_body", n.column,
+                    )
+                    body_idx = body_base_idx + self._legacy_hold_body_frame_index(
+                        scene, n, body_frames,
+                    )
                     head_idx = _animated_idx("note_hold_head", n.column, n.time_ms)
                     tail_idx = _animated_idx("note_hold_tail", n.column, n.time_ms)
-                    # NoteBodyStyle per ppy/osu LegacyNoteBodyStyle.cs:
-                    #   0  Stretch              — single stretch of L sprite
-                    #   2  RepeatTop            — tile vertically; top cap static
-                    #   3  RepeatBottom         — tile vertically; bottom cap static
-                    #   4  RepeatTopAndBottom   — tile vertically; both caps static
-                    # Value `1` exists in the osu! wiki but isn't in lazer's
-                    # enum source — we treat it as tile to match our
-                    # historical behaviour for cascade-style L sprites.
-                    # The cap-static-vs-scroll distinction (mode 2 vs 3 vs
-                    # 4) requires a 9-slice draw that the current sprite
-                    # primitive doesn't support; all three tile modes use
-                    # a simple repeat for now.
-                    body_style = (
-                        self.mania_section.note_body_style
-                        if self.mania_section is not None
-                        and self.mania_section.note_body_style is not None
-                        else 0  # default per lazer
+                    body_style = legacy_note_body_style(
+                        self.mania_section,
+                        n.column,
+                        self.skin_ini.legacy_version
+                        if self.skin_ini is not None else 1.0,
                     )
-                    if body_style != 0:
-                        # Cascade body: repeat the L sprite vertically at
-                        # its natural aspect. Tile height preserves the
-                        # source sprite's aspect so the visual element
-                        # doesn't stretch.
+                    if body_style != LEGACY_NOTE_BODY_STRETCH:
                         body_aspect = self.atlas.column_aspect(
                             "note_hold_body", n.column,
                         )
                         tile_h = (
-                            max(1, int(round(cw / body_aspect)))
-                            if body_aspect > 0 else cw
+                            max(1.0, cw / body_aspect)
+                            if body_aspect > 0 else float(cw)
                         )
-                        seg_y = body_top
-                        while seg_y < body_top + body_h:
-                            seg_h = min(tile_h, body_top + body_h - seg_y)
-                            self._draw_sprite_idx(body_idx, x0, seg_y,
-                                                  cw, seg_h, (1, 1, 1, 1))
-                            seg_y += tile_h
+                        for segment in legacy_hold_body_segments(
+                            body_top, body_h, tile_h, body_style,
+                        ):
+                            self._draw_sprite_idx_cropped_y(
+                                body_idx,
+                                x0,
+                                segment.y,
+                                cw,
+                                segment.height,
+                                (1, 1, 1, 1),
+                                source_bottom=segment.source_bottom,
+                                source_top=segment.source_top,
+                            )
                     else:
-                        # Styles 0 and 2: stretch L sprite once across the
-                        # entire body length. Single draw call.
+                        # Stretch/clamp is one continuous draw across the
+                        # whole body extent.
                         self._draw_sprite_idx(body_idx, x0, body_top,
                                               cw, body_h, (1, 1, 1, 1))
                     # Head sits at the head position (top of the hold while
@@ -3912,7 +4137,7 @@ class FrameRenderer:
                 frames = self.atlas.frame_count("lighting_l")
                 frame = 0
                 if frames > 1:
-                    fps = self._stage_light_fps(frames)
+                    fps = self._legacy_hold_light_fps(frames)
                     age = scene.key_press_age_ms[c] if c < len(scene.key_press_age_ms) else 0
                     frame = int(age * fps / 1000.0) % frames
                 press_age = (
@@ -3998,9 +4223,51 @@ class FrameRenderer:
         else:
             r, g, b, a = tint
         # One C-level numpy slice assignment — way faster than Python
-        # list growth + np.asarray.
+        # list growth + np.asarray. The final pair selects the complete
+        # bottom-to-top source range.
         self._instance_arr[self._instance_count] = (
-            x_clip, y_clip, w_clip, h_clip, atlas_idx, r, g, b, a,
+            x_clip, y_clip, w_clip, h_clip, atlas_idx, r, g, b, a, 0.0, 1.0,
+        )
+        self._instance_count += 1
+
+    def _draw_sprite_idx_cropped_y(
+        self,
+        atlas_idx: int,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        tint: tuple,
+        *,
+        source_bottom: float,
+        source_top: float,
+    ) -> None:
+        """Queue an atlas quad with source-Y cropping and no UV squashing."""
+        if w <= 0 or h <= 0:
+            return
+        if self._instance_count >= self._INSTANCE_CAP:
+            self._flush_sprite_batch()
+        sw = self.rc.width
+        sh = self.rc.height
+        if len(tint) == 3:
+            r, g, b = tint
+            a = 1.0
+        else:
+            r, g, b, a = tint
+        source_bottom = max(0.0, min(1.0, source_bottom))
+        source_top = max(source_bottom, min(1.0, source_top))
+        self._instance_arr[self._instance_count] = (
+            (x / sw) * 2 - 1,
+            (y / sh) * 2 - 1,
+            (w / sw) * 2,
+            (h / sh) * 2,
+            atlas_idx,
+            r,
+            g,
+            b,
+            a,
+            source_bottom,
+            source_top,
         )
         self._instance_count += 1
 

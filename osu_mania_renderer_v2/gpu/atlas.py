@@ -352,6 +352,31 @@ def _per_column_override(
 LAYER_W = 256
 LAYER_H = 256
 
+_LEGACY_JUDGMENT_SLOTS: frozenset[str] = frozenset({
+    "judgment_geki",
+    "judgment_300",
+    "judgment_katu",
+    "judgment_100",
+    "judgment_50",
+    "judgment_miss",
+})
+
+_LEGACY_FONT_SLOTS: frozenset[str] = frozenset({
+    *(f"score_{digit}" for digit in range(10)),
+    "score_comma",
+    "score_dot",
+    "score_percent",
+    "score_x",
+    *(f"combo_{digit}" for digit in range(10)),
+    "combo_x",
+})
+
+# Native animation frames used by direct-draw presentation paths. Frame zero
+# remains in ``_direct_images`` for sizing/classification callers.
+_DIRECT_ANIMATION_SLOTS: frozenset[str] = (
+    _LEGACY_JUDGMENT_SLOTS | {"scorebar_colour"}
+)
+
 
 class SpriteAtlas:
     """Packs sprites into a single Texture2DArray.
@@ -388,6 +413,10 @@ class SpriteAtlas:
         # resolution so they stay crisp regardless of skin. Stored in DESIGN
         # orientation (PIL top-row-first); native px (÷2 if @2x baked here too).
         self._direct_images: dict[str, Image.Image] = {}
+        # Every resolved direct-animation frame, retained at source resolution.
+        # Judgements and scorebar colour animations bypass the shared 256²
+        # atlas so they are never pre-warped before native-aspect drawing.
+        self._direct_frame_images: dict[str, tuple[Image.Image, ...]] = {}
         # Global slot sources, parallel to _column_sources.
         self._global_sources: dict[str, str] = {}
         # Per-global source aspect ratio (width / height) of the
@@ -438,6 +467,7 @@ class SpriteAtlas:
         layers: list[np.ndarray] = []
         from_beatmap = 0
         from_user = 0
+        from_classic = 0
         from_bundle = 0
         from_missing = 0
         from_anim = 0
@@ -474,6 +504,8 @@ class SpriteAtlas:
                 # Keep full-res image for wide sprites drawn directly (crisp).
                 if name in _DIRECT_DRAW_SLOTS:
                     atlas._direct_images[name] = frames[0]
+                if name in _DIRECT_ANIMATION_SLOTS:
+                    atlas._direct_frame_images[name] = tuple(frames)
             if len(frames) > 1:
                 atlas._global_frames[name] = len(frames)
                 from_anim += 1
@@ -485,15 +517,12 @@ class SpriteAtlas:
             # (stage_left/right stay letterboxed: they use the square-quad
             # trick to stay full-height at the edges.)
             g_fit = (_fit_stretch
-                     if (name.startswith(("score_", "combo_"))
-                         or name in ("playfield_frame", "scorebar_bg", "scorebar_colour",
+                     if (name in ("playfield_frame", "scorebar_bg", "scorebar_colour",
                                  "stage_left", "stage_right",
                                  # Legacy lighting is drawn at native aspect;
                                  # stretch-fill avoids applying aspect twice
                                  # after the renderer sizes its destination.
-                                 "lighting_n", "lighting_l",
-                                 "judgment_geki", "judgment_300", "judgment_katu",
-                                 "judgment_100", "judgment_50", "judgment_miss",
+                                 "lighting_n", "lighting_l", "stage_light",
                                  # Argon note body/glyph: non-square (1.43:1);
                                  # stretch so the note renders at lazer's
                                  # 60:42 aspect, not letterboxed-squished.
@@ -513,6 +542,8 @@ class SpriteAtlas:
                 from_beatmap += 1
             elif src == "user":
                 from_user += 1
+            elif src == "classic":
+                from_classic += 1
             elif src == "bundle":
                 from_bundle += 1
             else:
@@ -594,9 +625,9 @@ class SpriteAtlas:
         total = len(layers)
         _LOG.info(
             "atlas_loaded slots=%d from_beatmap=%d from_user_skin=%d "
-            "from_bundle=%d from_missing=%d animated_slots=%d "
+            "from_classic=%d from_bundle=%d from_missing=%d animated_slots=%d "
             "key_count=%d skin_dir=%s beatmap_dir=%s",
-            total, from_beatmap, from_user, from_bundle, from_missing,
+            total, from_beatmap, from_user, from_classic, from_bundle, from_missing,
             from_anim,
             key_count, str(skin_dir) if skin_dir else "(none)",
             str(beatmap_dir) if beatmap_dir else "(none)",
@@ -624,12 +655,14 @@ class SpriteAtlas:
                 "level": "info",
                 "msg": (
                     f"slots={total} from_beatmap={from_beatmap} "
-                    f"from_user={from_user} from_bundle={from_bundle} "
+                    f"from_user={from_user} from_classic={from_classic} "
+                    f"from_bundle={from_bundle} "
                     f"from_missing={from_missing} key_count={key_count}"
                 ),
                 "slots":          total,
                 "from_beatmap":   from_beatmap,
                 "from_user":      from_user,
+                "from_classic":   from_classic,
                 "from_bundle":    from_bundle,
                 "from_missing":   from_missing,
                 "animated_slots": from_anim,
@@ -684,14 +717,37 @@ class SpriteAtlas:
         return self._global_frames.get(name, 1)
 
     def global_source(self, name: str) -> str:
-        """`"beatmap"` / `"user"` / `"bundle"` / `"missing"` for a global
-        slot."""
+        """Resolved global source tier.
+
+        Values are ``beatmap``, ``user``, ``classic`` (the authoritative osu!
+        legacy fallback), ``bundle`` (R3D art), or ``missing``.
+        """
         return self._global_sources.get(name, "missing")
 
     def direct_image(self, name: str):
         """Full-resolution PIL image for a wide direct-draw slot (scorebar /
         stage panels), or None. Drawn outside the layered atlas to stay crisp."""
         return self._direct_images.get(name)
+
+    def direct_frame_count(self, name: str) -> int:
+        """Number of retained full-resolution frames for ``name``."""
+        return len(self._direct_frame_images.get(name, ()))
+
+    def direct_frame_image(self, name: str, frame_index: int) -> Image.Image | None:
+        """Return one retained native frame, or ``None`` for a non-direct slot.
+
+        Frame indices are deliberately checked rather than clamped so a caller
+        cannot silently draw a different animation frame than it selected.
+        """
+        frames = self._direct_frame_images.get(name)
+        if frames is None:
+            return None
+        if not 0 <= frame_index < len(frames):
+            raise IndexError(
+                f"direct frame {frame_index} out of range for {name!r} "
+                f"({len(frames)} frames)"
+            )
+        return frames[frame_index]
 
     def global_aspect(self, name: str) -> float:
         """Source-image aspect ratio (width / height) for a global slot,
@@ -807,7 +863,8 @@ class SpriteAtlas:
         Returns a frame list (length 1 for static slots, ≥ 1 for
         animated). Priority chain: beatmap_dir (per-map overrides) →
         skin's explicit section override → skin's conventional file →
-        bundled fallback → 4×4 transparent placeholder.
+        slot-specific classic fallback → bundled fallback → 4×4 transparent
+        placeholder.
 
         Animation discovery (`<base>-0.png`, …) runs per tier for
         animatable slots so per-skin animations are honoured. All
@@ -860,6 +917,15 @@ class SpriteAtlas:
                 img = _try_skin_file(skin_dir, candidate)
                 if img is not None:
                     return [img], "user"
+        # The legacy stage light has a real osu! classic fallback. Keep it in
+        # its own source tier so the generated R3D stage_light.png can never be
+        # mistaken for DefaultClassicSkin's mania-stage-light.
+        if slot == "stage_light":
+            classic = _try_skin_file(SPRITES_DIR, "classic_stage_light.png")
+            if classic is not None:
+                return [classic], "classic"
+            return [Image.new("RGBA", (4, 4), (0, 0, 0, 0))], "missing"
+
         # Bundled role-named PNG (always single-frame).
         bundled = SPRITES_DIR / f"{slot}.png"
         if bundled.exists():
@@ -1033,9 +1099,7 @@ def _global_section_override(section: ManiaSection, slot: str) -> str | None:
 # ===== Animation-aware resolution =====
 
 # Slots that support multi-frame animation discovery. Skin authors
-# author frames as `<base>-0.png`, `<base>-1.png`, ... etc. We
-# currently animate only judgement popups; stage-light and other
-# animatable slots are single-frame for now (Phase C+).
+# author frames as `<base>-0.png`, `<base>-1.png`, ... etc.
 # Wide sprites drawn as full-resolution direct textures (bypass the layered
 # atlas, which would crush them). scorebar-bg/colour + the stage panels.
 _DIRECT_DRAW_SLOTS: frozenset[str] = frozenset({
@@ -1045,17 +1109,11 @@ _DIRECT_DRAW_SLOTS: frozenset[str] = frozenset({
     "argon_wedge",   # retained resource slot; current HUD wedges are procedural.
     "argon_hp",      # glossy HP tube — crisp + stretches to fill.
     "argon_card",    # rounded results/avatar card — tinted at draw.
-})
+}) | _LEGACY_FONT_SLOTS
 
 
-_ANIMATABLE_GLOBAL_SLOTS: frozenset[str] = frozenset({
-    "judgment_geki",
-    "judgment_300",
-    "judgment_katu",
-    "judgment_100",
-    "judgment_50",
-    "judgment_miss",
-    "stage_light",     # looped per press, at LightFramePerSecond (default 60).
+_ANIMATABLE_GLOBAL_SLOTS: frozenset[str] = _LEGACY_JUDGMENT_SLOTS | frozenset({
+    "stage_light",     # Legacy StageLight animation; LightFramePerSecond.
     "lighting_n",      # one-shot per hit, at 60fps.
     "lighting_l",      # looped during hold, at AnimationFramerate.
     "scorebar_colour", # HP fill; skins ship scorebar-colour-0..N.

@@ -30,8 +30,8 @@ service restart. Production runs on the `mania-v3` branch.
     rather than guess. This path **requires** `--skin-dir`. Still under active
     development (verify current prod path — the env toggle defaults to the GPU
     renderer).
-- No osu! game assets are bundled; osu!'s default art/skins/audio are CC BY-NC and
-  are not included. This repo ships only original or procedurally-generated art.
+- The authoritative classic stage-light fallback is identified in `COPYRIGHT`
+  and retains its CC BY-NC terms; other bundled art is original or procedural.
 - HUD: score/combo/accuracy/PP via digit sprites; HP bar, progress bar, and
   unstable-rate (UR) meter. Optional live PP counter and results card; official
   PP / star-rating can be injected with `--pp` / `--sr` (otherwise estimated via
@@ -130,4 +130,5 @@ Note: `pyproject.toml` still declares `license = "MIT"`, which contradicts
 
 Attribution: gameplay/scoring/HUD logic ported from ppy's osu! / osu-framework (MIT);
 danser-go (GPL-3.0) was studied as a behavioural reference. Any osu! skin you supply
-carries its own license — check before redistributing.
+carries its own license — check before redistributing. The bundled classic
+stage-light asset and its CC BY-NC provenance are listed in `COPYRIGHT`.

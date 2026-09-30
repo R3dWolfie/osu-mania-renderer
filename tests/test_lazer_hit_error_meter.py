@@ -121,6 +121,7 @@ def test_frame_state_derives_real_tick_age_and_ema_from_judgment_timeline():
         per_column_ur=(0, 0, 0, 0),
         miss_break_times=[],
         press_iters=[[], [], [], []],
+        release_iters=[[], [], [], []],
         acronyms=(),
         player_pp=0,
         max_pp=0,

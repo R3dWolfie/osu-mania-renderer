@@ -282,7 +282,10 @@ def _draw_mod_icons(
         ctx.draw_external(tex, int(cx - tw / 2), int(cy_gl - th / 2), tw, th, 1.0)
 
 
-def _draw_tl(ctx, name_or_idx, left, top, w, h, tint, *, is_idx=False, direct=False):
+def _draw_tl(
+    ctx, name_or_idx, left, top, w, h, tint, *, is_idx=False,
+    direct=False, frame_index=None,
+):
     """Draw a sprite positioned by its TOP-LEFT corner in screen pixels
     (y measured downward from the top). Converts to the engine's GL
     bottom-left origin. `direct=True` draws via the full-res direct path
@@ -291,7 +294,15 @@ def _draw_tl(ctx, name_or_idx, left, top, w, h, tint, *, is_idx=False, direct=Fa
         return
     gl_y = ctx.height - top - h
     if direct:
-        ctx.draw_direct(name_or_idx, int(left), int(gl_y), int(w), int(h), tint)
+        if frame_index is None:
+            ctx.draw_direct(
+                name_or_idx, int(left), int(gl_y), int(w), int(h), tint,
+            )
+        else:
+            ctx.draw_direct(
+                name_or_idx, int(left), int(gl_y), int(w), int(h), tint,
+                frame_index=frame_index,
+            )
     elif is_idx:
         ctx.draw_sprite_idx(name_or_idx, int(left), int(gl_y), int(w), int(h), tint)
     else:
@@ -655,12 +666,14 @@ def hp_bar(*, element, skin, assets, variables, ctx) -> None:
         return
     hp = max(0.0, min(1.0, getattr(ctx.scene, "hp", 1.0)))
     if ctx.atlas.global_source("scorebar_bg") == "user":
-        _legacy_scorebar(ctx, hp)
+        hp = ctx.fr._legacy_display_hp_for_scene(ctx.scene)
+        fill_frame = ctx.fr._legacy_scorebar_frame_for_scene(ctx.scene)
+        _legacy_scorebar(ctx, hp, frame_index=fill_frame)
     else:
         _argon_health(ctx, hp)
 
 
-def _legacy_scorebar(ctx, hp: float) -> None:
+def _legacy_scorebar(ctx, hp: float, *, frame_index: int = 0) -> None:
     """lazer LegacyHealthDisplay. Top-left, sprites scaled osu-px→render
     (s = height/480). scorebar-bg at (0,0); the colour fill sits at the
     old/new style offset and is clipped to HP×width (empties from the
@@ -686,7 +699,7 @@ def _legacy_scorebar(ctx, hp: float) -> None:
     fill_w = hp * fill_w_full        # clip-approx: solid bars squish ≈ clip
     fr_tint = _scorebar_fill_colour(hp) if new_style else (1.0, 1.0, 1.0)
     _draw_tl(ctx, "scorebar_colour", off_x * s, off_y * s, fill_w, fill_h,
-             (*fr_tint, 1.0), direct=True)
+             (*fr_tint, 1.0), direct=True, frame_index=frame_index)
 
     # Marker at the right edge of the fill, centred (new) / top edge (old).
     right_x = off_x * s + fill_w
@@ -880,7 +893,13 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
     _gw, score_nh = ctx.atlas.global_native_size("score_0")
     score_nh = score_nh or 70
     right_pad = max(6, int(10 * hud_scale))      # LegacyScoreCounter Margin H=10
-    accuracy_top_margin = max(4, int(9 * hud_scale))
+    legacy_version = (
+        getattr(ctx.skin_ini, "legacy_version", 1.0)
+        if ctx.skin_ini is not None else 1.0
+    )
+    accuracy_gap = (
+        3.0 * rc.height / 480.0 if legacy_version > 1.0 else 0.0
+    )
     overlap = ctx.skin_ini.score_overlap if ctx.skin_ini is not None else 0
 
     # Smoothed during gameplay (counter rolls up), authoritative on results.
@@ -892,13 +911,13 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
 
     right_x = rc.width - right_pad
     # `mods_top` is a FROM-TOP y (what _draw_mod_icons/_draw_tl expect).
-    mods_top = accuracy_top_margin
-    ay = rc.height - accuracy_top_margin  # PP anchor default (no accuracy shown)
+    mods_top = accuracy_gap
+    ay = rc.height - accuracy_gap  # PP anchor default (no accuracy shown)
 
     if ctx.options.show_score:
         score_h = score_nh * hud_scale * 0.96
-        # LegacyScoreCounter has no vertical margin. The 9-unit margin belongs
-        # to LegacyAccuracyCounter below it.
+        # Stable stacks accuracy at the measured score bottom. Only skins with
+        # Version > 1 receive its three-unit (480-space) new-layout offset.
         score_cy = rc.height - score_h / 2.0
         ctx.draw_number(
             f"{int(display_score):d}", x=right_x, center_y=score_cy,
@@ -907,7 +926,7 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
         # Accuracy: scale 0.6×0.96, Margin H=17 (7px more indented than score).
         acc_h = score_nh * hud_scale * 0.576
         acc_right_x = rc.width - max(10, int(17 * hud_scale))
-        acc_cy = (score_cy - score_h / 2.0) - accuracy_top_margin - acc_h / 2.0
+        acc_cy = (score_cy - score_h / 2.0) - accuracy_gap - acc_h / 2.0
         ctx.draw_number(
             f"{display_acc:.2f}%", x=acc_right_x, center_y=acc_cy,
             glyph_h=acc_h, overlap_px=overlap, align="right", alpha=0.95,
