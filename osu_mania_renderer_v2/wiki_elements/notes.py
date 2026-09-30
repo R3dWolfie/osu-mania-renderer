@@ -7,6 +7,7 @@ pending their own decouple. All byte-identical to FrameRenderer.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
+from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
 from osu_mania_renderer_v2.wiki_elements._common import (
     JUDGMENT_LIGHT,
     RECEPTOR_HEIGHT_REL_COL,
@@ -277,8 +278,26 @@ def _draw_notes_body(ctx) -> None:
                         seg_y += tile_h
                 else:
                     ctx.draw_sprite_idx(body_idx, x0, body_top, cw, body_h, (1, 1, 1, 1))
-                ctx.draw_sprite_idx(head_idx, x0, y_head - head_h // 2, cw, head_h, (1, 1, 1, 1))
-                ctx.draw_sprite_idx(tail_idx, x0, y_tail - tail_h // 2, cw, tail_h, (1, 1, 1, 1))
+                ctx.draw_sprite_idx(
+                    head_idx,
+                    x0,
+                    legacy_note_draw_y(
+                        y_head, head_h, upside_down=upside_down,
+                    ),
+                    cw,
+                    head_h,
+                    (1, 1, 1, 1),
+                )
+                ctx.draw_sprite_idx(
+                    tail_idx,
+                    x0,
+                    legacy_note_draw_y(
+                        y_tail, tail_h, upside_down=upside_down, is_tail=True,
+                    ),
+                    cw,
+                    tail_h,
+                    (1, 1, 1, 1),
+                )
             else:
                 pad = cw // 6
                 ctx.draw_sprite("column_bg", x0 + pad, body_top, cw - 2 * pad, body_h, tint)
@@ -293,10 +312,23 @@ def _draw_notes_body(ctx) -> None:
                     ghost_y = y + k * trail_step
                     ghost_alpha = 0.20 / k
                     ctx.draw_sprite_idx(
-                        tap_idx, x0, ghost_y - local_note_h // 2,
+                        tap_idx,
+                        x0,
+                        legacy_note_draw_y(
+                            ghost_y, local_note_h, upside_down=upside_down,
+                        ),
                         cw, local_note_h, (1, 1, 1, ghost_alpha),
                     )
-                ctx.draw_sprite_idx(tap_idx, x0, y - local_note_h // 2, cw, local_note_h, (1, 1, 1, 1))
+                ctx.draw_sprite_idx(
+                    tap_idx,
+                    x0,
+                    legacy_note_draw_y(
+                        y, local_note_h, upside_down=upside_down,
+                    ),
+                    cw,
+                    local_note_h,
+                    (1, 1, 1, 1),
+                )
             else:
                 trail_step = max(4, local_note_h // 4)
                 for k in (2, 1):

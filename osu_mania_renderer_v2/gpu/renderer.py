@@ -30,6 +30,7 @@ from osu_mania_renderer_v2.gpu.atlas import (
     column_variant,
     legacy_mod_slot_name,
 )
+from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
 from osu_mania_renderer_v2.render.dim import build_dim_envelope
@@ -3664,11 +3665,8 @@ class FrameRenderer:
             # Note height: native aspect of the skin's tap sprite when
             # available, else square (cw × cw). Per ppy/osu
             # LegacyNotePiece.cs — both axes divide by texture.width, so
-            # height = cw × (tex.h / tex.w) == cw / aspect. Anchoring is
-            # kept centred (centre at to_screen_y(yf)) so the gameplay
-            # "hit point" stays where users expect — lazer's bottom-
-            # anchor moves the visual landing point up by note_h/2,
-            # which our renderer's centred convention doesn't follow.
+            # height = cw × (tex.h / tex.w) == cw / aspect. The sprite's
+            # scrolling-direction edge is anchored at to_screen_y(yf).
             if col_has_skin:
                 note_asp = self.atlas.column_aspect("note_tap", n.column)
                 local_note_h = (
@@ -3750,10 +3748,17 @@ class FrameRenderer:
                     # Always drawn AFTER the body so it visually caps the
                     # top end and isn't covered by a stretched body.
                     self._draw_sprite_idx(head_idx, x0,
-                                          y_head - head_h // 2,
+                                          legacy_note_draw_y(
+                                              y_head, head_h,
+                                              upside_down=upside_down,
+                                          ),
                                           cw, head_h, (1, 1, 1, 1))
                     self._draw_sprite_idx(tail_idx, x0,
-                                          y_tail - tail_h // 2,
+                                          legacy_note_draw_y(
+                                              y_tail, tail_h,
+                                              upside_down=upside_down,
+                                              is_tail=True,
+                                          ),
                                           cw, tail_h, (1, 1, 1, 1))
                 else:
                     pad = cw // 6
@@ -3776,11 +3781,17 @@ class FrameRenderer:
                         ghost_y = y + k * trail_step
                         ghost_alpha = 0.20 / k
                         self._draw_sprite_idx(
-                            tap_idx, x0, ghost_y - local_note_h // 2,
+                            tap_idx, x0, legacy_note_draw_y(
+                                ghost_y, local_note_h,
+                                upside_down=upside_down,
+                            ),
                             cw, local_note_h, (1, 1, 1, ghost_alpha),
                         )
                     self._draw_sprite_idx(tap_idx, x0,
-                                          y - local_note_h // 2,
+                                          legacy_note_draw_y(
+                                              y, local_note_h,
+                                              upside_down=upside_down,
+                                          ),
                                           cw, local_note_h, (1, 1, 1, 1))
                 else:
                     trail_step = max(4, local_note_h // 4)
