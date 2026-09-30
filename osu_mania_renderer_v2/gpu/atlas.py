@@ -361,6 +361,22 @@ _LEGACY_JUDGMENT_SLOTS: frozenset[str] = frozenset({
     "judgment_miss",
 })
 
+_LEGACY_FONT_SLOTS: frozenset[str] = frozenset({
+    *(f"score_{digit}" for digit in range(10)),
+    "score_comma",
+    "score_dot",
+    "score_percent",
+    "score_x",
+    *(f"combo_{digit}" for digit in range(10)),
+    "combo_x",
+})
+
+# Native animation frames used by direct-draw presentation paths. Frame zero
+# remains in ``_direct_images`` for sizing/classification callers.
+_DIRECT_ANIMATION_SLOTS: frozenset[str] = (
+    _LEGACY_JUDGMENT_SLOTS | {"scorebar_colour"}
+)
+
 
 class SpriteAtlas:
     """Packs sprites into a single Texture2DArray.
@@ -397,9 +413,9 @@ class SpriteAtlas:
         # resolution so they stay crisp regardless of skin. Stored in DESIGN
         # orientation (PIL top-row-first); native px (÷2 if @2x baked here too).
         self._direct_images: dict[str, Image.Image] = {}
-        # Every resolved legacy judgement frame, retained at source resolution.
-        # These bypass the shared 256² atlas so wide judgement art is never
-        # pre-warped before being drawn back into its native aspect.
+        # Every resolved direct-animation frame, retained at source resolution.
+        # Judgements and scorebar colour animations bypass the shared 256²
+        # atlas so they are never pre-warped before native-aspect drawing.
         self._direct_frame_images: dict[str, tuple[Image.Image, ...]] = {}
         # Global slot sources, parallel to _column_sources.
         self._global_sources: dict[str, str] = {}
@@ -487,7 +503,7 @@ class SpriteAtlas:
                 # Keep full-res image for wide sprites drawn directly (crisp).
                 if name in _DIRECT_DRAW_SLOTS:
                     atlas._direct_images[name] = frames[0]
-                if name in _LEGACY_JUDGMENT_SLOTS:
+                if name in _DIRECT_ANIMATION_SLOTS:
                     atlas._direct_frame_images[name] = tuple(frames)
             if len(frames) > 1:
                 atlas._global_frames[name] = len(frames)
@@ -500,8 +516,7 @@ class SpriteAtlas:
             # (stage_left/right stay letterboxed: they use the square-quad
             # trick to stay full-height at the edges.)
             g_fit = (_fit_stretch
-                     if (name.startswith(("score_", "combo_"))
-                         or name in ("playfield_frame", "scorebar_bg", "scorebar_colour",
+                     if (name in ("playfield_frame", "scorebar_bg", "scorebar_colour",
                                  "stage_left", "stage_right",
                                  # Legacy lighting is drawn at native aspect;
                                  # stretch-fill avoids applying aspect twice
@@ -1078,7 +1093,7 @@ _DIRECT_DRAW_SLOTS: frozenset[str] = frozenset({
     "argon_wedge",   # retained resource slot; current HUD wedges are procedural.
     "argon_hp",      # glossy HP tube — crisp + stretches to fill.
     "argon_card",    # rounded results/avatar card — tinted at draw.
-})
+}) | _LEGACY_FONT_SLOTS
 
 
 _ANIMATABLE_GLOBAL_SLOTS: frozenset[str] = _LEGACY_JUDGMENT_SLOTS | frozenset({

@@ -41,6 +41,21 @@ def test_combo_layout_uses_combo_slots_fixed_digits_and_overlap():
     assert layout.glyphs[1].x == 16
 
 
+def test_score_layout_keeps_fixed_digit_cells_and_variable_punctuation():
+    layout = legacy_text_layout(
+        "1.5", {"1": (10, 40), ".": (6, 40), "5": (20, 40)},
+        font="score", scale=1, overlap=4,
+    )
+
+    assert layout.width == 38
+    assert [glyph.slot for glyph in layout.glyphs] == [
+        "score_1", "score_dot", "score_5",
+    ]
+    assert [glyph.width for glyph in layout.glyphs] == [10, 6, 20]
+    assert layout.glyphs[0].x == 5
+    assert layout.glyphs[1].x == 16
+
+
 class _ComboAtlas:
     def global_source(self, slot):
         return "user" if slot.startswith("combo_") else "missing"
@@ -67,8 +82,17 @@ def _renderer():
     renderer.atlas = _ComboAtlas()
     renderer.normal = []
     renderer.additive = []
-    renderer._draw_sprite_idx = lambda *args: renderer.normal.append(args)
-    renderer._draw_additive_sprite_idx = lambda *args: renderer.additive.append(args)
+    renderer._draw_sprite_idx = lambda *_args, **_kwargs: pytest.fail(
+        "shared atlas used for a legacy combo glyph",
+    )
+    renderer._draw_direct = lambda *args, **kwargs: renderer.normal.append(
+        (*args, kwargs["tint"]),
+    )
+    renderer._draw_additive_direct = (
+        lambda *args, **kwargs: renderer.additive.append(
+            (*args, kwargs["tint"]),
+        )
+    )
     renderer._cached_text = lambda *_args: pytest.fail("PIL combo fallback used")
     return renderer
 

@@ -13,11 +13,15 @@ from osu_mania_renderer_v2.gpu.renderer import (
     LegacyScorebarLayout,
     classify_legacy_scorebar,
     configure_direct_texture_sampling,
+    legacy_display_hp_step,
+    legacy_fail_overlay_visible,
+    legacy_scorebar_frame,
     mania_health_geometry,
     mania_health_new_default,
     standard_health_geometry,
     standard_health_marker_slot,
 )
+from osu_mania_renderer_v2.wiki_elements.hud import hp_bar as draw_wiki_hp_bar
 
 
 def _alpha_image(
@@ -352,6 +356,7 @@ def test_direct_fill_is_cropped_in_uv_space_before_rotation(hp):
         height=20,
         visible_fraction=hp,
         rotation_deg=90,
+        frame_index=2,
     )
 
     if hp == 0:
@@ -364,6 +369,7 @@ def test_direct_fill_is_cropped_in_uv_space_before_rotation(hp):
                 "tint": (1.0, 1.0, 1.0, 1.0),
                 "source_u_end": hp,
                 "rotation_deg": 90,
+                "frame_index": 2,
             },
         ),
     ]
@@ -405,6 +411,51 @@ def test_other_direct_textures_keep_existing_mipmapped_sampling():
     assert texture.repeat_y is True
 
 
+@pytest.mark.parametrize(
+    ("t_ms", "frame_count", "animation_framerate", "expected"),
+    [
+        (500, 1, 60, 0),
+        (0, 3, 4, 0),
+        (250, 3, 4, 1),
+        (750, 3, 4, 0),
+        (250, 4, None, 1),
+        (999, 4, 0, 3),
+        (1000, 4, -1, 0),
+        (-100, 4, 4, 0),
+    ],
+)
+def test_scorebar_frame_selection_uses_skin_rate_or_one_sequence_per_second(
+    t_ms, frame_count, animation_framerate, expected,
+):
+    assert legacy_scorebar_frame(
+        t_ms, frame_count, animation_framerate,
+    ) == expected
+
+
+def test_display_hp_step_matches_stable_gain_and_loss_at_60hz():
+    frame_ms = 1000 / 60
+
+    assert legacy_display_hp_step(0, 1, frame_ms) == pytest.approx(0.25)
+    assert legacy_display_hp_step(1, 0, frame_ms) == pytest.approx(5 / 6)
+
+
+def test_display_hp_step_scales_with_elapsed_time_and_stays_monotonic_bounded():
+    half_frame = (1000 / 60) / 2
+
+    assert legacy_display_hp_step(0, 1, half_frame) == pytest.approx(0.125)
+    assert legacy_display_hp_step(1, 0, half_frame) == pytest.approx(11 / 12)
+    assert legacy_display_hp_step(-2, 2, 10000) == 1
+    assert legacy_display_hp_step(2, -2, 10000) == 0
+    assert legacy_display_hp_step(0.4, 0.8, -10) == 0.4
+
+
+def test_legacy_fail_overlay_gate_uses_raw_hp_without_display_delay():
+    assert legacy_fail_overlay_visible(0, 0)
+    assert legacy_fail_overlay_visible(0.001, 0)
+    assert not legacy_fail_overlay_visible(0.1, 0)
+    assert not legacy_fail_overlay_visible(0, 0.5)
+
+
 @pytest.mark.parametrize("hp", [0.25, 0.5, 1.0])
 def test_rotated_fill_grows_bottom_to_top_from_fixed_anchor(hp):
     renderer = object.__new__(FrameRenderer)
@@ -443,7 +494,8 @@ def test_rotated_fill_grows_bottom_to_top_from_fixed_anchor(hp):
 
 
 class _Atlas:
-    def __init__(self, sources=None):
+    def __init__(self, sources=None, *, scorebar_frames=1):
+        self.scorebar_frames = scorebar_frames
         self.sources = {
             "scorebar_bg": "user",
             "scorebar_colour": "user",
@@ -474,8 +526,17 @@ class _Atlas:
     def global_has_visible_pixels(self, name):
         return self.sources[name] != "missing"
 
+    def direct_frame_count(self, name):
+        return self.scorebar_frames if name == "scorebar_colour" else 0
 
-def _renderer(*, sources=None, show_hp_bar=True):
+    def frame_count(self, name):
+        return self.scorebar_frames if name == "scorebar_colour" else 1
+
+
+def _renderer(
+    *, sources=None, show_hp_bar=True, scorebar_frames=1,
+    animation_framerate=None,
+):
     renderer = object.__new__(FrameRenderer)
     renderer.rc = SimpleNamespace(
         width=1280,
@@ -485,7 +546,10 @@ def _renderer(*, sources=None, show_hp_bar=True):
     renderer.pf_x = 430
     renderer.pf_w = 420
     renderer.col_w_uniform = 105
-    renderer.atlas = _Atlas(sources)
+    renderer.atlas = _Atlas(sources, scorebar_frames=scorebar_frames)
+    renderer.skin_ini = SimpleNamespace(
+        animation_framerate=animation_framerate,
+    )
     renderer.options = SimpleNamespace(show_hp_bar=show_hp_bar)
     renderer._is_argon_default = lambda: False
     renderer.clipped_draws = []
@@ -502,10 +566,115 @@ def _renderer(*, sources=None, show_hp_bar=True):
     return renderer
 
 
+def _draw_with_seeded_display(renderer, hp, *, t_ms=0):
+    renderer._legacy_display_hp = hp
+    renderer._legacy_display_hp_last_t_ms = t_ms
+    FrameRenderer._draw_hp_bar(
+        renderer, SimpleNamespace(hp=hp, t_ms=t_ms),
+    )
+
+
+def test_legacy_display_hp_starts_empty_then_chases_without_mutating_raw_hp():
+    renderer = _renderer()
+    scene = SimpleNamespace(hp=1.0, t_ms=100)
+
+    initial = FrameRenderer._legacy_display_hp_for_scene(renderer, scene)
+    scene.t_ms += 1000 / 60
+    after_one_frame = FrameRenderer._legacy_display_hp_for_scene(
+        renderer, scene,
+    )
+
+    assert initial == 0
+    assert after_one_frame == pytest.approx(0.25)
+    assert scene.hp == 1.0
+
+
+def test_legacy_display_hp_backwards_time_restarts_deterministically():
+    renderer = _renderer()
+    renderer._legacy_display_hp = 0.75
+    renderer._legacy_display_hp_last_t_ms = 200
+    scene = SimpleNamespace(hp=1.0, t_ms=100)
+
+    first = FrameRenderer._legacy_display_hp_for_scene(renderer, scene)
+    renderer._legacy_display_hp = 0.75
+    renderer._legacy_display_hp_last_t_ms = 200
+    second = FrameRenderer._legacy_display_hp_for_scene(renderer, scene)
+
+    assert first == second == 0
+    assert scene.hp == 1.0
+
+
+def test_fresh_custom_health_bar_draws_empty_fill_before_stable_chase():
+    renderer = _renderer()
+
+    FrameRenderer._draw_hp_bar(
+        renderer, SimpleNamespace(hp=1.0, t_ms=0),
+    )
+
+    assert [args[0] for args, _ in renderer.clipped_draws] == [
+        "scorebar_bg",
+    ]
+
+
+def test_mania_and_standard_fills_receive_selected_animation_frame():
+    mania = _renderer(scorebar_frames=3, animation_framerate=4)
+    _draw_with_seeded_display(mania, 0.5, t_ms=250)
+    mania_fill = next(
+        draw for args, draw in mania.clipped_draws
+        if args[0] == "scorebar_colour"
+    )
+
+    standard = _renderer(scorebar_frames=3, animation_framerate=4)
+    standard._legacy_scorebar_classification = classify_legacy_scorebar(
+        *_standard_composite(), new_default=True,
+    )
+    _draw_with_seeded_display(standard, 0.5, t_ms=500)
+    standard_fill = standard.clipped_draws[0][1]
+
+    assert mania_fill["frame_index"] == 1
+    assert mania_fill["rotation_deg"] == 90
+    assert standard_fill["frame_index"] == 2
+    assert standard_fill["rotation_deg"] == 0
+
+
+def test_wiki_custom_health_uses_shared_display_hp_and_animation_frame():
+    renderer = SimpleNamespace(
+        _legacy_display_hp_for_scene=lambda scene: 0.4,
+        _legacy_scorebar_frame_for_scene=lambda scene: 2,
+    )
+    atlas = _Atlas(scorebar_frames=3)
+    direct_draws = []
+    ctx = SimpleNamespace(
+        fr=renderer,
+        scene=SimpleNamespace(hp=0.9, t_ms=250),
+        options=SimpleNamespace(show_hp_bar=True),
+        atlas=atlas,
+        mania_section=object(),
+        key_count=4,
+        persistent={},
+        height=720,
+        draw_direct=lambda *args, **kwargs: direct_draws.append(
+            (args, kwargs),
+        ),
+        draw_sprite=lambda *_args, **_kwargs: None,
+    )
+
+    draw_wiki_hp_bar(
+        element=None, skin=None, assets=None, variables=None, ctx=ctx,
+    )
+
+    fill_args, fill_kwargs = next(
+        draw for draw in direct_draws if draw[0][0] == "scorebar_colour"
+    )
+    assert fill_args[3] == int(695 * (720 / 768) * 0.4)
+    assert fill_kwargs["frame_index"] == 2
+    assert ctx.scene.hp == 0.9
+
+
 def test_mania_draw_uses_only_neutral_authored_background_and_fill():
     renderer = _renderer()
 
-    FrameRenderer._draw_hp_bar(renderer, SimpleNamespace(hp=0.1))
+    _draw_with_seeded_display(renderer, 0.1)
 
     assert [args[0] for args, _ in renderer.clipped_draws] == [
         "scorebar_bg",
@@ -523,6 +692,7 @@ def test_mania_draw_uses_only_neutral_authored_background_and_fill():
     # Generic new-style LegacyHealthDisplay would tint this red. Mania keeps
     # the neutral multiplication asserted above and preserves the skin colour.
     assert fill["visible_fraction"] == 0.1
+    assert fill["frame_index"] == 0
 
 
 def test_standard_composite_draws_horizontal_top_left_assets_and_marker():
@@ -531,7 +701,7 @@ def test_standard_composite_draws_horizontal_top_left_assets_and_marker():
         *_standard_composite(), new_default=True,
     )
 
-    FrameRenderer._draw_hp_bar(renderer, SimpleNamespace(hp=0.5))
+    _draw_with_seeded_display(renderer, 0.5)
 
     assert [args[0] for args, _ in renderer.direct_draws] == [
         "scorebar_bg",
@@ -544,6 +714,7 @@ def test_standard_composite_draws_horizontal_top_left_assets_and_marker():
     fill_args, fill_draw = renderer.clipped_draws[0]
     assert fill_args == ("scorebar_colour",)
     assert fill_draw["visible_fraction"] == 0.5
+    assert fill_draw["frame_index"] == 0
     assert fill_draw["rotation_deg"] == 0
     assert fill_draw["tint"] == (1.0, 1.0, 1.0, 1.0)
     assert renderer.sprite_draws == []
@@ -563,7 +734,7 @@ def test_uncertain_classification_keeps_rotated_mania_side_policy():
         background, fill, new_default=False,
     )
 
-    FrameRenderer._draw_hp_bar(renderer, SimpleNamespace(hp=0.5))
+    _draw_with_seeded_display(renderer, 0.5)
 
     assert renderer.direct_draws == []
     assert [args[0] for args, _ in renderer.clipped_draws] == [
@@ -578,7 +749,7 @@ def test_uncertain_classification_keeps_rotated_mania_side_policy():
 def test_zero_hp_draws_background_but_no_fill():
     renderer = _renderer()
 
-    FrameRenderer._draw_hp_bar(renderer, SimpleNamespace(hp=0))
+    _draw_with_seeded_display(renderer, 0)
 
     assert [args[0] for args, _ in renderer.clipped_draws] == ["scorebar_bg"]
 

@@ -35,9 +35,11 @@ class _AtlasContextProbe:
         return self.texture
 
 
-def _load_atlas_without_gl(skin_dir):
+def _load_atlas_without_gl(skin_dir, **kwargs):
     ctx = _AtlasContextProbe()
-    atlas = SpriteAtlas.load(ctx, key_count=1, skin_dir=skin_dir)
+    atlas = SpriteAtlas.load(
+        ctx, key_count=1, skin_dir=skin_dir, **kwargs,
+    )
     return atlas, ctx.texture
 
 
@@ -255,6 +257,73 @@ def test_static_at2x_judgment_keeps_full_raster_and_design_size(tmp_path):
     assert frame.size == (240, 48)
     assert frame.info["scale_adjust"] == 2
     assert atlas.global_native_size("judgment_miss") == (120.0, 24.0)
+
+
+def test_native_score_and_combo_glyph_rasters_survive_with_at2x_design_size(
+    tmp_path,
+):
+    skin = tmp_path / "skin"
+    skin.mkdir()
+    Image.new("RGBA", (100, 200), (12, 34, 56, 255)).save(
+        skin / "score-5@2x.png",
+    )
+    Image.new("RGBA", (36, 90), (65, 43, 21, 255)).save(
+        skin / "combo-5.png",
+    )
+
+    atlas, _shared_texture = _load_atlas_without_gl(
+        skin, combo_prefix="combo",
+    )
+
+    score = atlas.direct_image("score_5")
+    combo = atlas.direct_image("combo_5")
+    assert score is not None and score.size == (100, 200)
+    assert score.info["scale_adjust"] == 2
+    assert atlas.global_native_size("score_5") == (50.0, 100.0)
+    assert combo is not None and combo.size == (36, 90)
+    assert combo.getpixel((0, 0)) == (65, 43, 21, 255)
+    assert atlas.global_native_size("combo_5") == (36.0, 90.0)
+
+
+def test_native_scorebar_animation_frames_are_retained_and_frame_zero_is_static_view(
+    tmp_path,
+):
+    skin = tmp_path / "skin"
+    skin.mkdir()
+    colours = (
+        (255, 0, 0, 255),
+        (0, 255, 0, 255),
+        (0, 0, 255, 255),
+    )
+    for index, colour in enumerate(colours):
+        Image.new("RGBA", (300, 24), colour).save(
+            skin / f"scorebar-colour-{index}.png",
+        )
+
+    atlas, _shared_texture = _load_atlas_without_gl(skin)
+
+    assert atlas.frame_count("scorebar_colour") == 3
+    assert atlas.direct_frame_count("scorebar_colour") == 3
+    assert atlas.direct_image("scorebar_colour").getpixel((0, 0)) == colours[0]
+    for index, colour in enumerate(colours):
+        frame = atlas.direct_frame_image("scorebar_colour", index)
+        assert frame is not None
+        assert frame.size == (300, 24)
+        assert frame.getpixel((0, 0)) == colour
+
+
+def test_static_scorebar_colour_retains_one_direct_frame(tmp_path):
+    skin = tmp_path / "skin"
+    skin.mkdir()
+    Image.new("RGBA", (300, 24), (1, 2, 3, 255)).save(
+        skin / "scorebar-colour.png",
+    )
+
+    atlas, _shared_texture = _load_atlas_without_gl(skin)
+
+    assert atlas.frame_count("scorebar_colour") == 1
+    assert atlas.direct_frame_count("scorebar_colour") == 1
+    assert atlas.direct_frame_image("scorebar_colour", 0).size == (300, 24)
 
 
 def test_resolve_global_lighting_n_layered_fallback(tmp_path):

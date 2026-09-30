@@ -67,10 +67,15 @@ def test_custom_hud_draws_actual_score_assets_with_source_geometry():
     renderer.options = SimpleNamespace(
         show_score=True, show_pp_counter=False, show_mods=True,
     )
-    renderer.skin_ini = SimpleNamespace(score_overlap=0)
+    renderer.skin_ini = SimpleNamespace(score_overlap=0, legacy_version=1.0)
     renderer.atlas = _HudAtlas()
     renderer.draws = []
-    renderer._draw_sprite_idx = lambda *args: renderer.draws.append(args)
+    renderer._draw_sprite_idx = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("shared atlas score path used"),
+    )
+    renderer._draw_direct = lambda *args, **kwargs: renderer.draws.append(
+        (*args, kwargs["tint"]),
+    )
     renderer._draw_legacy_mod_icons = lambda _scene, fallback_anchor_y: fallback_anchor_y
     renderer._cached_text = lambda *_args: (_ for _ in ()).throw(
         AssertionError("PIL score/accuracy path used"),
@@ -92,7 +97,7 @@ def test_custom_hud_draws_actual_score_assets_with_source_geometry():
     assert max(draw[1] + draw[3] for draw in score_draws) == 1014
     assert max(draw[1] + draw[3] for draw in accuracy_draws) == 1007
     assert max(draw[2] + draw[4] for draw in score_draws) == 768
-    assert max(draw[2] + draw[4] for draw in accuracy_draws) == 721
+    assert max(draw[2] + draw[4] for draw in accuracy_draws) == 730
 
 
 def test_transparent_percent_placeholder_has_no_layout_advance():

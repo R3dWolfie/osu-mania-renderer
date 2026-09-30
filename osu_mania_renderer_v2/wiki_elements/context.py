@@ -117,10 +117,23 @@ class FrameContext:
     def draw_external(self, tex, x, y, w, h, alpha) -> None:
         self.fr._draw_external_texture(tex, x, y, w, h, alpha)
 
-    def draw_direct(self, name, x, y, w, h, tint=(1.0, 1.0, 1.0, 1.0)) -> None:
+    def draw_direct(
+        self,
+        name,
+        x,
+        y,
+        w,
+        h,
+        tint=(1.0, 1.0, 1.0, 1.0),
+        *,
+        frame_index: int | None = None,
+    ) -> None:
         """Full-resolution direct draw for wide sprites (scorebar / stage
         panels) — bypasses the layered atlas so they stay crisp."""
-        self.fr._draw_direct(name, int(x), int(y), int(w), int(h), tint)
+        self.fr._draw_direct(
+            name, int(x), int(y), int(w), int(h), tint,
+            frame_index=frame_index,
+        )
 
     def text(self, s, size, color):
         """Rasterize text → (GL texture, w, h), cached. Text rasterization
@@ -202,6 +215,11 @@ class FrameContext:
         `glyph_h` digit height — for right/centre alignment."""
         digit_h = self.atlas.global_native_size(f"{font}_0")[1] or 1
         scale = glyph_h / digit_h
+        fixed_digit_width = (
+            self.atlas.global_native_size(f"{font}_5")[0]
+            if font in ("score", "combo")
+            else 0.0
+        )
         total = 0.0
         prev_gap = 0.0
         for ch in text:
@@ -209,7 +227,12 @@ class FrameContext:
             if slot is None:
                 continue
             gw, _gh = self.atlas.global_native_size(slot)
-            total += gw * scale - prev_gap
+            cell_width = (
+                fixed_digit_width * scale
+                if ch.isdigit() and fixed_digit_width > 0
+                else gw * scale
+            )
+            total += cell_width - prev_gap
             prev_gap = self._eff_overlap(overlap_px, gw) * scale
         return total
 
@@ -221,11 +244,10 @@ class FrameContext:
     ) -> float:
         """Compose `text` from the skin's score-font glyphs.
 
-        All glyphs share one scale (digit height → `glyph_h`); comma/dot/
-        percent keep their native proportions, exactly like osu!. Glyphs
-        are letterboxed into square atlas layers, so each is drawn into a
-        square quad sized to its long edge and centred on its slot — the
-        transparent padding makes the visible glyph land at native aspect.
+        All glyphs share one scale (digit height → `glyph_h`); score/combo
+        digits use the authored ``5`` width while punctuation keeps its own
+        width. Legacy skin glyphs draw from native direct textures; Argon's
+        bundled counter continues through the shared atlas.
         `x` is the left/right/centre anchor per `align`. Returns total width.
 
         `wireframe=True` (argon font only) substitutes lazer's "wireframes"
@@ -234,6 +256,11 @@ class FrameContext:
         digits. The dot keeps its own glyph (lazer's wireframesLookup)."""
         digit_h = self.atlas.global_native_size(f"{font}_0")[1] or 1
         scale = glyph_h / digit_h
+        fixed_digit_width = (
+            self.atlas.global_native_size(f"{font}_5")[0]
+            if font in ("score", "combo")
+            else 0.0
+        )
         total_w = self.number_width(text, glyph_h, overlap_px, font)
         if align == "right":
             pen_x = x - total_w
@@ -247,17 +274,33 @@ class FrameContext:
             if slot is None:
                 continue
             gw, gh = self.atlas.global_native_size(slot)   # advance from real glyph
-            vis_w = gw * scale
+            cell_width = (
+                fixed_digit_width * scale
+                if ch.isdigit() and fixed_digit_width > 0
+                else gw * scale
+            )
             draw_slot = slot
             if wireframe and font == "argon":
                 draw_slot = "argon_dot" if ch == "." else "argon_wireframes"
             dw, dh = self.atlas.global_native_size(draw_slot)
-            q = max(dw, dh) * scale            # square quad = glyph long edge
-            cx = pen_x + vis_w / 2
-            idx = self.atlas.index_of(draw_slot)
-            self.fr._draw_sprite_idx(
-                idx, int(round(cx - q / 2)), int(round(center_y - q / 2)),
-                int(round(q)), int(round(q)), rgba,
-            )
-            pen_x += vis_w - self._eff_overlap(overlap_px, gw) * scale
+            cx = pen_x + cell_width / 2
+            if font in ("score", "combo") and not wireframe:
+                draw_width = dw * scale
+                draw_height = dh * scale
+                self.fr._draw_direct(
+                    draw_slot,
+                    int(round(cx - draw_width / 2)),
+                    int(round(center_y - draw_height / 2)),
+                    max(1, int(round(draw_width))),
+                    max(1, int(round(draw_height))),
+                    rgba,
+                )
+            else:
+                q = max(dw, dh) * scale
+                idx = self.atlas.index_of(draw_slot)
+                self.fr._draw_sprite_idx(
+                    idx, int(round(cx - q / 2)), int(round(center_y - q / 2)),
+                    int(round(q)), int(round(q)), rgba,
+                )
+            pen_x += cell_width - self._eff_overlap(overlap_px, gw) * scale
         return total_w

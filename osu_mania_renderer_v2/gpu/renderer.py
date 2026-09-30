@@ -99,6 +99,48 @@ def legacy_judgment_frame(age_ms: float, frame_count: int) -> int:
     return int(age_ms / LEGACY_JUDGMENT_FRAME_MS) % frame_count
 
 
+def legacy_scorebar_frame(
+    t_ms: float,
+    frame_count: int,
+    animation_framerate: int | None,
+) -> int:
+    """Select a looping legacy scorebar frame using stable skin timing."""
+    if frame_count <= 1:
+        return 0
+    frames_per_second = (
+        animation_framerate
+        if animation_framerate is not None and animation_framerate > 0
+        else frame_count
+    )
+    frame_length_ms = 1000.0 / frames_per_second
+    return int(max(0.0, t_ms) / frame_length_ms) % frame_count
+
+
+def legacy_display_hp_step(
+    display_hp: float,
+    target_hp: float,
+    elapsed_ms: float,
+) -> float:
+    """Advance stable's presentation-only HP carrier toward raw health.
+
+    Gain closes one quarter of the gap per 60 Hz frame and loss closes one
+    sixth. Clamping at the target keeps large render-time jumps monotonic.
+    """
+    display = max(0.0, min(1.0, display_hp))
+    target = max(0.0, min(1.0, target_hp))
+    if elapsed_ms <= 0 or display == target:
+        return display
+    frame_ratio = elapsed_ms / (1000.0 / 60.0)
+    if display < target:
+        return min(target, display + (target - display) / 4.0 * frame_ratio)
+    return max(target, display - (display - target) / 6.0 * frame_ratio)
+
+
+def legacy_fail_overlay_visible(hp: float, results_opacity: float) -> bool:
+    """Keep failure presentation tied to authoritative, unsmoothed HP."""
+    return hp <= 0.001 and results_opacity <= 0
+
+
 def legacy_judgment_alpha(age_ms: float) -> float:
     """Stable/lazer 20ms fade-in, 160ms hold, 40ms fade-out envelope."""
     if age_ms < 0 or age_ms >= LEGACY_JUDGMENT_DURATION_MS:
@@ -827,11 +869,21 @@ def standard_health_marker_slot(*, hp: float, new_default: bool) -> str:
     return "scorebar_ki"
 
 
+def legacy_score_accuracy_gap(
+    render_height: int,
+    legacy_version: float | None,
+) -> float:
+    """Stable's optional three-unit new-layout offset in 480-space."""
+    version = 1.0 if legacy_version is None else legacy_version
+    return 3.0 * render_height / 480.0 if version > 1.0 else 0.0
+
+
 def legacy_hud_geometry(
     render_height: int,
     score_native_height: float,
+    legacy_version: float | None = 1.0,
 ) -> LegacyHudGeometry:
-    """Scale legacy score/accuracy/mod components from lazer's 768p space."""
+    """Scale legacy counters and stable's versioned vertical stack."""
     ui_scale = render_height / 768.0
     score_height = score_native_height * ui_scale * 0.96
     return LegacyHudGeometry(
@@ -840,7 +892,10 @@ def legacy_hud_geometry(
         accuracy_height=score_native_height * ui_scale * 0.576,
         score_right_margin=10.0 * ui_scale,
         accuracy_right_margin=17.0 * ui_scale,
-        accuracy_top=score_height + 9.0 * ui_scale,
+        accuracy_top=(
+            score_height
+            + legacy_score_accuracy_gap(render_height, legacy_version)
+        ),
         mod_height=48.0 * ui_scale,
     )
 
@@ -1001,6 +1056,10 @@ class FrameRenderer:
         self._direct_arr_cache: dict[
             str | tuple[str, int], moderngl.TextureArray
         ] = {}
+        # Stable's presentation carrier resets empty and chases raw health;
+        # HpBarMania disables only the separate InitialIncrease effect.
+        self._legacy_display_hp = 0.0
+        self._legacy_display_hp_last_t_ms: float | None = None
         # Compute playfield geometry once. Honoured by all per-frame
         # draws via self.pf_x / self.pf_w / self.col_x / self.col_w.
         self._compute_playfield_geometry()
@@ -1589,7 +1648,7 @@ class FrameRenderer:
             self._draw_hit_error_meter(scene)
         if self.options.show_progress_bar:
             self._draw_progress_bar(scene)
-        if scene.hp <= 0.001 and scene.results_opacity <= 0:
+        if legacy_fail_overlay_visible(scene.hp, scene.results_opacity):
             self._draw_fail_overlay()
         if self.options.show_hp_bar and not draw_mania_side_health:
             self._draw_hp_bar(scene)
@@ -1842,7 +1901,7 @@ class FrameRenderer:
         tint: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0),
         additive: bool = False,
     ) -> LegacyTextLayout:
-        """Draw atlas-backed legacy sprite text and return its base layout."""
+        """Draw native legacy glyph textures and return their base layout."""
         layout = legacy_text_layout(
             text,
             self._legacy_glyph_sizes(font, text),
@@ -1875,13 +1934,10 @@ class FrameRenderer:
                 max(1, int(round(width))),
                 max(1, int(round(height))),
             )
-            atlas_index = self.atlas.index_of(glyph.slot)
             if additive:
-                self._draw_additive_sprite_idx(
-                    atlas_index, *rect, tint,
-                )
+                self._draw_additive_direct(glyph.slot, *rect, tint=tint)
             else:
-                self._draw_sprite_idx(atlas_index, *rect, tint)
+                self._draw_direct(glyph.slot, *rect, tint=tint)
         return layout
 
     def _draw_generated_mod_fallback(
@@ -1970,6 +2026,14 @@ class FrameRenderer:
         """Skin-sprite score/accuracy plus stable custom-skin mod icons."""
         rc = self.rc
         ui_scale = rc.height / 768.0
+        legacy_version = (
+            getattr(self.skin_ini, "legacy_version", 1.0)
+            if getattr(self, "skin_ini", None) is not None
+            else 1.0
+        )
+        score_accuracy_gap = legacy_score_accuracy_gap(
+            rc.height, legacy_version,
+        )
         score_bottom = rc.height - 22.0
         if self.options.show_score:
             if self._legacy_font_available("score"):
@@ -1984,7 +2048,7 @@ class FrameRenderer:
                              if self.skin_ini is not None else 0),
                 )
                 accuracy_top = (
-                    rc.height - score_layout.height - 9.0 * ui_scale
+                    rc.height - score_layout.height - score_accuracy_gap
                 )
                 accuracy_layout = self._draw_legacy_text(
                     "score", f"{display_acc:05.2f}%",
@@ -2008,7 +2072,9 @@ class FrameRenderer:
                 )
                 source = self.atlas.global_source("score_0")
                 geometry = (
-                    legacy_hud_geometry(rc.height, native_height)
+                    legacy_hud_geometry(
+                        rc.height, native_height, legacy_version,
+                    )
                     if source in ("user", "beatmap") and native_height > 0
                     else None
                 )
@@ -2514,6 +2580,52 @@ class FrameRenderer:
                 w=width, h=height, alpha=0.82,
             )
 
+    def _legacy_display_hp_for_scene(self, scene: SceneState) -> float:
+        """Return renderer-local legacy HP presentation without mutating scene."""
+        target = max(0.0, min(1.0, float(scene.hp)))
+        now_ms = float(getattr(scene, "t_ms", 0.0))
+        previous_ms = getattr(self, "_legacy_display_hp_last_t_ms", None)
+        display = max(0.0, min(
+            1.0, float(getattr(self, "_legacy_display_hp", 0.0)),
+        ))
+        if previous_ms is None or now_ms < previous_ms:
+            # A fresh renderer/re-entry starts from the empty stable carrier.
+            # Backwards clocks restart it identically rather than applying a
+            # negative frame ratio to presentation state.
+            display = 0.0
+        else:
+            display = legacy_display_hp_step(
+                display, target, now_ms - previous_ms,
+            )
+        self._legacy_display_hp = display
+        self._legacy_display_hp_last_t_ms = now_ms
+        return display
+
+    def _legacy_scorebar_frame_for_scene(self, scene: SceneState) -> int:
+        direct_count = getattr(self.atlas, "direct_frame_count", None)
+        frame_count = (
+            direct_count("scorebar_colour")
+            if callable(direct_count)
+            else 0
+        )
+        if frame_count <= 0:
+            atlas_frame_count = getattr(self.atlas, "frame_count", None)
+            frame_count = (
+                atlas_frame_count("scorebar_colour")
+                if callable(atlas_frame_count)
+                else 1
+            )
+        skin_ini = getattr(self, "skin_ini", None)
+        return legacy_scorebar_frame(
+            float(getattr(scene, "t_ms", 0.0)),
+            frame_count,
+            (
+                skin_ini.animation_framerate
+                if skin_ini is not None
+                else None
+            ),
+        )
+
     def _draw_hp_bar(self, scene: SceneState) -> None:
         """Draw the cached custom layout choice, or the procedural fallback."""
         if not getattr(self.options, "show_hp_bar", True):
@@ -2525,13 +2637,19 @@ class FrameRenderer:
             return
         hp = max(0.0, min(1.0, scene.hp))
         if self._has_custom_health_bar_assets():
+            display_hp = self._legacy_display_hp_for_scene(scene)
+            fill_frame = self._legacy_scorebar_frame_for_scene(scene)
             if (
                 self._selected_legacy_scorebar_layout()
                 is LegacyScorebarLayout.STANDARD_HUD
             ):
-                self._draw_standard_legacy_health_bar(hp)
+                self._draw_standard_legacy_health_bar(
+                    display_hp, frame_index=fill_frame,
+                )
                 return
-            self._draw_mania_health_bar(hp)
+            self._draw_mania_health_bar(
+                display_hp, frame_index=fill_frame,
+            )
             return
 
         # Existing R3D fallback: vertical HP track on the left of the
@@ -2626,7 +2744,9 @@ class FrameRenderer:
             return LegacyScorebarLayout.UNCERTAIN
         return classification.layout
 
-    def _draw_mania_health_bar(self, hp: float) -> None:
+    def _draw_mania_health_bar(
+        self, hp: float, *, frame_index: int = 0,
+    ) -> None:
         """Draw skin-authored scorebar assets as stable's rotated side gauge."""
         atlas = self.atlas
         rc = self.rc
@@ -2656,9 +2776,12 @@ class FrameRenderer:
             anchor=geometry.fill_anchor,
             source_size=geometry.fill_size,
             visible_fraction=hp,
+            frame_index=frame_index,
         )
 
-    def _draw_standard_legacy_health_bar(self, hp: float) -> None:
+    def _draw_standard_legacy_health_bar(
+        self, hp: float, *, frame_index: int = 0,
+    ) -> None:
         """Draw an obvious standard-mode composite using stable's HpBar."""
         atlas = self.atlas
         new_default = mania_health_new_default(
@@ -2714,6 +2837,7 @@ class FrameRenderer:
             visible_fraction=hp,
             tint=(1.0, 1.0, 1.0, 1.0),
             rotation_deg=0.0,
+            frame_index=frame_index,
         )
 
         if marker_is_usable:
@@ -2759,6 +2883,7 @@ class FrameRenderer:
         anchor: tuple[float, float],
         source_size: tuple[float, float],
         visible_fraction: float,
+        frame_index: int | None = None,
     ) -> None:
         """Rotate a source-X crop upward from a stable top-left-space anchor."""
         visible_fraction = max(0.0, min(1.0, visible_fraction))
@@ -2773,8 +2898,7 @@ class FrameRenderer:
         anchor_y_gl = self.rc.height - anchor_top_y
         draw_x = anchor_x + (source_size[1] - visible_width) / 2.0
         draw_y = anchor_y_gl + (visible_width - source_size[1]) / 2.0
-        self._draw_direct_clipped_x(
-            name,
+        draw_kwargs = dict(
             x=draw_x,
             y=draw_y,
             full_width=source_size[0],
@@ -2783,6 +2907,9 @@ class FrameRenderer:
             tint=(1.0, 1.0, 1.0, 1.0),
             rotation_deg=90.0,
         )
+        if frame_index is not None:
+            draw_kwargs["frame_index"] = frame_index
+        self._draw_direct_clipped_x(name, **draw_kwargs)
 
     HIT_ERROR_FADE_MS = 600
     HIT_ERROR_RISE_PX = 80   # how far the label drifts upward over its life
@@ -3070,22 +3197,44 @@ class FrameRenderer:
         visible_fraction: float,
         tint: tuple = (1.0, 1.0, 1.0, 1.0),
         rotation_deg: float = 0.0,
+        frame_index: int | None = None,
     ) -> None:
         """Reveal a direct texture left-to-right without squashing its UVs."""
         visible_fraction = max(0.0, min(1.0, visible_fraction))
         visible_width = full_width * visible_fraction
         if visible_width <= 0:
             return
+        draw_kwargs = {
+            "tint": tint,
+            "source_u_end": visible_fraction,
+            "rotation_deg": rotation_deg,
+        }
+        if frame_index is not None:
+            draw_kwargs["frame_index"] = frame_index
         self._draw_direct(
-            name,
-            x,
-            y,
-            visible_width,
-            height,
-            tint=tint,
-            source_u_end=visible_fraction,
-            rotation_deg=rotation_deg,
+            name, x, y, visible_width, height, **draw_kwargs,
         )
+
+    def _draw_additive_direct(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        *,
+        tint: tuple = (1.0, 1.0, 1.0, 1.0),
+    ) -> None:
+        """Draw one native texture additively without leaking blend state."""
+        self._flush_sprite_batch()
+        self.rc.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
+        try:
+            self._draw_direct(name, x, y, w, h, tint=tint)
+        finally:
+            self.rc.ctx.blend_func = (
+                moderngl.SRC_ALPHA,
+                moderngl.ONE_MINUS_SRC_ALPHA,
+            )
 
     _GRADE_COLOURS: dict[str, tuple[int, int, int]] = {
         "SS": (240, 220, 120),   # gold
