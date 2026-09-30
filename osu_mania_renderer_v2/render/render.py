@@ -155,6 +155,7 @@ class RenderPlan:
     per_column_ur: tuple[float, ...]
     miss_break_times: list[int]
     press_iters: list[list[int]]
+    release_iters: list[list[int]]
     acronyms: tuple[str, ...]
     player_pp: float
     max_pp: float
@@ -528,7 +529,9 @@ async def build_render_plan(
                 max_hold_dur_ms_val = _dur
 
     miss_break_times = _compute_miss_break_times(judgments.events, threshold=20)
-    press_iters = _rising_edges_per_col(replay.key_events, modded.key_count)
+    press_iters, release_iters = _key_edges_per_col(
+        replay.key_events, modded.key_count,
+    )
 
     return RenderPlan(
         options=options, skin_dir=skin_dir, beatmap_dir=beatmap_dir,
@@ -542,7 +545,8 @@ async def build_render_plan(
         hit_error_windows=hit_error_windows,
         total_quality=total_quality, kiai_ranges=kiai_ranges,
         per_column_ur=per_column_ur, miss_break_times=miss_break_times,
-        press_iters=press_iters, acronyms=acronyms,
+        press_iters=press_iters, release_iters=release_iters,
+        acronyms=acronyms,
         player_pp=player_pp, max_pp=max_pp, stars=stars,
         gameplay_end_ms=gameplay_end_ms, results_start_ms=results_start_ms,
         total_video_ms=total_video_ms, total_frames=total_frames,
@@ -788,15 +792,18 @@ def build_frame_state(
     key_press_age_ms_arr = []
     key_press_counts_arr = []
     for c in range(key_count):
-        times = plan.press_iters[c]
-        n_pressed = _br(times, t_ms)          # rising edges up to now
+        press_times = plan.press_iters[c]
+        n_pressed = _br(press_times, t_ms)          # rising edges up to now
         key_press_counts_arr.append(n_pressed)
         idx = n_pressed - 1
         if idx >= 0:
-            key_press_age_ms_arr.append(t_ms - times[idx])
+            key_press_age_ms_arr.append(t_ms - press_times[idx])
         else:
             key_press_age_ms_arr.append(99999)
     key_press_age_ms = tuple(key_press_age_ms_arr)
+    key_release_age_ms = _key_release_ages_at(
+        plan.release_iters, t_ms, key_count,
+    )
     key_press_counts = tuple(key_press_counts_arr)
 
     miss_break_age = 99999
@@ -922,6 +929,7 @@ def build_frame_state(
         is_kiai=is_kiai,
         per_column_ur=plan.per_column_ur,
         key_press_age_ms=key_press_age_ms,
+        key_release_age_ms=key_release_age_ms,
         key_press_counts=key_press_counts,
         miss_break_age_ms=miss_break_age,
     )
@@ -1128,18 +1136,43 @@ def _compute_miss_break_times(events, threshold: int = 20) -> list[int]:
     return out
 
 
-def _rising_edges_per_col(events, key_count: int) -> list[list[int]]:
-    """Same as the rising-edge helper in judgments.py, but exposed at the
-    render level so we can walk it per-frame with bisect."""
+def _key_edges_per_col(
+    events,
+    key_count: int,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Return exact replay key-down and key-up timestamps per column."""
     presses: list[list[int]] = [[] for _ in range(key_count)]
+    releases: list[list[int]] = [[] for _ in range(key_count)]
     prev = 0
     for e in events:
         new_pressed = e.keys_held & ~prev
+        newly_released = prev & ~e.keys_held
         for c in range(key_count):
             if new_pressed & (1 << c):
                 presses[c].append(e.time_ms)
+            if newly_released & (1 << c):
+                releases[c].append(e.time_ms)
         prev = e.keys_held
-    return presses
+    return presses, releases
+
+
+def _rising_edges_per_col(events, key_count: int) -> list[list[int]]:
+    """Compatibility wrapper for callers that only need key-down edges."""
+    return _key_edges_per_col(events, key_count)[0]
+
+
+def _key_release_ages_at(
+    release_iters: list[list[int]],
+    t_ms: int,
+    key_count: int,
+) -> tuple[int, ...]:
+    """Return exact age of each column's latest release, or ``-1``."""
+    ages: list[int] = []
+    for c in range(key_count):
+        times = release_iters[c]
+        idx = _br(times, t_ms) - 1
+        ages.append(t_ms - times[idx] if idx >= 0 else -1)
+    return tuple(ages)
 
 
 def _per_column_ur(events, key_count: int) -> tuple[float, ...]:

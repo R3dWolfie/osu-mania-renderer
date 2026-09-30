@@ -142,6 +142,7 @@ def test_frame_state_carries_previous_combo_value_for_break_burst():
         per_column_ur=(0, 0, 0, 0),
         miss_break_times=[],
         press_iters=[[], [], [], []],
+        release_iters=[[], [], [], []],
         acronyms=("4K",),
         player_pp=0,
         max_pp=0,
