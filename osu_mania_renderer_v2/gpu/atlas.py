@@ -352,6 +352,15 @@ def _per_column_override(
 LAYER_W = 256
 LAYER_H = 256
 
+_LEGACY_JUDGMENT_SLOTS: frozenset[str] = frozenset({
+    "judgment_geki",
+    "judgment_300",
+    "judgment_katu",
+    "judgment_100",
+    "judgment_50",
+    "judgment_miss",
+})
+
 
 class SpriteAtlas:
     """Packs sprites into a single Texture2DArray.
@@ -388,6 +397,10 @@ class SpriteAtlas:
         # resolution so they stay crisp regardless of skin. Stored in DESIGN
         # orientation (PIL top-row-first); native px (÷2 if @2x baked here too).
         self._direct_images: dict[str, Image.Image] = {}
+        # Every resolved legacy judgement frame, retained at source resolution.
+        # These bypass the shared 256² atlas so wide judgement art is never
+        # pre-warped before being drawn back into its native aspect.
+        self._direct_frame_images: dict[str, tuple[Image.Image, ...]] = {}
         # Global slot sources, parallel to _column_sources.
         self._global_sources: dict[str, str] = {}
         # Per-global source aspect ratio (width / height) of the
@@ -474,6 +487,8 @@ class SpriteAtlas:
                 # Keep full-res image for wide sprites drawn directly (crisp).
                 if name in _DIRECT_DRAW_SLOTS:
                     atlas._direct_images[name] = frames[0]
+                if name in _LEGACY_JUDGMENT_SLOTS:
+                    atlas._direct_frame_images[name] = tuple(frames)
             if len(frames) > 1:
                 atlas._global_frames[name] = len(frames)
                 from_anim += 1
@@ -492,8 +507,6 @@ class SpriteAtlas:
                                  # stretch-fill avoids applying aspect twice
                                  # after the renderer sizes its destination.
                                  "lighting_n", "lighting_l",
-                                 "judgment_geki", "judgment_300", "judgment_katu",
-                                 "judgment_100", "judgment_50", "judgment_miss",
                                  # Argon note body/glyph: non-square (1.43:1);
                                  # stretch so the note renders at lazer's
                                  # 60:42 aspect, not letterboxed-squished.
@@ -692,6 +705,26 @@ class SpriteAtlas:
         """Full-resolution PIL image for a wide direct-draw slot (scorebar /
         stage panels), or None. Drawn outside the layered atlas to stay crisp."""
         return self._direct_images.get(name)
+
+    def direct_frame_count(self, name: str) -> int:
+        """Number of retained full-resolution frames for ``name``."""
+        return len(self._direct_frame_images.get(name, ()))
+
+    def direct_frame_image(self, name: str, frame_index: int) -> Image.Image | None:
+        """Return one retained native frame, or ``None`` for a non-direct slot.
+
+        Frame indices are deliberately checked rather than clamped so a caller
+        cannot silently draw a different animation frame than it selected.
+        """
+        frames = self._direct_frame_images.get(name)
+        if frames is None:
+            return None
+        if not 0 <= frame_index < len(frames):
+            raise IndexError(
+                f"direct frame {frame_index} out of range for {name!r} "
+                f"({len(frames)} frames)"
+            )
+        return frames[frame_index]
 
     def global_aspect(self, name: str) -> float:
         """Source-image aspect ratio (width / height) for a global slot,
@@ -1048,13 +1081,7 @@ _DIRECT_DRAW_SLOTS: frozenset[str] = frozenset({
 })
 
 
-_ANIMATABLE_GLOBAL_SLOTS: frozenset[str] = frozenset({
-    "judgment_geki",
-    "judgment_300",
-    "judgment_katu",
-    "judgment_100",
-    "judgment_50",
-    "judgment_miss",
+_ANIMATABLE_GLOBAL_SLOTS: frozenset[str] = _LEGACY_JUDGMENT_SLOTS | frozenset({
     "stage_light",     # looped per press, at LightFramePerSecond (default 60).
     "lighting_n",      # one-shot per hit, at 60fps.
     "lighting_l",      # looped during hold, at AnimationFramerate.

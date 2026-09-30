@@ -1,6 +1,8 @@
 import os
 
+import moderngl
 import pytest
+from PIL import Image
 
 from osu_mania_renderer_v2.gpu.atlas import (
     DEFAULT_LAYOUT,
@@ -10,6 +12,33 @@ from osu_mania_renderer_v2.gpu.atlas import (
     default_column_kind,
 )
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
+
+
+class _TextureArrayProbe:
+    def __init__(self, size):
+        self.size = size
+        self.filter = None
+        self.mipmap_builds = 0
+
+    def build_mipmaps(self):
+        self.mipmap_builds += 1
+
+
+class _AtlasContextProbe:
+    def __init__(self):
+        self.texture = None
+
+    def texture_array(self, *, size, components, data):
+        assert components == 4
+        assert data
+        self.texture = _TextureArrayProbe(size)
+        return self.texture
+
+
+def _load_atlas_without_gl(skin_dir):
+    ctx = _AtlasContextProbe()
+    atlas = SpriteAtlas.load(ctx, key_count=1, skin_dir=skin_dir)
+    return atlas, ctx.texture
 
 
 @pytest.mark.slow
@@ -173,6 +202,59 @@ def test_resolve_global_animated_skin_hit_burst(tmp_path):
     assert src == "user"
     assert len(frames) == 3
     assert frames[0].getpixel((0, 0)) == (1, 0, 0, 255)
+
+
+def test_native_animated_judgment_frames_are_preserved(tmp_path):
+    skin = tmp_path / "skin"
+    skin.mkdir()
+    colours = (
+        (255, 0, 0, 255),
+        (0, 255, 0, 255),
+        (0, 0, 255, 255),
+    )
+    for index, colour in enumerate(colours):
+        Image.new("RGBA", (240, 48), colour).save(
+            skin / f"mania-hit300-{index}.png",
+        )
+
+    atlas, shared_texture = _load_atlas_without_gl(skin)
+
+    assert atlas.global_source("judgment_300") == "user"
+    assert atlas.frame_count("judgment_300") == 3
+    assert atlas.direct_frame_count("judgment_300") == 3
+    for index, colour in enumerate(colours):
+        frame = atlas.direct_frame_image("judgment_300", index)
+        assert frame is not None
+        assert frame.size == (240, 48)
+        assert frame.getpixel((0, 0)) == colour
+    with pytest.raises(IndexError, match="out of range"):
+        atlas.direct_frame_image("judgment_300", 3)
+
+    # The shared atlas keeps its established global sampling policy. Native
+    # judgement frames bypass it rather than broadening this fix to all art.
+    assert shared_texture.filter == (
+        moderngl.LINEAR_MIPMAP_LINEAR,
+        moderngl.LINEAR,
+    )
+
+
+def test_static_at2x_judgment_keeps_full_raster_and_design_size(tmp_path):
+    skin = tmp_path / "skin"
+    skin.mkdir()
+    Image.new("RGBA", (240, 48), (12, 34, 56, 255)).save(
+        skin / "mania-hit0@2x.png",
+    )
+
+    atlas, _shared_texture = _load_atlas_without_gl(skin)
+
+    assert atlas.global_source("judgment_miss") == "user"
+    assert atlas.frame_count("judgment_miss") == 1
+    assert atlas.direct_frame_count("judgment_miss") == 1
+    frame = atlas.direct_frame_image("judgment_miss", 0)
+    assert frame is not None
+    assert frame.size == (240, 48)
+    assert frame.info["scale_adjust"] == 2
+    assert atlas.global_native_size("judgment_miss") == (120.0, 24.0)
 
 
 def test_resolve_global_lighting_n_layered_fallback(tmp_path):

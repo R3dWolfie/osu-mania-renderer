@@ -997,8 +997,10 @@ class FrameRenderer:
         self._cov_grad_px: float = 0.0
         self._cov_recep: float = 0.0
         # Cached single-layer texture arrays for full-res direct-draw sprites
-        # (scorebar / stage panels) — built once, reused every frame.
-        self._direct_arr_cache: dict = {}
+        # and finite animation frames — built once, reused every video frame.
+        self._direct_arr_cache: dict[
+            str | tuple[str, int], moderngl.TextureArray
+        ] = {}
         # Compute playfield geometry once. Honoured by all per-frame
         # draws via self.pf_x / self.pf_w / self.col_x / self.col_w.
         self._compute_playfield_geometry()
@@ -2208,17 +2210,17 @@ class FrameRenderer:
         )))
         center_x = self.pf_x + self.pf_w / 2.0
         center_y = self.score_popup_y_gl
-        base = self.atlas.index_of(slot)
         frame = legacy_judgment_frame(
             judgment.age_ms, self.atlas.frame_count(slot),
         )
-        self._draw_sprite_idx(
-            base + frame,
+        self._draw_direct(
+            slot,
             int(round(center_x - width / 2.0)),
             int(round(center_y - height / 2.0)),
             width,
             height,
             (1.0, 1.0, 1.0, alpha),
+            frame_index=frame,
         )
 
     def _draw_custom_legacy_combo(
@@ -2970,28 +2972,45 @@ class FrameRenderer:
         vbo.write(verts)
         vao.render(moderngl.TRIANGLES)
 
+    def _direct_texture_array(
+        self, name: str, *, frame_index: int | None = None,
+    ) -> moderngl.TextureArray | None:
+        """Upload and cache one full-resolution direct texture source."""
+        cache_key = name if frame_index is None else (name, frame_index)
+        arr = self._direct_arr_cache.get(cache_key)
+        if arr is None:
+            img = (
+                self.atlas.direct_image(name)
+                if frame_index is None
+                else self.atlas.direct_frame_image(name, frame_index)
+            )
+            if img is None:
+                return None
+            arr = self.rc.ctx.texture_array(
+                size=(img.width, img.height, 1), components=4, data=img.tobytes(),
+            )
+            configure_direct_texture_sampling(name, arr)
+            self._direct_arr_cache[cache_key] = arr
+        return arr
+
     def _draw_direct(
         self, name: str, x: float, y: float, w: float, h: float,
         tint: tuple = (1.0, 1.0, 1.0, 1.0),
         source_u_end: float = 1.0,
         rotation_deg: float = 0.0,
+        frame_index: int | None = None,
     ) -> None:
-        """Draw a wide skin sprite (scorebar / stage panel) at full resolution,
-        bypassing the layered 256² atlas (which would crush a 1366-wide bar).
-        The source texture is cached as a single-layer array. Source-U cropping
-        happens before optional centre rotation, preserving authored pixels."""
+        """Draw full-resolution skin art outside the shared 256² atlas.
+
+        Static direct slots cache by name; retained animation frames cache by
+        ``(name, frame_index)``. Source-U cropping happens before optional
+        centre rotation, preserving authored pixels.
+        """
         if w <= 0 or h <= 0:
             return
-        arr = self._direct_arr_cache.get(name)
+        arr = self._direct_texture_array(name, frame_index=frame_index)
         if arr is None:
-            img = self.atlas.direct_image(name)
-            if img is None:
-                return
-            arr = self.rc.ctx.texture_array(
-                size=(img.width, img.height, 1), components=4, data=img.tobytes(),
-            )
-            configure_direct_texture_sampling(name, arr)
-            self._direct_arr_cache[name] = arr
+            return
         # Land on top of the queued batch (correct alpha order).
         self._flush_sprite_batch()
         ctx = self.rc.ctx

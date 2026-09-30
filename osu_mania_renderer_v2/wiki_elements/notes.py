@@ -563,7 +563,7 @@ def _argon_combo_and_judgment(ctx, *, draw_combo: bool = True) -> None:
 
 
 def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
-    """Judgment burst (atlas sprite) + centred combo counter.
+    """Judgment burst (native sprite) + centred combo counter.
 
     When the skin ships the score font, the combo is composed from those
     glyphs — lazer's mania combo uses `LegacyFont.Combo`, which defaults to
@@ -614,9 +614,8 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
         if atlas.global_source(name) in ("user", "beatmap", "bundle"):
             nw, nh = atlas.global_native_size(name)
             if nw > 0:
-                base = atlas.index_of(name)
                 fc = atlas.frame_count(name)
-                idx = base + (min(int(j.age_ms * 60.0 / 1000.0), fc - 1) if fc > 1 else 0)
+                frame = min(int(j.age_ms * 60.0 / 1000.0), fc - 1) if fc > 1 else 0
                 alpha = max(0.0, 1.0 - j.age_ms / 500.0)
                 # Judgement is a stage-space element (like the combo), so it
                 # gets the ×1.6 POSITION_SCALE_FACTOR → native px × (height/480),
@@ -625,9 +624,14 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
                 jw, jh = nw * px, nh * px
                 # Centre below the combo: combo bottom − gap − half judgment.
                 jcy = centre_y_gl - combo_h / 2.0 - jh / 2.0 - max(4, int(h * 0.01))
-                fr._draw_sprite_idx(
-                    idx, int(center_x - jw / 2), int(jcy - jh / 2),
-                    int(jw), int(jh), (1, 1, 1, alpha),
+                fr._draw_direct(
+                    name,
+                    int(center_x - jw / 2),
+                    int(jcy - jh / 2),
+                    int(jw),
+                    int(jh),
+                    (1, 1, 1, alpha),
+                    frame_index=frame,
                 )
 
     if s.combo <= 0 or not ctx.options.show_combo:
