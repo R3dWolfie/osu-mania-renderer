@@ -7,11 +7,14 @@ pending their own decouple. All byte-identical to FrameRenderer.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
-from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
 from osu_mania_renderer_v2.gpu.legacy_mania import (
     LEGACY_NOTE_BODY_STRETCH,
     legacy_hold_body_segments,
     legacy_note_body_style,
+)
+from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
+    legacy_hold_geometry,
+    legacy_note_draw_y,
 )
 from osu_mania_renderer_v2.wiki_elements._common import (
     JUDGMENT_LIGHT,
@@ -261,6 +264,15 @@ def _draw_notes_body(ctx) -> None:
             body_top = min(y_head, y_tail)
             body_h = abs(y_head - y_tail)
             if col_has_skin_hold:
+                hold_geometry = legacy_hold_geometry(
+                    y_head,
+                    y_tail,
+                    head_h,
+                    tail_h,
+                    upside_down=upside_down,
+                )
+                body_top = hold_geometry.body_y
+                body_h = hold_geometry.body_height
                 body_base_idx = atlas.column_slot_index(
                     "note_hold_body", n.column,
                 )
@@ -302,9 +314,7 @@ def _draw_notes_body(ctx) -> None:
                 ctx.draw_sprite_idx(
                     head_idx,
                     x0,
-                    legacy_note_draw_y(
-                        y_head, head_h, upside_down=upside_down,
-                    ),
+                    hold_geometry.head_draw_y,
                     cw,
                     head_h,
                     (1, 1, 1, 1),
@@ -312,9 +322,7 @@ def _draw_notes_body(ctx) -> None:
                 ctx.draw_sprite_idx(
                     tail_idx,
                     x0,
-                    legacy_note_draw_y(
-                        y_tail, tail_h, upside_down=upside_down, is_tail=True,
-                    ),
+                    hold_geometry.tail_draw_y,
                     cw,
                     tail_h,
                     (1, 1, 1, 1),

@@ -30,7 +30,6 @@ from osu_mania_renderer_v2.gpu.atlas import (
     column_variant,
     legacy_mod_slot_name,
 )
-from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
 from osu_mania_renderer_v2.gpu.legacy_mania import (
     LEGACY_NOTE_BODY_STRETCH,
     legacy_disallow_zero_alpha_colour,
@@ -41,6 +40,10 @@ from osu_mania_renderer_v2.gpu.legacy_mania import (
     legacy_stage_light_fps,
     legacy_stage_light_geometry,
     legacy_stage_light_presentation,
+)
+from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
+    legacy_hold_geometry,
+    legacy_note_draw_y,
 )
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
@@ -3925,6 +3928,15 @@ class FrameRenderer:
                 body_top = min(y_head, y_tail)
                 body_h = abs(y_head - y_tail)
                 if col_has_skin_hold:
+                    hold_geometry = legacy_hold_geometry(
+                        y_head,
+                        y_tail,
+                        head_h,
+                        tail_h,
+                        upside_down=upside_down,
+                    )
+                    body_top = hold_geometry.body_y
+                    body_h = hold_geometry.body_height
                     body_base_idx = self.atlas.column_slot_index(
                         "note_hold_body", n.column,
                     )
@@ -3968,22 +3980,13 @@ class FrameRenderer:
                         # whole body extent.
                         self._draw_sprite_idx(body_idx, x0, body_top,
                                               cw, body_h, (1, 1, 1, 1))
-                    # Head sits at the head position (top of the hold while
-                    # falling, sticks to the judgement line during a hold).
-                    # Always drawn AFTER the body so it visually caps the
-                    # top end and isn't covered by a stretched body.
+                    # Caps retain their accepted scrolling-edge anchors. The
+                    # body spans their visual centres for lazer's half overlap.
                     self._draw_sprite_idx(head_idx, x0,
-                                          legacy_note_draw_y(
-                                              y_head, head_h,
-                                              upside_down=upside_down,
-                                          ),
+                                          hold_geometry.head_draw_y,
                                           cw, head_h, (1, 1, 1, 1))
                     self._draw_sprite_idx(tail_idx, x0,
-                                          legacy_note_draw_y(
-                                              y_tail, tail_h,
-                                              upside_down=upside_down,
-                                              is_tail=True,
-                                          ),
+                                          hold_geometry.tail_draw_y,
                                           cw, tail_h, (1, 1, 1, 1))
                 else:
                     pad = cw // 6

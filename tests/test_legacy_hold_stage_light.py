@@ -697,17 +697,17 @@ def test_hold_draw_path_stretches_once_or_emits_cropped_repeat_slices() -> None:
     stretch = _hold_renderer(LEGACY_NOTE_BODY_STRETCH)
     FrameRenderer._draw_notes(stretch, _hold_scene())
     assert stretch.cropped_draws == []
-    # body + unchanged head/tail cap draws
+    # Body spans the visual centres of the edge-anchored head/tail caps.
     assert len(stretch.normal_draws) == 3
-    assert stretch.normal_draws[0][0:5] == (10, 100, 100, 40, 250)
+    assert stretch.normal_draws[0][0:5] == (10, 100, 110, 40, 230)
 
     repeated = _hold_renderer(LEGACY_NOTE_BODY_REPEAT_BOTTOM)
     FrameRenderer._draw_notes(repeated, _hold_scene())
-    assert len(repeated.normal_draws) == 2  # unchanged head and tail only
-    assert len(repeated.cropped_draws) == 7
+    assert len(repeated.normal_draws) == 2  # edge-anchored head and tail only
+    assert len(repeated.cropped_draws) == 6
     final_args, final_kwargs = repeated.cropped_draws[-1]
-    assert final_args[1:5] == pytest.approx((100, 340, 40, 10))
+    assert final_args[1:5] == pytest.approx((100, 310, 40, 30))
     assert final_kwargs == pytest.approx({
         "source_bottom": 0.0,
-        "source_top": 0.25,
+        "source_top": 0.75,
     })

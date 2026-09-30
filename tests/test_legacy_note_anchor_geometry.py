@@ -5,7 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from osu_mania_renderer_v2.gpu.legacy_note_geometry import legacy_note_draw_y
+from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
+from osu_mania_renderer_v2.gpu.legacy_mania import (
+    LEGACY_NOTE_BODY_REPEAT_BOTTOM,
+    LEGACY_NOTE_BODY_REPEAT_TOP,
+    LEGACY_NOTE_BODY_REPEAT_TOP_AND_BOTTOM,
+    LEGACY_NOTE_BODY_STRETCH,
+)
+from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
+    legacy_hold_geometry,
+    legacy_note_draw_y,
+)
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer
 from osu_mania_renderer_v2.render.scene import VisibleNote
 from osu_mania_renderer_v2.wiki_elements.notes import _draw_notes_body
@@ -46,6 +56,64 @@ def test_legacy_note_draw_y_truncates_non_integer_geometry_deterministically(
     ) == expected
 
 
+@pytest.mark.parametrize(
+    (
+        "upside_down",
+        "y_tail",
+        "expected_head_y",
+        "expected_tail_y",
+        "expected_body_y",
+        "expected_body_h",
+    ),
+    [
+        (False, 450, 400, 410, 420, 10),
+        (True, 200, 360, 200, 220, 160),
+    ],
+    ids=("downscroll", "upscroll"),
+)
+def test_legacy_hold_geometry_joins_edge_anchored_cap_centres(
+    upside_down,
+    y_tail,
+    expected_head_y,
+    expected_tail_y,
+    expected_body_y,
+    expected_body_h,
+):
+    geometry = legacy_hold_geometry(
+        400, y_tail, 40, 40, upside_down=upside_down,
+    )
+
+    assert geometry.head_draw_y == expected_head_y
+    assert geometry.tail_draw_y == expected_tail_y
+    assert geometry.body_y == expected_body_y
+    assert geometry.body_height == expected_body_h
+
+
+@pytest.mark.parametrize(
+    ("upside_down", "y_tail"),
+    [(False, 500), (True, 100)],
+    ids=("downscroll", "upscroll"),
+)
+def test_legacy_hold_body_overlaps_each_separated_cap_by_half(
+    upside_down, y_tail,
+):
+    geometry = legacy_hold_geometry(
+        400, y_tail, 40, 40, upside_down=upside_down,
+    )
+    body_top = geometry.body_y + geometry.body_height
+
+    def body_overlap(cap_y):
+        return max(
+            0,
+            min(body_top, cap_y + 40) - max(geometry.body_y, cap_y),
+        )
+
+    assert body_overlap(geometry.head_draw_y) == 20
+    assert body_overlap(geometry.tail_draw_y) == 20
+    assert body_overlap(geometry.head_draw_y) < 40
+    assert body_overlap(geometry.tail_draw_y) < 40
+
+
 class _LegacyNoteAtlas:
     _indices = {
         "note_tap": 10,
@@ -84,7 +152,9 @@ def _scene(note):
     )
 
 
-def _record_legacy_draws(render_path, note, *, upside_down):
+def _record_legacy_draws(
+    render_path, note, *, upside_down, note_body_style=0,
+):
     indexed_draws = []
     named_draws = []
     common = {
@@ -95,7 +165,10 @@ def _record_legacy_draws(render_path, note, *, upside_down):
         "upside_down": upside_down,
         "col_x": (100,),
         "col_w": (80,),
-        "mania_section": SimpleNamespace(note_body_style=0),
+        "mania_section": ManiaSection(
+            keys=1, note_body_style=note_body_style,
+        ),
+        "skin_ini": SimpleNamespace(legacy_version=2.7),
     }
 
     if render_path == "monolithic":
@@ -109,11 +182,19 @@ def _record_legacy_draws(render_path, note, *, upside_down):
                 setattr(renderer, name, value)
         renderer._is_argon_default = lambda: False
         renderer._draw_sprite_idx = lambda *args: indexed_draws.append(args)
+        renderer._draw_sprite_idx_cropped_y = (
+            lambda *args, **_kwargs: indexed_draws.append(args)
+        )
         renderer._draw_sprite = lambda *args: named_draws.append(args)
         FrameRenderer._draw_notes(renderer, _scene(note))
     else:
+        renderer = object.__new__(FrameRenderer)
+        renderer._draw_sprite_idx_cropped_y = (
+            lambda *args, **_kwargs: indexed_draws.append(args)
+        )
         ctx = SimpleNamespace(
             **common,
+            fr=renderer,
             scene=_scene(note),
             persistent={},
             draw_sprite_idx=lambda *args: indexed_draws.append(args),
@@ -154,9 +235,40 @@ def test_legacy_tap_and_ghost_draws_use_their_edge_anchors(
 
 
 @pytest.mark.parametrize("render_path", ["monolithic", "wiki-elements"])
-@pytest.mark.parametrize("upside_down", [False, True], ids=("downscroll", "upscroll"))
-def test_legacy_hold_caps_meet_unchanged_body_attachment_lines(
-    render_path, upside_down,
+@pytest.mark.parametrize(
+    "body_style",
+    [
+        LEGACY_NOTE_BODY_STRETCH,
+        LEGACY_NOTE_BODY_REPEAT_TOP,
+        LEGACY_NOTE_BODY_REPEAT_BOTTOM,
+        LEGACY_NOTE_BODY_REPEAT_TOP_AND_BOTTOM,
+    ],
+    ids=("stretch", "repeat-top", "repeat-bottom", "repeat-both"),
+)
+@pytest.mark.parametrize(
+    (
+        "upside_down",
+        "y_tail",
+        "expected_head_y",
+        "expected_tail_y",
+        "expected_body_y",
+        "expected_body_h",
+    ),
+    [
+        (False, 450, 400, 410, 420, 10),
+        (True, 200, 360, 200, 220, 160),
+    ],
+    ids=("downscroll", "upscroll"),
+)
+def test_legacy_hold_caps_keep_edge_anchors_while_body_joins_cap_centres(
+    render_path,
+    body_style,
+    upside_down,
+    y_tail,
+    expected_head_y,
+    expected_tail_y,
+    expected_body_y,
+    expected_body_h,
 ):
     note = VisibleNote(
         column=0,
@@ -166,21 +278,43 @@ def test_legacy_hold_caps_meet_unchanged_body_attachment_lines(
         tail_y_fraction=0.5,
     )
     y_head = 400
-    y_tail = 200 if upside_down else 450
 
     indexed_draws, named_draws = _record_legacy_draws(
-        render_path, note, upside_down=upside_down,
+        render_path,
+        note,
+        upside_down=upside_down,
+        note_body_style=body_style,
     )
 
-    body, head, tail = indexed_draws
-    assert body[0] == 20
-    assert body[2:5] == (min(y_head, y_tail), 80, abs(y_head - y_tail))
+    *body_draws, head, tail = indexed_draws
+    assert body_draws
+    assert all(draw[0] == 20 for draw in body_draws)
+    assert all(draw[3] == 80 for draw in body_draws)
+    assert body_draws[0][2] == expected_body_y
+    assert sum(draw[4] for draw in body_draws) == expected_body_h
+    assert body_draws[-1][2] + body_draws[-1][4] == (
+        expected_body_y + expected_body_h
+    )
+
     assert head[0] == 30
     assert tail[0] == 40
-    if upside_down:
-        assert head[2] + head[4] == y_head
-        assert tail[2] == y_tail
-    else:
-        assert head[2] == y_head
-        assert tail[2] + tail[4] == y_tail
+    assert head[2] == expected_head_y
+    assert tail[2] == expected_tail_y
+    assert head[2] == legacy_note_draw_y(
+        y_head, head[4], upside_down=upside_down,
+    )
+    assert tail[2] == legacy_note_draw_y(
+        y_tail, tail[4], upside_down=upside_down, is_tail=True,
+    )
+
+    body_endpoints = {
+        expected_body_y,
+        expected_body_y + expected_body_h,
+    }
+    assert body_endpoints == {
+        head[2] + head[4] / 2,
+        tail[2] + tail[4] / 2,
+    }
+    assert abs((head[2] + head[4] / 2) - y_head) == head[4] / 2
+    assert abs((tail[2] + tail[4] / 2) - y_tail) == tail[4] / 2
     assert named_draws == []
