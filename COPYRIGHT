@@ -14,11 +14,17 @@ peppy / ppy Pty Ltd — osu!
       - github.com/ppy/osu-framework  (MIT)
     Ports are behavioural/algorithmic re-implementations in Python; the exact
     C# sources are cited in the module and function docstrings they came from.
-    No osu! game assets are bundled — osu!'s skins, beatmaps, audio and default
-    art are CC BY-NC and are NOT included here; this repo ships only original
-    or procedurally-generated art.
+    Except for the specifically attributed default resources below, osu!'s
+    skins, beatmaps, audio and default art are not bundled.
   Ports cover osu!mania gameplay, timing, judgment, scoring and HUD logic
   from osu.Game.Rulesets.Mania and osu.Game (Argon HUD components), MIT.
+
+ppy Pty Ltd — osu!resources
+    osu_mania_renderer_v2/assets/sprites/classic_stage_light@2x.png is an
+    unmodified copy of osu.Game.Resources/Skins/Legacy/mania-stage-light@2x.png
+    from github.com/ppy/osu-resources (commit 5150ba1a343997ecb77662125bd2622d0600c039).
+    It is distributed under CC BY-NC 4.0:
+      creativecommons.org/licenses/by-nc/4.0/
 
 danser-go — Wieku (Sebastian Krajewski)
     github.com/Wieku/danser-go  (GPL-3.0)

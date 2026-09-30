@@ -76,7 +76,7 @@ class ManiaSection:
     # Per-column RGB(a) tints. Lookup by 0-indexed column; missing
     # entries fall back to spec defaults at consumer side.
     colour:        dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
-    colour_light:  dict[int, tuple[int, int, int]]      = field(default_factory=dict)
+    colour_light:  dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
 
     # Block-global tints.
     colour_column_line: tuple[int, int, int, int] | None = None
@@ -134,19 +134,13 @@ class ManiaSection:
     keys_under_notes: bool | None = None      # default 0
     upside_down:      bool | None = None      # default 0
 
-    # Animation framerate for the stage-light per-press loop.
-    # `None` ⇒ fall back to [General] AnimationFramerate ⇒ default 60.
+    # Current lazer StageLight FPS: missing => 60, positive => authored value,
+    # and an explicitly zero or negative value => 24.
     light_frame_per_second: int | None = None
 
-    # Hold body draw style. osu!mania defines three modes:
-    #   0 = stretch the head sprite (mania-noteNH.png) down the entire body
-    #   1 = cascade — tile the L sprite vertically at its natural aspect
-    #       (default when key is absent in skin.ini)
-    #   2 = stretch the L sprite (mania-noteNL.png) over the entire body
-    # Most "modern" skins (Night05, FNF, the bundled default) ship with
-    # `NoteBodyStyle: 0` because their L sprite is a tall solid bar
-    # designed to be stretched once; cascading it would produce visible
-    # seam artefacts. `None` ⇒ caller picks the default (= 1, per peppy).
+    # Hold-body draw style. Stable defines Stretch=0, RepeatTop=2,
+    # RepeatBottom=3 and RepeatTopAndBottom=4. Version-aware fallback and
+    # invalid-value handling live in the consumer-side pure resolver.
     note_body_style: int | None = None
 
     # Legacy hit / hold-light asset overrides and their per-column widths.
@@ -157,6 +151,10 @@ class ManiaSection:
     lighting_l:       str | None = None
     lighting_n_width: tuple[float, ...] = ()
     lighting_l_width: tuple[float, ...] = ()
+
+    # Stable's NoteBodyStyleN keys are zero-indexed (N is the column/style
+    # number). Appended to preserve positional construction of older fields.
+    note_body_style_by_column: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -206,6 +204,7 @@ _NOTE_IMAGE_RE = re.compile(r"^NoteImage(\d+)(H|L|T)?$", re.IGNORECASE)
 _KEY_IMAGE_RE  = re.compile(r"^KeyImage(\d+)(D)?$",      re.IGNORECASE)
 _COLOUR_N_RE   = re.compile(r"^Colour(\d+)$",            re.IGNORECASE)
 _COLOUR_LIGHT_RE = re.compile(r"^ColourLight(\d+)$",     re.IGNORECASE)
+_NOTE_BODY_STYLE_RE = re.compile(r"^NoteBodyStyle(\d+)$", re.IGNORECASE)
 _HIT_RE        = re.compile(r"^Hit(0|50|100|200|300|300g)$", re.IGNORECASE)
 
 
@@ -329,7 +328,7 @@ class _ManiaBuilder:
         self.keys: int | None = None
 
         self.colour:       dict[int, tuple[int, int, int, int]] = {}
-        self.colour_light: dict[int, tuple[int, int, int]]      = {}
+        self.colour_light: dict[int, tuple[int, int, int, int]] = {}
 
         self.colour_column_line: tuple[int, int, int, int] | None = None
         self.colour_barline:     tuple[int, int, int, int] | None = None
@@ -377,6 +376,7 @@ class _ManiaBuilder:
         self.upside_down:       bool | None = None
         self.light_frame_per_second: int | None = None
         self.note_body_style:    int | None = None
+        self.note_body_style_by_column: dict[int, int] = {}
 
     def consume(self, key: str, value: str) -> None:
         lk = key.lower()
@@ -422,9 +422,9 @@ class _ManiaBuilder:
         m = _COLOUR_LIGHT_RE.match(key)
         if m:
             col = _normalize_column_index(int(m.group(1)))
-            rgb = _parse_rgb(value)
-            if rgb is not None:
-                self.colour_light[col] = rgb
+            rgba = _parse_rgba(value)
+            if rgba is not None:
+                self.colour_light[col] = rgba
             return
 
         # Block-global colours.
@@ -520,6 +520,14 @@ class _ManiaBuilder:
         if lk == "lightframepersecond":
             self.light_frame_per_second = _parse_int(value)
             return
+        m = _NOTE_BODY_STYLE_RE.match(key)
+        if m:
+            style = _parse_int(value)
+            if style is not None:
+                self.note_body_style_by_column[
+                    _normalize_column_index(int(m.group(1)))
+                ] = style
+            return
         if lk == "notebodystyle":
             self.note_body_style = _parse_int(value)
             return
@@ -565,6 +573,7 @@ class _ManiaBuilder:
             upside_down=self.upside_down,
             light_frame_per_second=self.light_frame_per_second,
             note_body_style=self.note_body_style,
+            note_body_style_by_column=dict(self.note_body_style_by_column),
         )
 
 

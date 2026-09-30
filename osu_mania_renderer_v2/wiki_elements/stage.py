@@ -8,6 +8,7 @@ element preserves byte-identical output (the parity test guards it).
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
+from osu_mania_renderer_v2.gpu.legacy_mania import legacy_doubled_alpha_colour
 from osu_mania_renderer_v2.gpu.renderer import LAZER_DEFAULT_COLUMN_LINE_WIDTH_REF
 from osu_mania_renderer_v2.wiki_elements._common import argon_accent, is_argon_default
 
@@ -154,8 +155,8 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
             if skin_colour is None:
                 skin_colour = section.colour.get(c)
         if skin_colour is not None:
-            sr, sg, sb, sa = skin_colour
-            r, g, b, a = sr / 255, sg / 255, sb / 255, sa / 255
+            r, g, b, a = legacy_doubled_alpha_colour(skin_colour)
+            colour_boost = 0.0
         else:
             variant = column_variant(c, key_count)
             if variant == "outer":
@@ -164,9 +165,10 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
                 r, g, b, a = 0.07, 0.06, 0.12, 0.55
             else:
                 r, g, b, a = 0.05, 0.05, 0.11, 0.45
+            colour_boost = kiai_boost
         ctx.draw_sprite("column_bg", ctx.col_x[c], 0, ctx.col_w[c], h,
-                        (r + kiai_boost, g + kiai_boost,
-                         b + kiai_boost * 1.5, a))
+                        (r + colour_boost, g + colour_boost,
+                         b + colour_boost * 1.5, a))
 
     # Column dividers + outer borders. lazer's LegacyManiaSkinConfiguration
     # fills ColumnLineWidth[keys+1] with 2 by default, then overrides per
@@ -176,8 +178,9 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
     if not is_argon_default(ctx, 0):
         line_widths = section.column_line_width if section else ()
         if section is not None and section.colour_column_line is not None:
-            sr, sg, sb, sa = section.colour_column_line
-            line_tint = (sr / 255, sg / 255, sb / 255, sa / 255)
+            line_tint = legacy_doubled_alpha_colour(
+                section.colour_column_line,
+            )
         else:
             line_tint = (1.0, 1.0, 1.0, 0.9)
 

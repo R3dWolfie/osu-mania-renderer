@@ -129,9 +129,13 @@ class SceneState:
     # Per-column UR (only meaningful on the results card; gameplay uses
     # the playfield-wide scene.unstable_rate). Computed once at end.
     per_column_ur: tuple[float, ...] = ()
-    # Per-column age (ms) since the most recent key-down. Drives a bright
-    # stage-light strip in each column that fades over ~200 ms.
+    # Per-column age (ms) since the most recent key-down. Drives legacy held
+    # lighting animation/fade and the key counter presentation.
     key_press_age_ms: tuple[int, ...] = ()
+    # Per-column age (ms) since the most recent replay key-up edge. ``-1``
+    # means no release has occurred. Stage-light release presentation uses
+    # this exact event-derived age rather than renderer-frame transitions.
+    key_release_age_ms: tuple[int, ...] = ()
     # Per-column cumulative key-press count up to t_ms (rising edges). Drives
     # the bottom-right key counter (lazer's KeyCounterDisplay).
     key_press_counts: tuple[int, ...] = ()

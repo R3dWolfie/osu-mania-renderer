@@ -16,9 +16,9 @@ def load_programs(ctx: moderngl.Context) -> dict[str, moderngl.Program]:
         vertex_shader=(SHADERS_DIR / "sprite.vert").read_text(),
         fragment_shader=(SHADERS_DIR / "sprite.frag").read_text(),
     )
-    # Instanced variant: one VBO of 4 unit-quad corners + a per-instance
-    # stream of (x, y, w, h, atlas_idx, r, g, b, a). Collapses ~30 draw
-    # calls per frame into a single `glDrawArraysInstanced`.
+    # Instanced variant: one VBO of 4 unit-quad corners + an 11-float
+    # per-instance stream: rect(4), atlas index, colour(4), source-Y bounds(2).
+    # Collapses ~30 draw calls per frame into one `glDrawArraysInstanced`.
     sprite_instanced = ctx.program(
         vertex_shader=(SHADERS_DIR / "sprite_instanced.vert").read_text(),
         fragment_shader=(SHADERS_DIR / "sprite.frag").read_text(),

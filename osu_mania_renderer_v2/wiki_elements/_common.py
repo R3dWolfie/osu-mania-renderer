@@ -6,7 +6,6 @@ Values mirror the legacy FrameRenderer exactly (byte-identical migration).
 from __future__ import annotations
 
 RECEPTOR_HEIGHT_REL_COL = 1.0
-STAGE_LIGHT_DURATION_MS = 200
 HIT_LIGHT_DURATION_MS = 320
 
 # ── Mod icons (lazer ModIcon / OsuColour.ForModType) ─────────────────────
@@ -139,35 +138,3 @@ def note_anim_fps(ctx, frame_count: int) -> float:
         if af == -1 and frame_count > 1:
             return float(frame_count)
     return 60.0
-
-
-def stage_light_fps(ctx, frame_count: int) -> float:
-    """[Mania] LightFramePerSecond (>0) → -1 derive → [General]
-    AnimationFramerate → 60."""
-    section = ctx.mania_section
-    if section is not None and section.light_frame_per_second is not None:
-        v = section.light_frame_per_second
-        if v > 0:
-            return float(v)
-        if v == -1 and frame_count > 1:
-            return float(frame_count)
-    si = ctx.fr.skin_ini
-    if si is not None and si.animation_framerate:
-        af = si.animation_framerate
-        if af > 0:
-            return float(af)
-        if af == -1 and frame_count > 1:
-            return float(frame_count)
-    return 60.0
-
-
-def stage_light_tint(ctx, col: int) -> tuple[float, float, float]:
-    """ColourLight{N} (1-indexed → 0-indexed) → white."""
-    section = ctx.mania_section
-    if section is not None:
-        rgb = section.colour_light.get(col + 1)
-        if rgb is None:
-            rgb = section.colour_light.get(col)
-        if rgb is not None:
-            return rgb[0] / 255, rgb[1] / 255, rgb[2] / 255
-    return 1.0, 1.0, 1.0

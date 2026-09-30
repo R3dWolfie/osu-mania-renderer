@@ -7,6 +7,11 @@ pending their own decouple. All byte-identical to FrameRenderer.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
+from osu_mania_renderer_v2.gpu.legacy_mania import (
+    LEGACY_NOTE_BODY_STRETCH,
+    legacy_hold_body_segments,
+    legacy_note_body_style,
+)
 from osu_mania_renderer_v2.wiki_elements._common import (
     JUDGMENT_LIGHT,
     RECEPTOR_HEIGHT_REL_COL,
@@ -255,26 +260,42 @@ def _draw_notes_body(ctx) -> None:
             body_top = min(y_head, y_tail)
             body_h = abs(y_head - y_tail)
             if col_has_skin_hold:
-                body_idx = _animated_idx("note_hold_body", n.column, n.time_ms)
+                body_base_idx = atlas.column_slot_index(
+                    "note_hold_body", n.column,
+                )
+                body_frames = atlas.column_frame_count(
+                    "note_hold_body", n.column,
+                )
+                body_idx = body_base_idx + ctx.fr._legacy_hold_body_frame_index(
+                    scene, n, body_frames,
+                )
                 head_idx = _animated_idx("note_hold_head", n.column, n.time_ms)
                 tail_idx = _animated_idx("note_hold_tail", n.column, n.time_ms)
-                body_style = (
-                    ctx.mania_section.note_body_style
-                    if ctx.mania_section is not None
-                    and ctx.mania_section.note_body_style is not None
-                    else 0
+                body_style = legacy_note_body_style(
+                    ctx.mania_section,
+                    n.column,
+                    ctx.skin_ini.legacy_version
+                    if ctx.skin_ini is not None else 1.0,
                 )
-                if body_style != 0:
+                if body_style != LEGACY_NOTE_BODY_STRETCH:
                     body_aspect = atlas.column_aspect("note_hold_body", n.column)
                     tile_h = (
-                        max(1, int(round(cw / body_aspect)))
-                        if body_aspect > 0 else cw
+                        max(1.0, cw / body_aspect)
+                        if body_aspect > 0 else float(cw)
                     )
-                    seg_y = body_top
-                    while seg_y < body_top + body_h:
-                        seg_h = min(tile_h, body_top + body_h - seg_y)
-                        ctx.draw_sprite_idx(body_idx, x0, seg_y, cw, seg_h, (1, 1, 1, 1))
-                        seg_y += tile_h
+                    for segment in legacy_hold_body_segments(
+                        body_top, body_h, tile_h, body_style,
+                    ):
+                        ctx.fr._draw_sprite_idx_cropped_y(
+                            body_idx,
+                            x0,
+                            segment.y,
+                            cw,
+                            segment.height,
+                            (1, 1, 1, 1),
+                            source_bottom=segment.source_bottom,
+                            source_top=segment.source_top,
+                        )
                 else:
                     ctx.draw_sprite_idx(body_idx, x0, body_top, cw, body_h, (1, 1, 1, 1))
                 ctx.draw_sprite_idx(head_idx, x0, y_head - head_h // 2, cw, head_h, (1, 1, 1, 1))

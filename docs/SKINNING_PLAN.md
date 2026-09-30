@@ -102,9 +102,10 @@ Global (mania consumes): `score-0..9.png`, `score-comma.png`,
 ### 1.6 Animation conventions
 
 - Frame series `<base>-N.png` starts at N=0.
-- Default fps: 60 for hitbursts/lightings; `LightFramePerSecond` for
-  stage-light; `[General] AnimationFramerate` global override; `-1` =
-  derive from frame count.
+- Default fps: 60 for hitbursts/lightings. StageLight uses
+  `LightFramePerSecond`: missing = 60, positive = authored value, and an
+  explicitly zero or negative value = 24. It does not fall back to
+  `[General] AnimationFramerate`.
 - Hitbursts play once, hold last frame, fade out.
 - Bodies (`L`) loop only while held.
 
@@ -217,7 +218,8 @@ on the atlas pipeline.
   `LegacyManiaJudgementPiece` is one-shot-hold — that's the truth.
 - **`mania-stage-bottom-{n}`**: rate = global `AnimationFramerate`.
 - **`mania-stage-light-{n}`**: rate = `LightFramePerSecond`
-  (per-keymode), loops while column pressed.
+  (per-keymode); animation phase follows the gameplay clock continuously,
+  while key transitions affect only opacity and Y scale.
 - **`mania-note{1,2,S}L-{n}`**: loops while held; freezes (last frame)
   on release.
 - **Tap notes / heads / tails**: animatable; rate = global
@@ -226,9 +228,9 @@ on the atlas pipeline.
   loops for hold duration.
 - **`comboburst-mania-{n}`**: NOT an animation — one-of-a-set, picked
   at random per combo milestone.
-- **Frame-timing precedence:** explicit `LightFramePerSecond` >
-  fixed (60fps for hitbursts/lightings) > `[General] AnimationFramerate`
-  > derived (frames÷cycle).
+- **StageLight timing:** missing `LightFramePerSecond` = 60; positive = the
+  authored value; zero or negative = 24. `[General] AnimationFramerate` and
+  frame-count derivation do not participate.
 
 ---
 
