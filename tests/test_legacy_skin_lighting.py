@@ -56,6 +56,8 @@ def _renderer(*, lighting_n="missing", lighting_l="missing", argon=False, upside
     renderer._stage_light_fps = lambda _frames: 60.0
 
     renderer.normal_draws = []
+    renderer.direct_draws = []
+    renderer._draw_legacy_column_direct = lambda *args, **kw: renderer.direct_draws.append((args, kw))
     renderer.named_draws = []
     renderer.additive_draws = []
     renderer._draw_sprite_idx = lambda *args: renderer.normal_draws.append(args)
@@ -126,9 +128,11 @@ def test_custom_held_receptor_swaps_image_without_scale_bump():
     FrameRenderer._draw_receptors(renderer, _scene(held=True))
 
     # Native design height 187.5 scaled by 720/768; width stays the column.
-    assert renderer.normal_draws == [
-        (11, 100, 0, 105, 176, (1, 1, 1, 1)),
-    ]
+    assert renderer.normal_draws == []
+    assert renderer.direct_draws == [(
+        ("column/receptor_on/0", 100, 0, 105, 176),
+        {"source_bottom": 0.0, "source_top": 1.0},
+    )]
 
 
 def test_custom_upscroll_receptor_uses_native_height_at_stage_top():
@@ -136,9 +140,11 @@ def test_custom_upscroll_receptor_uses_native_height_at_stage_top():
 
     FrameRenderer._draw_receptors(renderer, _scene())
 
-    assert renderer.normal_draws == [
-        (10, 100, 720 - 176, 105, 176, (1, 1, 1, 1)),
-    ]
+    assert renderer.normal_draws == []
+    assert renderer.direct_draws == [(
+        ("column/receptor_off/0", 100, 720 - 176, 105, 176),
+        {"source_bottom": 1.0, "source_top": 0.0},
+    )]
 
 
 def test_custom_hold_lighting_uses_width_native_aspect_and_fades_in():

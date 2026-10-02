@@ -140,6 +140,9 @@ class _LegacyNoteAtlas:
     def column_frame_count(self, _kind, _column):
         return 1
 
+    def column_native_size(self, kind, _column):
+        return (80, 80) if kind == "note_hold_body" else (80, 40)
+
     def global_aspect(self, _kind):
         return 1.667
 
@@ -186,12 +189,19 @@ def _record_legacy_draws(
             lambda *args, **_kwargs: indexed_draws.append(args)
         )
         renderer._draw_sprite = lambda *args: named_draws.append(args)
+        renderer._draw_legacy_column_direct = lambda *args, **kw: indexed_draws.append((*args, (1, 1, 1, 1)))
         FrameRenderer._draw_notes(renderer, _scene(note))
     else:
         renderer = object.__new__(FrameRenderer)
+        renderer._draw_sprite_idx = lambda *args: indexed_draws.append(args)
         renderer._draw_sprite_idx_cropped_y = (
             lambda *args, **_kwargs: indexed_draws.append(args)
         )
+        renderer.rc = SimpleNamespace(width=800, height=500, key_count=1)
+        for name, value in common.items():
+            if name not in {"height", "key_count"}:
+                setattr(renderer, name, value)
+        renderer._draw_legacy_column_direct = lambda *args, **kw: indexed_draws.append((*args, (1, 1, 1, 1)))
         ctx = SimpleNamespace(
             **common,
             fr=renderer,
@@ -286,13 +296,14 @@ def test_legacy_hold_caps_keep_edge_anchors_while_body_joins_cap_centres(
         note_body_style=body_style,
     )
 
-    *body_draws, head, tail = indexed_draws
+    # Stable's distinct depths put rear below head without changing anchors.
+    *body_draws, tail, head = indexed_draws
     assert body_draws
-    assert all(draw[0] == 20 for draw in body_draws)
+    assert all(draw[0] == "column/note_hold_body/0" for draw in body_draws)
     assert all(draw[3] == 80 for draw in body_draws)
-    assert body_draws[0][2] == expected_body_y
-    assert sum(draw[4] for draw in body_draws) == expected_body_h
-    assert body_draws[-1][2] + body_draws[-1][4] == (
+    assert body_draws[0][2] == pytest.approx(expected_body_y)
+    assert sum(draw[4] for draw in body_draws) == pytest.approx(expected_body_h)
+    assert body_draws[-1][2] + body_draws[-1][4] == pytest.approx(
         expected_body_y + expected_body_h
     )
 

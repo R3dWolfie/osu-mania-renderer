@@ -156,6 +156,11 @@ class ManiaSection:
     # number). Appended to preserve positional construction of older fields.
     note_body_style_by_column: dict[int, int] = field(default_factory=dict)
 
+    # Raw 480-reference width used ONLY to scale tap/head/tail height.
+    # A non-positive or absent value selects the smallest column width.
+    width_for_note_height_scale: float | None = None
+
+
 
 @dataclass(frozen=True)
 class SkinIni:
@@ -206,6 +211,23 @@ _COLOUR_N_RE   = re.compile(r"^Colour(\d+)$",            re.IGNORECASE)
 _COLOUR_LIGHT_RE = re.compile(r"^ColourLight(\d+)$",     re.IGNORECASE)
 _NOTE_BODY_STYLE_RE = re.compile(r"^NoteBodyStyle(\d+)$", re.IGNORECASE)
 _HIT_RE        = re.compile(r"^Hit(0|50|100|200|300|300g)$", re.IGNORECASE)
+
+
+def _parse_note_body_style(value: str) -> int | None:
+    """Match stable's case-insensitive Enum.Parse on an Int32 enum."""
+    names = {"stretch": 0, "repeattop": 2, "repeatbottom": 3, "repeattopandbottom": 4}
+    value = value.strip().lower()
+    if re.fullmatch(r"[+-]?[0-9]+", value):
+        number = _parse_int(value)
+        return number if number is not None and -(2 ** 31) <= number < 2 ** 31 else None
+    # Enum.Parse also ORs comma-separated names, even without [Flags].
+    result = 0
+    for part in value.split(","):
+        number = names.get(part.strip())
+        if number is None:
+            return None
+        result |= number
+    return result
 
 
 def parse_skin_ini(skin_dir: Path) -> SkinIni:
@@ -377,6 +399,7 @@ class _ManiaBuilder:
         self.light_frame_per_second: int | None = None
         self.note_body_style:    int | None = None
         self.note_body_style_by_column: dict[int, int] = {}
+        self.width_for_note_height_scale: float | None = None
 
     def consume(self, key: str, value: str) -> None:
         lk = key.lower()
@@ -520,16 +543,19 @@ class _ManiaBuilder:
         if lk == "lightframepersecond":
             self.light_frame_per_second = _parse_int(value)
             return
+        if lk == "widthfornoteheightscale":
+            self.width_for_note_height_scale = _parse_float(value)
+            return
         m = _NOTE_BODY_STYLE_RE.match(key)
         if m:
-            style = _parse_int(value)
+            style = _parse_note_body_style(value)
             if style is not None:
                 self.note_body_style_by_column[
                     _normalize_column_index(int(m.group(1)))
                 ] = style
             return
         if lk == "notebodystyle":
-            self.note_body_style = _parse_int(value)
+            self.note_body_style = _parse_note_body_style(value)
             return
 
     def finalize(self) -> ManiaSection:
@@ -574,6 +600,7 @@ class _ManiaBuilder:
             light_frame_per_second=self.light_frame_per_second,
             note_body_style=self.note_body_style,
             note_body_style_by_column=dict(self.note_body_style_by_column),
+            width_for_note_height_scale=self.width_for_note_height_scale,
         )
 
 

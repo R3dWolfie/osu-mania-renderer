@@ -131,9 +131,9 @@ ColourLight1: 255,113,165,150
 @pytest.mark.parametrize(
     ("style", "expected"),
     [
-        (LEGACY_NOTE_BODY_REPEAT_BOTTOM, [(0, 10, 0, 1), (10, 10, 0, 1),
+        (LEGACY_NOTE_BODY_REPEAT_TOP, [(0, 10, 0, 1), (10, 10, 0, 1),
                                           (20, 4, 0, 0.4)]),
-        (LEGACY_NOTE_BODY_REPEAT_TOP, [(0, 4, 0.6, 1), (4, 10, 0, 1),
+        (LEGACY_NOTE_BODY_REPEAT_BOTTOM, [(0, 4, 0.6, 1), (4, 10, 0, 1),
                                        (14, 10, 0, 1)]),
         (LEGACY_NOTE_BODY_REPEAT_TOP_AND_BOTTOM,
          [(0, 7, 0.3, 1), (7, 10, 0, 1), (17, 7, 0, 0.7)]),
@@ -642,6 +642,9 @@ class _HoldAtlas:
     def column_aspect(self, kind, _column):
         return 1.0 if kind == "note_hold_body" else 2.0
 
+    def column_native_size(self, kind, _column):
+        return (40, 51.2) if kind == "note_hold_body" else (40, 20)
+
     def column_slot_index(self, kind, _column):
         return {
             "note_hold_body": 10,
@@ -670,6 +673,8 @@ def _hold_renderer(style: int) -> FrameRenderer:
     renderer._legacy_hold_body_started_ms = {}
     renderer._legacy_hold_body_last_ms = {}
     renderer.normal_draws = []
+    renderer.direct_draws = []
+    renderer._draw_legacy_column_direct = lambda *args, **kw: renderer.direct_draws.append((args, kw))
     renderer.cropped_draws = []
     renderer._draw_sprite_idx = lambda *args: renderer.normal_draws.append(args)
     renderer._draw_sprite_idx_cropped_y = (
@@ -693,21 +698,23 @@ def _hold_scene():
     )
 
 
-def test_hold_draw_path_stretches_once_or_emits_cropped_repeat_slices() -> None:
+def test_hold_draw_path_uses_native_direct_stretch_or_repeat_slices() -> None:
     stretch = _hold_renderer(LEGACY_NOTE_BODY_STRETCH)
     FrameRenderer._draw_notes(stretch, _hold_scene())
     assert stretch.cropped_draws == []
-    # Body spans the visual centres of the edge-anchored head/tail caps.
-    assert len(stretch.normal_draws) == 3
-    assert stretch.normal_draws[0][0:5] == (10, 100, 110, 40, 230)
+    assert len(stretch.normal_draws) == 2  # caps keep their atlas batching
+    assert stretch.direct_draws[0][0] == (
+        "column/note_hold_body/0", 100, 110, 40, 230,
+    )
+    assert stretch.direct_draws[0][1]["repeat_y"] is False
 
     repeated = _hold_renderer(LEGACY_NOTE_BODY_REPEAT_BOTTOM)
     FrameRenderer._draw_notes(repeated, _hold_scene())
-    assert len(repeated.normal_draws) == 2  # edge-anchored head and tail only
-    assert len(repeated.cropped_draws) == 6
-    final_args, final_kwargs = repeated.cropped_draws[-1]
-    assert final_args[1:5] == pytest.approx((100, 310, 40, 30))
-    assert final_kwargs == pytest.approx({
-        "source_bottom": 0.0,
-        "source_top": 0.75,
-    })
+    assert len(repeated.normal_draws) == 2
+    assert len(repeated.direct_draws) == 6
+    first_args, first_kwargs = repeated.direct_draws[0]
+    assert first_args[1:5] == pytest.approx((100, 110, 40, 30))
+    assert first_kwargs["source_bottom"] == pytest.approx(0.25)
+    assert first_kwargs["source_top"] == 1.0
+    assert first_kwargs["frame_index"] == 0
+    assert first_kwargs["repeat_y"] is True

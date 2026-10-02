@@ -43,6 +43,11 @@ def legacy_mod_slot_name(asset_name: str) -> str:
     return f"selection_mod_{asset_name}"
 
 
+def column_direct_name(kind: str, column: int) -> str:
+    """Direct resource key for the already-resolved column source."""
+    return f"column/{kind}/{column}"
+
+
 # ===== Default per-keycount column layout =====
 #
 # Each entry maps column index → bundled-sprite kind:
@@ -408,10 +413,11 @@ class SpriteAtlas:
         self._column_aspects: dict[tuple[str, int], float] = {}
         self._column_native_sizes: dict[tuple[str, int], tuple[float, float]] = {}
         # Full-resolution RGBA images kept OUTSIDE the layered atlas for wide
-        # sprites (scorebar, stage panels) — the 256² atlas tile would crush
+        # sprites (scorebar, stage panels, native keys/bodies) — a 256² tile would crush
         # a 1366-wide health bar. These are drawn as direct textures at native
         # resolution so they stay crisp regardless of skin. Stored in DESIGN
-        # orientation (PIL top-row-first); native px (÷2 if @2x baked here too).
+        # orientation (PIL top-row-first). @2x pixels stay at source resolution;
+        # separate native-size metadata divides dimensions by ScaleAdjust.
         self._direct_images: dict[str, Image.Image] = {}
         # Every resolved direct-animation frame, retained at source resolution.
         # Judgements and scorebar colour animations bypass the shared 256²
@@ -595,6 +601,10 @@ class SpriteAtlas:
                 # Design units = pixels / ScaleAdjust (@2x → /2), per lazer.
                 sa = frames[0].info.get("scale_adjust", 1)
                 atlas._column_native_sizes[(kind, col)] = (first_w / sa, first_h / sa)
+                if kind in ("receptor_off", "receptor_on", "note_hold_body"):
+                    name = column_direct_name(kind, col)
+                    atlas._direct_images[name] = frames[0]
+                    atlas._direct_frame_images[name] = tuple(frames)
                 if len(frames) > 1:
                     atlas._column_frames[(kind, col)] = len(frames)
                     from_anim += 1
@@ -725,8 +735,7 @@ class SpriteAtlas:
         return self._global_sources.get(name, "missing")
 
     def direct_image(self, name: str):
-        """Full-resolution PIL image for a wide direct-draw slot (scorebar /
-        stage panels), or None. Drawn outside the layered atlas to stay crisp."""
+        """Resolved full-resolution PIL image for a direct-draw resource, or None."""
         return self._direct_images.get(name)
 
     def direct_frame_count(self, name: str) -> int:

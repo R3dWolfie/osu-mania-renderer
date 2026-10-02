@@ -7,18 +7,11 @@ pending their own decouple. All byte-identical to FrameRenderer.
 from __future__ import annotations
 
 from osu_mania_renderer_v2.gpu.atlas import column_variant
-from osu_mania_renderer_v2.gpu.legacy_mania import (
-    LEGACY_NOTE_BODY_STRETCH,
-    legacy_hold_body_segments,
-    legacy_note_body_style,
-)
 from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
-    legacy_hold_geometry,
     legacy_note_draw_y,
 )
 from osu_mania_renderer_v2.wiki_elements._common import (
     JUDGMENT_LIGHT,
-    RECEPTOR_HEIGHT_REL_COL,
     argon_accent,
     is_argon_default,
     note_anim_fps,
@@ -38,10 +31,8 @@ def _keys_under_notes(ctx) -> bool:
 
 
 def _receptors(ctx) -> None:
-    """Per-column receptor (on/off) + lighting_l (held) + hit lighting.
-    Ported verbatim from FrameRenderer._draw_receptors."""
+    """Argon key area, or shared native legacy key artwork."""
     scene = ctx.scene
-    atlas = ctx.atlas
     centre_y = ctx.receptor_centre_y_gl
     for c in range(ctx.key_count):
         x0 = ctx.col_x[c]
@@ -123,32 +114,7 @@ def _receptors(ctx) -> None:
                              (lr, lg, lb), 0.9 * fade)
             continue
 
-        # Legacy key area (lazer LegacyKeyArea): the KeyImage is stretched in
-        # X to the column width, but its HEIGHT is the texture's native pixel
-        # height in osu-pixels (NOT aspect-scaled to the column), anchored to
-        # the BOTTOM edge of the stage. A tall key PNG therefore stays its own
-        # height pinned to the bottom — it never balloons to a fraction of the
-        # column. Pressing just swaps key→keyD (no offset/scale bump).
-        kind = "receptor_on" if held else "receptor_off"
-        slot_idx = atlas.column_slot_index(kind, c)
-        nw, nh = atlas.column_native_size(kind, c)
-        # Texture native px live in lazer's 768-internal space (osu 480 ×
-        # POSITION_SCALE_FACTOR 1.6), so they scale to screen by height/768 —
-        # NOT height/480 (which is for skin.ini osu-space values like
-        # ColumnWidth). Verified: Vio key 107px → 157px at 1125h (×1.465).
-        tex_scale = ctx.height / 768.0
-        if nh > 0:
-            rec_h = max(1, int(round(nh * tex_scale)))
-        else:
-            asp = atlas.column_aspect(kind, c)
-            rec_h = max(1, int(cw / asp)) if asp > 0 else int(cw * RECEPTOR_HEIGHT_REL_COL)
-        # Bottom-anchored (top-anchored when the stage is flipped upside-down).
-        rec_y = (ctx.height - rec_h) if ctx.upside_down else 0
-        ctx.draw_sprite_idx(slot_idx, x0, rec_y, cw, rec_h, (1, 1, 1, 1))
-
-        # Share the custom-legacy lighting authority with the monolithic GPU
-        # path: authored native-aspect sprites only, additive blend, no tint,
-        # growth, or synthetic note-circle fallback.
+        ctx.fr._draw_legacy_key(c, held=held)
         ctx.fr._draw_custom_legacy_lighting(
             scene, c=c, x0=x0, cw=cw, centre_y=centre_y, held=held,
         )
@@ -246,14 +212,14 @@ def _draw_notes_body(ctx) -> None:
         col_has_skin = use_skin_notes and atlas.has_skin_note(n.column)
         if col_has_skin:
             note_asp = atlas.column_aspect("note_tap", n.column)
-            local_note_h = max(1, int(cw / note_asp)) if note_asp > 0 else cw
+            local_note_h = ctx.fr._legacy_note_height(note_asp)
         else:
             local_note_h = cw
         if col_has_skin:
             head_asp = atlas.column_aspect("note_hold_head", n.column)
-            head_h = max(1, int(cw / head_asp)) if head_asp > 0 else cw
+            head_h = ctx.fr._legacy_note_height(head_asp)
             tail_asp = atlas.column_aspect("note_hold_tail", n.column)
-            tail_h = max(1, int(cw / tail_asp)) if tail_asp > 0 else cw
+            tail_h = ctx.fr._legacy_note_height(tail_asp)
         else:
             head_h = cw
             tail_h = cw
@@ -264,68 +230,12 @@ def _draw_notes_body(ctx) -> None:
             body_top = min(y_head, y_tail)
             body_h = abs(y_head - y_tail)
             if col_has_skin_hold:
-                hold_geometry = legacy_hold_geometry(
-                    y_head,
-                    y_tail,
-                    head_h,
-                    tail_h,
-                    upside_down=upside_down,
-                )
-                body_top = hold_geometry.body_y
-                body_h = hold_geometry.body_height
-                body_base_idx = atlas.column_slot_index(
-                    "note_hold_body", n.column,
-                )
-                body_frames = atlas.column_frame_count(
-                    "note_hold_body", n.column,
-                )
-                body_idx = body_base_idx + ctx.fr._legacy_hold_body_frame_index(
-                    scene, n, body_frames,
-                )
                 head_idx = _animated_idx("note_hold_head", n.column, n.time_ms)
                 tail_idx = _animated_idx("note_hold_tail", n.column, n.time_ms)
-                body_style = legacy_note_body_style(
-                    ctx.mania_section,
-                    n.column,
-                    ctx.skin_ini.legacy_version
-                    if ctx.skin_ini is not None else 1.0,
-                )
-                if body_style != LEGACY_NOTE_BODY_STRETCH:
-                    body_aspect = atlas.column_aspect("note_hold_body", n.column)
-                    tile_h = (
-                        max(1.0, cw / body_aspect)
-                        if body_aspect > 0 else float(cw)
-                    )
-                    for segment in legacy_hold_body_segments(
-                        body_top, body_h, tile_h, body_style,
-                    ):
-                        ctx.fr._draw_sprite_idx_cropped_y(
-                            body_idx,
-                            x0,
-                            segment.y,
-                            cw,
-                            segment.height,
-                            (1, 1, 1, 1),
-                            source_bottom=segment.source_bottom,
-                            source_top=segment.source_top,
-                        )
-                else:
-                    ctx.draw_sprite_idx(body_idx, x0, body_top, cw, body_h, (1, 1, 1, 1))
-                ctx.draw_sprite_idx(
-                    head_idx,
-                    x0,
-                    hold_geometry.head_draw_y,
-                    cw,
-                    head_h,
-                    (1, 1, 1, 1),
-                )
-                ctx.draw_sprite_idx(
-                    tail_idx,
-                    x0,
-                    hold_geometry.tail_draw_y,
-                    cw,
-                    tail_h,
-                    (1, 1, 1, 1),
+                ctx.fr._draw_legacy_hold_note(
+                    scene, n, x0=x0, cw=cw, y_head=y_head, y_tail=y_tail,
+                    head_h=head_h, tail_h=tail_h,
+                    head_idx=head_idx, tail_idx=tail_idx,
                 )
             else:
                 pad = cw // 6

@@ -27,11 +27,14 @@ from osu_mania_renderer_v2.beatmap.skin_ini import (
 )
 from osu_mania_renderer_v2.gpu.atlas import (
     SpriteAtlas,
+    column_direct_name,
     column_variant,
     legacy_mod_slot_name,
 )
 from osu_mania_renderer_v2.gpu.legacy_mania import (
     LEGACY_NOTE_BODY_STRETCH,
+    LegacyHoldBodySegment,
+    legacy_clip_y_segment,
     legacy_disallow_zero_alpha_colour,
     legacy_doubled_alpha_colour,
     legacy_hold_body_frame,
@@ -44,6 +47,7 @@ from osu_mania_renderer_v2.gpu.legacy_mania import (
 from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
     legacy_hold_geometry,
     legacy_note_draw_y,
+    legacy_note_height,
 )
 from osu_mania_renderer_v2.gpu.shaders import load_programs
 from osu_mania_renderer_v2.gpu.text import text_to_texture
@@ -572,6 +576,14 @@ def next_hit_error_ema(old_average: float, offset_ms: float) -> float:
 
 def configure_direct_texture_sampling(name: str, texture) -> None:
     """Apply the per-slot sampling policy for full-resolution skin art."""
+    if name.startswith("column/"):
+        # Stable TextureGlSingle uses bilinear min/mag filtering for these
+        # sources. In particular, a narrow L image stretched only in X must
+        # not lose authored Y detail through isotropic atlas mip reduction.
+        texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        texture.repeat_x = False
+        texture.repeat_y = False
+        return
     if name in ("scorebar_bg", "scorebar_colour"):
         # These semi-transparent bars may be rotated for HpBarMania. Repeating
         # their coloured V=0 edge against transparent-black V=1 pixels creates
@@ -1070,7 +1082,7 @@ class FrameRenderer:
         # Cached single-layer texture arrays for full-res direct-draw sprites
         # and finite animation frames — built once, reused every video frame.
         self._direct_arr_cache: dict[
-            str | tuple[str, int], moderngl.TextureArray
+            str | tuple, moderngl.TextureArray
         ] = {}
         # Presentation-only legacy hold animation caches. These are local to
         # this renderer and never modify SceneState/replay truth.
@@ -3120,9 +3132,12 @@ class FrameRenderer:
 
     def _direct_texture_array(
         self, name: str, *, frame_index: int | None = None,
+        source_region: tuple[int, int] | None = None,
     ) -> moderngl.TextureArray | None:
         """Upload and cache one full-resolution direct texture source."""
         cache_key = name if frame_index is None else (name, frame_index)
+        if source_region is not None:
+            cache_key = (name, frame_index, source_region)
         arr = self._direct_arr_cache.get(cache_key)
         if arr is None:
             img = (
@@ -3132,6 +3147,17 @@ class FrameRenderer:
             )
             if img is None:
                 return None
+            if source_region is not None:
+                top, bottom = source_region
+                source = img
+                img = source.crop((0, top, source.width, bottom))
+                # A one-row gutter supports bilinear interpolation at strip
+                # seams. At a repeating image's ends it contains the opposite
+                # edge row, just as hardware Repeat would sample it.
+                if top < 0:
+                    img.paste(source.crop((0, source.height - 1, source.width, source.height)), (0, 0))
+                if bottom > source.height:
+                    img.paste(source.crop((0, 0, source.width, 1)), (0, img.height - 1))
             arr = self.rc.ctx.texture_array(
                 size=(img.width, img.height, 1), components=4, data=img.tobytes(),
             )
@@ -3145,6 +3171,12 @@ class FrameRenderer:
         source_u_end: float = 1.0,
         rotation_deg: float = 0.0,
         frame_index: int | None = None,
+        source_bottom: float = 0.0,
+        source_top: float = 1.0,
+        note_cover: bool = False,
+        repeat_x: bool | None = None,
+        repeat_y: bool | None = None,
+        source_region: tuple[int, int] | None = None,
     ) -> None:
         """Draw full-resolution skin art outside the shared 256² atlas.
 
@@ -3154,12 +3186,17 @@ class FrameRenderer:
         """
         if w <= 0 or h <= 0:
             return
-        arr = self._direct_texture_array(name, frame_index=frame_index)
+        arr = self._direct_texture_array(
+            name, frame_index=frame_index, source_region=source_region,
+        )
         if arr is None:
             return
+        if repeat_x is not None:
+            arr.repeat_x = repeat_x
+        if repeat_y is not None:
+            arr.repeat_y = repeat_y
         # Land on top of the queued batch (correct alpha order).
         self._flush_sprite_batch()
-        ctx = self.rc.ctx
         prog = self.programs["sprite"]
         sw, sh = self.rc.width, self.rc.height
         x0, x1 = (x / sw) * 2 - 1, ((x + w) / sw) * 2 - 1
@@ -3193,17 +3230,30 @@ class FrameRenderer:
             r, g, b, a = tint
         arr.use(0)
         self._set_sprite_prog_uniforms(prog, sh)
+        if note_cover:
+            prog["u_hd"].value = float(self._hd_active)
+            prog["u_fi"].value = float(self._fi_active)
+            prog["u_hd_recep"].value = self._cov_recep
+            prog["u_cov_fill"].value = self._cov_fill_px
+            prog["u_cov_grad"].value = self._cov_grad_px
+        # Fractions use GL bottom-to-top convention; reversed bounds mirror
+        # native art for upscroll without touching retained source pixels.
+        v_bottom = 1.0 - source_bottom
+        v_top = 1.0 - source_top
         verts = _EXT_QUAD_PACK(
-            bottom_left[0], bottom_left[1], 0, 1, 0, r, g, b, a,
-            bottom_right[0], bottom_right[1], source_u_end, 1, 0, r, g, b, a,
-            top_right[0], top_right[1], source_u_end, 0, 0, r, g, b, a,
-            bottom_left[0], bottom_left[1], 0, 1, 0, r, g, b, a,
-            top_right[0], top_right[1], source_u_end, 0, 0, r, g, b, a,
-            top_left[0], top_left[1], 0, 0, 0, r, g, b, a,
+            bottom_left[0], bottom_left[1], 0, v_bottom, 0, r, g, b, a,
+            bottom_right[0], bottom_right[1], source_u_end, v_bottom, 0, r, g, b, a,
+            top_right[0], top_right[1], source_u_end, v_top, 0, r, g, b, a,
+            bottom_left[0], bottom_left[1], 0, v_bottom, 0, r, g, b, a,
+            top_right[0], top_right[1], source_u_end, v_top, 0, r, g, b, a,
+            top_left[0], top_left[1], 0, v_top, 0, r, g, b, a,
         )
         vbo, vao = self._ext_quad_buffers()
         vbo.write(verts)
         vao.render(moderngl.TRIANGLES)
+        if note_cover:
+            prog["u_hd"].value = 0.0
+            prog["u_fi"].value = 0.0
 
     def _draw_direct_clipped_x(
         self,
@@ -3892,24 +3942,21 @@ class FrameRenderer:
             tint = tints[column_variant(n.column, rc.key_count)]
             col_has_skin = use_skin_notes and self.atlas.has_skin_note(n.column)
             # Note height: native aspect of the skin's tap sprite when
-            # available, else square (cw × cw). Per ppy/osu
-            # LegacyNotePiece.cs — both axes divide by texture.width, so
-            # height = cw × (tex.h / tex.w) == cw / aspect. The sprite's
-            # scrolling-direction edge is anchored at to_screen_y(yf).
+            # available, else square. Stable/lazer scale X to this column,
+            # and Y to WidthForNoteHeightScale (or minimum column width).
+            # The scrolling-direction edge anchors at to_screen_y(yf).
             if col_has_skin:
                 note_asp = self.atlas.column_aspect("note_tap", n.column)
-                local_note_h = (
-                    max(1, int(cw / note_asp)) if note_asp > 0 else cw
-                )
+                local_note_h = self._legacy_note_height(note_asp)
             else:
                 local_note_h = cw  # circle fallback: square
             # Hold head/tail get their own aspect since the head/tail
             # sprite may differ from the tap sprite.
             if col_has_skin:
                 head_asp = self.atlas.column_aspect("note_hold_head", n.column)
-                head_h = max(1, int(cw / head_asp)) if head_asp > 0 else cw
+                head_h = self._legacy_note_height(head_asp)
                 tail_asp = self.atlas.column_aspect("note_hold_tail", n.column)
-                tail_h = max(1, int(cw / tail_asp)) if tail_asp > 0 else cw
+                tail_h = self._legacy_note_height(tail_asp)
             else:
                 head_h = cw
                 tail_h = cw
@@ -3928,66 +3975,13 @@ class FrameRenderer:
                 body_top = min(y_head, y_tail)
                 body_h = abs(y_head - y_tail)
                 if col_has_skin_hold:
-                    hold_geometry = legacy_hold_geometry(
-                        y_head,
-                        y_tail,
-                        head_h,
-                        tail_h,
-                        upside_down=upside_down,
-                    )
-                    body_top = hold_geometry.body_y
-                    body_h = hold_geometry.body_height
-                    body_base_idx = self.atlas.column_slot_index(
-                        "note_hold_body", n.column,
-                    )
-                    body_frames = self.atlas.column_frame_count(
-                        "note_hold_body", n.column,
-                    )
-                    body_idx = body_base_idx + self._legacy_hold_body_frame_index(
-                        scene, n, body_frames,
-                    )
                     head_idx = _animated_idx("note_hold_head", n.column, n.time_ms)
                     tail_idx = _animated_idx("note_hold_tail", n.column, n.time_ms)
-                    body_style = legacy_note_body_style(
-                        self.mania_section,
-                        n.column,
-                        self.skin_ini.legacy_version
-                        if self.skin_ini is not None else 1.0,
+                    self._draw_legacy_hold_note(
+                        scene, n, x0=x0, cw=cw, y_head=y_head, y_tail=y_tail,
+                        head_h=head_h, tail_h=tail_h,
+                        head_idx=head_idx, tail_idx=tail_idx,
                     )
-                    if body_style != LEGACY_NOTE_BODY_STRETCH:
-                        body_aspect = self.atlas.column_aspect(
-                            "note_hold_body", n.column,
-                        )
-                        tile_h = (
-                            max(1.0, cw / body_aspect)
-                            if body_aspect > 0 else float(cw)
-                        )
-                        for segment in legacy_hold_body_segments(
-                            body_top, body_h, tile_h, body_style,
-                        ):
-                            self._draw_sprite_idx_cropped_y(
-                                body_idx,
-                                x0,
-                                segment.y,
-                                cw,
-                                segment.height,
-                                (1, 1, 1, 1),
-                                source_bottom=segment.source_bottom,
-                                source_top=segment.source_top,
-                            )
-                    else:
-                        # Stretch/clamp is one continuous draw across the
-                        # whole body extent.
-                        self._draw_sprite_idx(body_idx, x0, body_top,
-                                              cw, body_h, (1, 1, 1, 1))
-                    # Caps retain their accepted scrolling-edge anchors. The
-                    # body spans their visual centres for lazer's half overlap.
-                    self._draw_sprite_idx(head_idx, x0,
-                                          hold_geometry.head_draw_y,
-                                          cw, head_h, (1, 1, 1, 1))
-                    self._draw_sprite_idx(tail_idx, x0,
-                                          hold_geometry.tail_draw_y,
-                                          cw, tail_h, (1, 1, 1, 1))
                 else:
                     pad = cw // 6
                     self._draw_sprite("column_bg", x0 + pad, body_top,
@@ -4051,43 +4045,171 @@ class FrameRenderer:
             self._draw_argon_receptors(scene)
             return
 
-        rc = self.rc
-        h = rc.height
-        centre_y = self.receptor_centre_y_gl
-        for c in range(rc.key_count):
-            x0 = self.col_x[c]
-            cw = self.col_w[c]
-            held = scene.keys_held[c]
-            kind = "receptor_on" if held else "receptor_off"
-            slot_idx = self.atlas.column_slot_index(kind, c)
-
-            # LegacyKeyArea stretches the key image across the column but
-            # keeps its native DESIGN height (Texture.DisplaySize), scaled
-            # from lazer's 768-unit stage. This is important for padded
-            # receptor canvases: deriving height from the whole-canvas
-            # aspect stretches otherwise circular visible artwork. Atlas
-            # native sizes already divide @2x assets by ScaleAdjust.
-            _native_w, native_h = self.atlas.column_native_size(kind, c)
-            tex_scale = h / 768.0
-            if native_h > 0:
-                rec_h = max(1, int(round(native_h * tex_scale)))
-            else:
-                asp = self.atlas.column_aspect(kind, c)
-                rec_h = (
-                    max(1, int(cw / asp))
-                    if asp > 0
-                    else int(cw * RECEPTOR_HEIGHT_REL_COL)
-                )
-            # LegacyKeyArea is anchored to the stage edge: BottomCentre for
-            # downscroll, TopCentre for upscroll. Pressing only swaps
-            # KeyImage -> KeyImageD; it never resizes the authored key.
-            rec_y = h - rec_h if self.upside_down else 0
-            self._draw_sprite_idx(
-                slot_idx, x0, rec_y, cw, rec_h, (1, 1, 1, 1),
-            )
+        for c in range(self.rc.key_count):
+            self._draw_legacy_key(c, held=scene.keys_held[c])
             self._draw_custom_legacy_lighting(
-                scene, c=c, x0=x0, cw=cw, centre_y=centre_y, held=held,
+                scene, c=c, x0=self.col_x[c], cw=self.col_w[c],
+                centre_y=self.receptor_centre_y_gl, held=scene.keys_held[c],
             )
+
+    def _draw_legacy_key(self, column: int, *, held: bool) -> None:
+        """LegacyKeyArea's X stretch, native Y, edge anchor and source swap."""
+        kind = "receptor_on" if held else "receptor_off"
+        _width, native_height = self.atlas.column_native_size(kind, column)
+        height = max(1, int(round(native_height * self.rc.height / 768.0)))
+        y = self.rc.height - height if self.upside_down else 0
+        self._draw_legacy_column_direct(
+            column_direct_name(kind, column),
+            self.col_x[column], y, self.col_w[column], height,
+            source_bottom=1.0 if self.upside_down else 0.0,
+            source_top=0.0 if self.upside_down else 1.0,
+        )
+
+    def _draw_legacy_hold_note(
+        self, scene, note, *, x0: float, cw: float,
+        y_head: float, y_tail: float, head_h: float, tail_h: float,
+        head_idx: int, tail_idx: int,
+    ) -> None:
+        """One native legacy hold authority for frozen head/body/tail masking."""
+        def to_screen_y(fraction):
+            if fraction is None:
+                return None
+            receptor = self.receptor_centre_y_gl
+            if self.upside_down:
+                return int(fraction * receptor)
+            return int(receptor + (1.0 - fraction) * (self.rc.height - receptor))
+
+        geometry = legacy_hold_geometry(
+            y_head, y_tail, head_h, tail_h, upside_down=self.upside_down,
+            body_head_y=to_screen_y(note.body_head_y_fraction),
+            clip_head_y=to_screen_y(note.hold_clip_head_y_fraction),
+        )
+        self._draw_legacy_hold_body(
+            scene, note, x0=x0, cw=cw,
+            body_y=geometry.body_y, body_height=geometry.body_height,
+            clip_min_y=geometry.clip_min_y, clip_max_y=geometry.clip_max_y,
+        )
+        tail = legacy_clip_y_segment(
+            LegacyHoldBodySegment(geometry.tail_draw_y, tail_h, 0.0, 1.0),
+            minimum_y=geometry.clip_min_y, maximum_y=geometry.clip_max_y,
+        )
+        if tail is not None:
+            if tail.y == geometry.tail_draw_y and tail.height == tail_h:
+                self._draw_sprite_idx(tail_idx, x0, tail.y, cw, tail.height, (1, 1, 1, 1))
+            else:
+                self._draw_sprite_idx_cropped_y(
+                    tail_idx, x0, tail.y, cw, tail.height, (1, 1, 1, 1),
+                    source_bottom=tail.source_bottom, source_top=tail.source_top,
+                )
+        # Stable depths: body .795 < rear .7975 < head .8. Both complete
+        # and cropped tails stay below the full, unmasked authored head.
+        self._draw_sprite_idx(head_idx, x0, geometry.head_draw_y,
+                              cw, head_h, (1, 1, 1, 1))
+
+    def _draw_legacy_hold_body(
+        self, scene, note, *, x0: float, cw: float,
+        body_y: float, body_height: float,
+        clip_min_y: float | None = None, clip_max_y: float | None = None,
+    ) -> None:
+        """Shared stable body source authority; cap geometry stays with caller."""
+        column = note.column
+        style = legacy_note_body_style(
+            self.mania_section, column,
+            self.skin_ini.legacy_version if self.skin_ini is not None else 1.0,
+        )
+        _width, native_height = self.atlas.column_native_size("note_hold_body", column)
+        tile_height = native_height * self.rc.height / 768.0
+        frame = self._legacy_hold_body_frame_index(
+            scene, note, self.atlas.column_frame_count("note_hold_body", column),
+        )
+        for segment in legacy_hold_body_segments(
+            body_y, body_height, tile_height, style, upside_down=self.upside_down,
+        ):
+            segment = legacy_clip_y_segment(
+                segment, minimum_y=clip_min_y, maximum_y=clip_max_y,
+            )
+            if segment is None:
+                continue
+            self._draw_legacy_column_direct(
+                column_direct_name("note_hold_body", column),
+                x0, segment.y, cw, segment.height,
+                frame_index=frame,
+                source_bottom=segment.source_bottom,
+                source_top=segment.source_top,
+                note_cover=True,
+                repeat_y=style != LEGACY_NOTE_BODY_STRETCH,
+            )
+
+    def _draw_legacy_column_direct(
+        self, name: str, x: float, y: float, width: float, height: float,
+        *, source_bottom: float, source_top: float,
+        frame_index: int | None = None, note_cover: bool = False,
+        repeat_y: bool = False,
+    ) -> None:
+        """Draw retained native pixels, splitting tall sources at GPU limits.
+
+        Strip uploads are lazy and cached by source/frame/row range. No source
+        downscale is needed even for authored 40000-row legacy hold bodies.
+        """
+        image = (
+            self.atlas.direct_image(name) if frame_index is None
+            else self.atlas.direct_frame_image(name, frame_index)
+        )
+        if image is None or height <= 0 or width <= 0:
+            return
+        max_size = self.rc.ctx.info["GL_MAX_TEXTURE_SIZE"]
+        kwargs = dict(
+            frame_index=frame_index, note_cover=note_cover,
+            repeat_x=repeat_y, repeat_y=repeat_y,
+        )
+        if image.height <= max_size:
+            self._draw_direct(
+                name, x, y, width, height,
+                source_bottom=source_bottom, source_top=source_top, **kwargs,
+            )
+            return
+        # Split in source space, preserving the destination slope and phase.
+        start = (1.0 - source_bottom) * image.height
+        end = (1.0 - source_top) * image.height
+        if start == end:
+            return
+        low, high = sorted((start, end))
+        core_height = max_size - 2  # room for one adjacent source row per edge
+        first = max(0, int(low) // core_height)
+        last = min((image.height - 1) // core_height, int(high) // core_height)
+        strips = range(first, last + 1)
+        if end < start:
+            strips = reversed(strips)
+        for index in strips:
+            top = index * core_height
+            bottom = min(image.height, top + core_height)
+            a, b = max(low, top), min(high, bottom)
+            if b <= a:
+                continue
+            row_bottom, row_top = (a, b) if end > start else (b, a)
+            t_bottom = (row_bottom - start) / (end - start)
+            t_top = (row_top - start) / (end - start)
+            crop_top = top - 1 if repeat_y else max(0, top - 1)
+            crop_bottom = bottom + 1 if repeat_y else min(image.height, bottom + 1)
+            crop_height = crop_bottom - crop_top
+            self._draw_direct(
+                name, x, y + height * t_bottom, width, height * (t_top - t_bottom),
+                source_bottom=1.0 - (row_bottom - crop_top) / crop_height,
+                source_top=1.0 - (row_top - crop_top) / crop_height,
+                source_region=(crop_top, crop_bottom),
+                frame_index=frame_index, note_cover=note_cover,
+                repeat_x=repeat_y,
+            )
+
+    def _legacy_note_height(self, aspect: float) -> int:
+        return legacy_note_height(
+            aspect, minimum_column_width=min(self.col_w),
+            configured_width=(
+                self.mania_section.width_for_note_height_scale
+                if self.mania_section is not None else None
+            ),
+            render_height=self.rc.height,
+        )
 
     def _legacy_lighting_rect(
         self, slot: str, *, c: int, x0: int, cw: int, centre_y: int,

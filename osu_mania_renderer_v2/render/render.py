@@ -51,7 +51,9 @@ from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
-from osu_mania_renderer_v2.render.scene import HitErrorEvent, JudgmentPopup, snapshot
+from osu_mania_renderer_v2.render.scene import (
+    HitErrorEvent, HoldVisualState, JudgmentPopup, build_hold_visual_states, snapshot,
+)
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
@@ -189,6 +191,7 @@ class RenderPlan:
     # scaling carried in score_scale.
     score_scale: float = 1.0
     score_final: int | None = None
+    hold_visual_states: dict[tuple[int, int], HoldVisualState] = field(default_factory=dict)
 
 
 async def build_render_plan(
@@ -243,6 +246,9 @@ async def build_render_plan(
         modded.notes, replay.key_events, modded.key_count,
         overall_difficulty=getattr(modded, "overall_difficulty", None),
     )
+    # Retain actual head matches before aggregate tally reconciliation can
+    # demote them or promote unmatched events to synthetic zero-offset hits.
+    matched_head_events = judgments.events
     modded_od = getattr(modded, "overall_difficulty", None)
     hit_error_windows = (
         windows_for_od(float(modded_od))
@@ -532,6 +538,10 @@ async def build_render_plan(
     press_iters, release_iters = _key_edges_per_col(
         replay.key_events, modded.key_count,
     )
+    hold_visual_states = build_hold_visual_states(
+        modded.notes, matched_head_events, press_iters, release_iters,
+        release_window_ms=hit_error_windows[-1],
+    )
 
     return RenderPlan(
         options=options, skin_dir=skin_dir, beatmap_dir=beatmap_dir,
@@ -558,6 +568,7 @@ async def build_render_plan(
         n_scoring=_n_scoring, max_combo_portion=_max_combo_portion,
         mod_mult=_mod_mult, mania_mw=_mania_mw,
         score_scale=_score_scale, score_final=_score_final,
+        hold_visual_states=hold_visual_states,
     )
 
 
@@ -588,6 +599,7 @@ def build_frame_state(
         sv_table=plan.sv_table,
         note_times=plan.note_times,
         max_hold_dur_ms=plan.max_hold_dur_ms,
+        hold_visual_states=getattr(plan, "hold_visual_states", None),
     )
     # Active judgments use the actual effective judgment time (press time for
     # hits, scheduled time for misses), matching the score/combo fold below.

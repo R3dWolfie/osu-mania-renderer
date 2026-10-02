@@ -75,9 +75,9 @@ def legacy_note_body_style(
         if configured is None:
             configured = section.note_body_style
 
-    # Modern legacy skins default to RepeatBottom. Stable's undocumented
-    # value 1 and all malformed/out-of-range values use the same deterministic
-    # compatibility fallback rather than crashing or silently stretching.
+    # SkinMania.GetNoteBodyStyle defaults to 3. Section.ConvertString uses
+    # Enum.Parse, so raw 1 (and other unnamed integers) reaches the draw
+    # switch's default branch, which has the same alignment as raw 3.
     if configured not in _VALID_NOTE_BODY_STYLES:
         return LEGACY_NOTE_BODY_REPEAT_BOTTOM
     return configured
@@ -98,26 +98,56 @@ class LegacyHoldBodySegment:
     source_top: float
 
 
+def legacy_clip_y_segment(
+    segment: LegacyHoldBodySegment,
+    *,
+    minimum_y: float | None = None,
+    maximum_y: float | None = None,
+) -> LegacyHoldBodySegment | None:
+    """Intersect a mask with an existing quad, retaining its source-V slope."""
+    if segment.height <= 0:
+        return None
+    bottom = max(segment.y, minimum_y) if minimum_y is not None else segment.y
+    top = min(segment.y + segment.height, maximum_y) if maximum_y is not None else segment.y + segment.height
+    if top <= bottom:
+        return None
+    source_delta = segment.source_top - segment.source_bottom
+    return LegacyHoldBodySegment(
+        bottom, top - bottom,
+        segment.source_bottom + source_delta * (bottom - segment.y) / segment.height,
+        segment.source_bottom + source_delta * (top - segment.y) / segment.height,
+    )
+
+
 def legacy_hold_body_segments(
     body_y: float,
     body_height: float,
     tile_height: float,
     style: int,
+    *,
+    upside_down: bool = False,
 ) -> tuple[LegacyHoldBodySegment, ...]:
-    """Lay out stable-aligned repeat slices without squashing partial tiles."""
+    """Lay out stable's source phase, then mirror into GL Y-up for upscroll.
+
+    RepeatBottom/default sets DrawTop=0: image row zero starts at the tail,
+    so a short downscroll body uses the TOP of the source. RepeatTop aligns
+    its last source row to the head. Tile height follows native design Y
+    scale (stage height / 768), independently of the column's X stretch.
+    """
     if body_height <= 0 or tile_height <= 0:
         return ()
 
     if style == LEGACY_NOTE_BODY_STRETCH:
-        return (LegacyHoldBodySegment(body_y, body_height, 0.0, 1.0),)
+        bounds = (1.0, 0.0) if upside_down else (0.0, 1.0)
+        return (LegacyHoldBodySegment(body_y, body_height, *bounds),)
 
     if style == LEGACY_NOTE_BODY_REPEAT_TOP:
-        phase = (-body_height) % tile_height
+        phase = 0.0
     elif style == LEGACY_NOTE_BODY_REPEAT_TOP_AND_BOTTOM:
         phase = ((tile_height - body_height) / 2.0) % tile_height
     else:
         # RepeatBottom, including the compatibility fallback.
-        phase = 0.0
+        phase = (-body_height) % tile_height
 
     segments: list[LegacyHoldBodySegment] = []
     cursor = 0.0
@@ -133,6 +163,13 @@ def legacy_hold_body_segments(
         ))
         cursor += segment_height
         source_offset = 0.0
+    if upside_down:
+        return tuple(LegacyHoldBodySegment(
+            y=body_y + body_height - (segment.y - body_y) - segment.height,
+            height=segment.height,
+            source_bottom=segment.source_top,
+            source_top=segment.source_bottom,
+        ) for segment in reversed(segments))
     return tuple(segments)
 
 

@@ -5,6 +5,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 from osu_mania_renderer_v2.beatmap.beatmap import sv_distance_at as _sv_distance_at
+from osu_mania_renderer_v2.beatmap.judgments import JudgmentEvent
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, VisualMods
 
 # Single-slot identity caches for per-render immutable inputs that the old
@@ -14,6 +15,60 @@ from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, VisualMods
 # per-frame recomputation they replace. (Perf only; no behaviour change.)
 _KEYS_TIMES_CACHE: tuple | None = None      # (key_events_ref, [e.time_ms])
 _MIN_SV_CACHE: tuple | None = None          # (timing_points_ref, min_sv)
+
+
+@dataclass(frozen=True)
+class HoldVisualState:
+    """Replay-backed lifecycle facts, computed once without changing scoring."""
+
+    head_hit_time_ms: int
+    drop_time_ms: int | None = None
+    finish_time_ms: float | None = None
+
+
+def build_hold_visual_states(
+    notes: tuple,
+    head_events: tuple[JudgmentEvent, ...],
+    press_times: list[list[int]],
+    release_times: list[list[int]],
+    release_window_ms: float,
+) -> dict[tuple[int, int], HoldVisualState]:
+    """Use matched head judgments and existing replay edges as visual truth.
+
+    Use the original matched events before aggregate count reconciliation:
+    relabelled tiers and synthetic zero-offset hits do not prove a head press.
+    Stable keeps a frozen head until the first break or successful finish.
+    Re-pressing after a break never freezes it again.
+    """
+    heads = {(event.column, event.time_ms): event for event in head_events
+             if not event.is_tail and event.judgment != "miss"
+             and event.hit_offset_ms is not None}
+    states = {}
+    for note in notes:
+        if not isinstance(note, HoldNote):
+            continue
+        key = (note.column, note.time_ms)
+        event = heads.get(key)
+        if event is None:
+            continue
+        hit_time = int(event.time_ms + event.hit_offset_ms)
+        presses = press_times[note.column]
+        index = bisect_left(presses, hit_time)
+        if index == len(presses) or presses[index] != hit_time:
+            continue
+        releases = release_times[note.column]
+        index = bisect_left(releases, hit_time)
+        release = releases[index] if index < len(releases) else None
+        if release is not None and release < note.end_time_ms - release_window_ms:
+            states[key] = HoldVisualState(hit_time, drop_time_ms=release)
+        else:
+            # Stable Finish bypasses all sprites on a valid tail release;
+            # a held tail remains frozen until the late miss window expires.
+            finish = note.end_time_ms + release_window_ms
+            if release is not None:
+                finish = min(finish, release)
+            states[key] = HoldVisualState(hit_time, finish_time_ms=finish)
+    return states
 
 
 @dataclass(frozen=True)
@@ -27,6 +82,14 @@ class VisibleNote:
     # so each note's animation starts from frame 0 when it spawns,
     # rather than all notes in a column animating in sync.
     time_ms: int = 0
+    # Separate the actual scrolling body from the frozen/released head.
+    # A consumed body is masked, never rescaled between the frozen caps.
+    hold_head_hit: bool = False
+    hold_active: bool = False
+    body_head_y_fraction: float | None = None
+    # Stable masks body + tail at this head's centre; the head is unmasked.
+    # After a drop this position moves with the released head.
+    hold_clip_head_y_fraction: float | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +234,7 @@ def snapshot(
     # how far back to look for still-active holds.
     note_times: tuple[int, ...] | None = None,
     max_hold_dur_ms: int = 0,
+    hold_visual_states: dict[tuple[int, int], HoldVisualState] | None = None,
 ) -> SceneState:
     """Return what's on screen at time t_ms.
 
@@ -186,6 +250,7 @@ def snapshot(
     """
     visible: list[VisibleNote] = []
     consumed = consumed_times or {}
+    hold_states = hold_visual_states or {}
     svs = sv_for_note or {}
     # SV-integration path: when both `timing_points` and `sv_table` are
     # given we compute note positions from integrated distance, which
@@ -240,13 +305,12 @@ def snapshot(
         if n.time_ms > horizon:
             break
         if isinstance(n, HoldNote):
-            # Hold disappears the moment its tail reaches the receptor.
-            # Anything else (body extending below the receptor row) is the
-            # cause of the "notes don't disappear" complaint, since holds
-            # are most of the playfield in this map.
-            if t_ms >= n.end_time_ms:
+            state = hold_states.get((n.column, n.time_ms))
+            if state is not None and state.finish_time_ms is not None:
+                if t_ms >= state.finish_time_ms:
+                    continue
+            elif t_ms >= n.end_time_ms + MISS_GRACE_MS:
                 continue
-            head_consumed = consumed.get((n.column, n.time_ms))
             if use_integration:
                 head_y = _y_integrated(
                     n.time_ms, current_cum, approach_ms,
@@ -260,16 +324,29 @@ def snapshot(
                 sv = svs.get((n.column, n.time_ms), 1.0)
                 head_y = _y(n.time_ms, t_ms, approach_ms, sv)
                 tail_y = _y(n.end_time_ms, t_ms, approach_ms, sv)
-            # Once the head was consumed AND has reached the receptor,
-            # clamp the visual head to the receptor row so the body is
-            # anchored at the bottom instead of sliding past. The renderer
-            # also hides the head circle when head_y_fraction >= 1.
-            if head_consumed is not None and t_ms >= n.time_ms:
+            body_head_y = head_y
+            head_hit = state is not None and t_ms >= state.head_hit_time_ms
+            active = False
+            clip_head_y = None
+            # An attempt-map entry alone never freezes or masks a hold.
+            if head_hit and t_ms >= n.time_ms:
                 head_y = 1.0
+                active = state.drop_time_ms is None or t_ms < state.drop_time_ms
+                if not active:
+                    unfreeze_time = max(n.time_ms, state.drop_time_ms)
+                    if use_integration:
+                        unfreeze_cum = _sv_distance_at(unfreeze_time, timing_points, sv_table)
+                        head_y += (current_cum - unfreeze_cum) / approach_ms
+                    else:
+                        head_y += (t_ms - unfreeze_time) * sv / approach_ms
+                clip_head_y = head_y
             visible.append(VisibleNote(
                 column=n.column, is_hold=True,
                 y_fraction=head_y, head_y_fraction=head_y, tail_y_fraction=tail_y,
                 time_ms=n.time_ms,
+                hold_head_hit=head_hit, hold_active=active,
+                body_head_y_fraction=body_head_y,
+                hold_clip_head_y_fraction=clip_head_y,
             ))
         else:
             attempt_t = consumed.get((n.column, n.time_ms))
