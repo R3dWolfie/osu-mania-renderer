@@ -2,12 +2,11 @@
 
 Health = the legacy scorebar (scorebar-bg/colour/marker, top-left) when the
 skin ships it, else the source-shaped Argon health path. Score/accuracy use
-the skin score font. Argon uses the shared dual edge hit-error meters and a
+the skin score font. Mania uses one shared horizontal hit-error meter and a
 separate website-controlled UR readout; obsolete R3D timing chrome stays off.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import moderngl
@@ -49,18 +48,6 @@ ARGON_ACCURACY_MARGIN = (20.0, 20.0)
 ARGON_PP_POSITION = (20.0, 72.0)
 ARGON_PP_SCALE = 0.8
 
-# Shared BarHitErrorMeter constants from osu!lazer/the audited Standard HUD.
-ARGON_HEM_ICON_SIZE = 16.0
-ARGON_HEM_ICON_BAR_GAP = 6.0
-ARGON_HEM_BAR_LENGTH = 200.0
-ARGON_HEM_COLUMN_SIZE = 14.0
-ARGON_HEM_BAND_SIZE = 2.0
-ARGON_HEM_TICK_THICKNESS = 4.0
-ARGON_HEM_CENTRE_MARKER_SIZE = 8.0
-ARGON_HEM_CHEVRON_SIZE = 8.0
-ARGON_HEM_CHEVRON_STROKE = 2.0
-ARGON_HEM_EDGE_FADE_SIZE = 6.0
-
 
 @dataclass(frozen=True)
 class ArgonHudGeometry:
@@ -75,32 +62,6 @@ class ArgonHudGeometry:
     score_anchor: tuple[float, float]
     accuracy_anchor: tuple[float, float]
     pp_anchor: tuple[float, float]
-
-
-@dataclass(frozen=True)
-class ArgonHitErrorMeterInstance:
-    left: float
-    top: float
-    mirrored: bool
-
-
-@dataclass(frozen=True)
-class ArgonHitErrorMeterGeometry:
-    scale: float
-    width: float
-    height: float
-    axis_start: float
-    axis_centre: float
-    cross_centre: float
-    bar_length: float
-    column_size: float
-    band_size: float
-    tick_thickness: float
-    centre_marker_size: float
-    chevron_size: float
-    chevron_stroke: float
-    edge_fade_size: float
-    instances: tuple[ArgonHitErrorMeterInstance, ArgonHitErrorMeterInstance]
 
 
 @dataclass(frozen=True)
@@ -183,57 +144,6 @@ def argon_hud_geometry(render_width: int, render_height: int) -> ArgonHudGeometr
         pp_anchor=(render_width - ARGON_PP_POSITION[0] * scale,
                    ARGON_PP_POSITION[1] * scale),
     )
-
-
-def argon_hit_error_meter_geometry(
-    render_width: int,
-    render_height: int,
-) -> ArgonHitErrorMeterGeometry:
-    """Two vertical meters anchored to the opposing centre edges."""
-    scale = render_height / ARGON_REFERENCE_HEIGHT
-    width = (ARGON_HEM_COLUMN_SIZE + ARGON_HEM_CHEVRON_SIZE) * scale
-    height = (
-        ARGON_HEM_ICON_SIZE * 2.0
-        + ARGON_HEM_ICON_BAR_GAP * 2.0
-        + ARGON_HEM_BAR_LENGTH
-    ) * scale
-    top = (render_height - height) * 0.5
-    return ArgonHitErrorMeterGeometry(
-        scale=scale,
-        width=width,
-        height=height,
-        axis_start=(ARGON_HEM_ICON_SIZE + ARGON_HEM_ICON_BAR_GAP) * scale,
-        axis_centre=height * 0.5,
-        cross_centre=(ARGON_HEM_CHEVRON_SIZE
-                      + ARGON_HEM_COLUMN_SIZE * 0.5) * scale,
-        bar_length=ARGON_HEM_BAR_LENGTH * scale,
-        column_size=ARGON_HEM_COLUMN_SIZE * scale,
-        band_size=ARGON_HEM_BAND_SIZE * scale,
-        tick_thickness=ARGON_HEM_TICK_THICKNESS * scale,
-        centre_marker_size=ARGON_HEM_CENTRE_MARKER_SIZE * scale,
-        chevron_size=ARGON_HEM_CHEVRON_SIZE * scale,
-        chevron_stroke=ARGON_HEM_CHEVRON_STROKE * scale,
-        edge_fade_size=ARGON_HEM_EDGE_FADE_SIZE * scale,
-        instances=(
-            ArgonHitErrorMeterInstance(0.0, top, False),
-            ArgonHitErrorMeterInstance(render_width - width, top, True),
-        ),
-    )
-
-
-def argon_hit_error_axis_y(
-    geometry: ArgonHitErrorMeterGeometry,
-    offset_ms: float,
-    max_hit_window: float,
-) -> float:
-    """Map early (negative) hits toward the top and late hits downward."""
-    if max_hit_window <= 0:
-        position = 0.5
-    else:
-        position = max(0.0, min(
-            1.0, (offset_ms / max_hit_window + 1.0) * 0.5,
-        ))
-    return geometry.axis_start + position * geometry.bar_length
 
 
 # Argon counter geometry. The argon-counter glyphs are 240px square boxes with
@@ -327,26 +237,6 @@ def _draw_argon_wedges(ctx) -> None:
         )
 
 
-def _draw_capsule_segment(ctx, start, end, thickness, tint) -> None:
-    """Draw one top-left-space rounded segment using the bundled capsule."""
-    length = math.dist(start, end)
-    if length <= 0 or thickness <= 0:
-        return
-    centre_x = (start[0] + end[0]) * 0.5
-    centre_y_gl = ctx.height - (start[1] + end[1]) * 0.5
-    angle = math.degrees(math.atan2(start[1] - end[1], end[0] - start[0]))
-    width = length + thickness
-    ctx.fr._draw_direct(
-        "argon_hp",
-        centre_x - width * 0.5,
-        centre_y_gl - thickness * 0.5,
-        width,
-        thickness,
-        tint=tint,
-        rotation_deg=angle,
-    )
-
-
 def _draw_argon_health_paths(ctx, geometry: ArgonHudGeometry, hp: float) -> None:
     """Draw source Argon background/glow/main shader quads from ``scene.hp``."""
     hp = max(0.0, min(1.0, float(hp)))
@@ -435,10 +325,7 @@ def hit_strip(*, element, skin, assets, variables, ctx) -> None:
         not hud_component_visibility(ctx.options).hit_error_meter
     ):
         return
-    if is_argon_default(ctx, 0):
-        _argon_hit_error(ctx)
-    else:
-        ctx.fr._draw_lazer_hit_error_meter(ctx.scene)
+    ctx.fr._draw_hit_error_meter(ctx.scene)
 
 
 def _fmt_time(ms: float) -> str:
@@ -483,152 +370,6 @@ def progress_bar(*, element, skin, assets, variables, ctx) -> None:
         _argon_song_progress(ctx)
     else:
         ctx.fr._draw_progress_bar(ctx.scene)
-
-
-def _argon_hit_error(ctx) -> None:
-    """Draw Argon's source pair of vertically-oriented BarHitErrorMeters."""
-    from osu_mania_renderer_v2.gpu.renderer import (
-        LAZER_HIT_RESULT_COLOURS,
-        lazer_hit_error_tick_state,
-        lazer_hit_window_bands,
-    )
-
-    fr = ctx.fr
-    s = ctx.scene
-    rc = fr.rc
-    geometry = argon_hit_error_meter_geometry(rc.width, rc.height)
-    bands = lazer_hit_window_bands(s.hit_error_windows)
-    if not bands:
-        return
-    max_window = bands[-1].window_ms
-
-    def rect(
-        instance, local_x, local_top, width, height, tint,
-        *, sprite="column_bg",
-    ):
-        if instance.mirrored:
-            local_x = geometry.width - local_x - width
-        _draw_tl(
-            ctx, sprite,
-            instance.left + local_x,
-            instance.top + local_top,
-            width, height, tint,
-        )
-
-    def point(instance, local_x, local_y):
-        if instance.mirrored:
-            local_x = geometry.width - local_x
-        return instance.left + local_x, instance.top + local_y
-
-    def draw_band(instance, band, *, fade_edges=False):
-        extent = geometry.bar_length * band.relative_length
-        top = geometry.axis_centre - extent * 0.5
-        local_x = geometry.cross_centre - geometry.band_size * 0.5
-        if not fade_edges:
-            rect(instance, local_x, top, geometry.band_size, extent,
-                 (*band.colour, 1.0))
-            return
-        fade = min(geometry.edge_fade_size, extent * 0.5)
-        solid = max(0.0, extent - fade * 2.0)
-        if solid > 0:
-            rect(instance, local_x, top + fade, geometry.band_size, solid,
-                 (*band.colour, 1.0))
-        slices = 6
-        for index in range(slices):
-            y0 = fade * index / slices
-            y1 = fade * (index + 1) / slices
-            alpha = (index + 0.5) / slices
-            rect(instance, local_x, top + y0, geometry.band_size, y1 - y0,
-                 (*band.colour, alpha))
-            rect(instance, local_x, top + extent - y1,
-                 geometry.band_size, y1 - y0, (*band.colour, alpha))
-
-    for instance in geometry.instances:
-        draw_band(instance, bands[-1], fade_edges=True)
-        for band in reversed(bands[:-1]):
-            draw_band(instance, band)
-        marker_colour = bands[0].colour
-        size = geometry.centre_marker_size
-        marker_x = geometry.cross_centre - size * 0.5
-        marker_top = geometry.axis_centre - size * 0.5
-        rect(instance, marker_x, marker_top, size, size,
-             (*marker_colour, 1.0), sprite="note_circle")
-
-    # Tick capsules use their real scene ages/offsets/results and additive
-    # blending. The same source data is presented on both mirrored meters.
-    fr._flush_sprite_batch()
-    gl = rc.ctx
-    gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)
-    try:
-        for instance in geometry.instances:
-            for event in s.hit_error_events[-50:]:
-                state = lazer_hit_error_tick_state(event.age_ms)
-                if state.alpha <= 0 or state.width_fraction <= 0:
-                    continue
-                y = argon_hit_error_axis_y(
-                    geometry, event.offset_ms, max_window,
-                )
-                width = geometry.column_size * state.width_fraction
-                local_x = geometry.cross_centre - width * 0.5
-                colour = LAZER_HIT_RESULT_COLOURS.get(
-                    event.judgment, (1.0, 1.0, 1.0),
-                )
-                rect(
-                    instance, local_x, y - geometry.tick_thickness * 0.5,
-                    width, geometry.tick_thickness,
-                    (*colour, state.alpha),
-                )
-        fr._flush_sprite_batch()
-    finally:
-        gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
-
-    for instance in geometry.instances:
-        # Darkened centre foreground above the judgment ticks.
-        inner = geometry.centre_marker_size * 0.5
-        colour = tuple(channel * 0.7 for channel in bands[0].colour)
-        rect(
-            instance,
-            geometry.cross_centre - inner * 0.5,
-            geometry.axis_centre - inner * 0.5,
-            inner, inner, (*colour, 1.0), sprite="note_circle",
-        )
-
-        # Original text fallback for unavailable hare/tortoise art. E/L stay
-        # within the 16-unit source label slots at both screen edges.
-        for label, local_y in (
-            ("E", ARGON_HEM_ICON_SIZE * 0.5 * geometry.scale),
-            ("L", (ARGON_HEM_ICON_SIZE + ARGON_HEM_ICON_BAR_GAP
-                   + ARGON_HEM_BAR_LENGTH + ARGON_HEM_ICON_BAR_GAP
-                   + ARGON_HEM_ICON_SIZE * 0.5) * geometry.scale),
-        ):
-            texture, width, height = fr._cached_text(
-                label, 18, (235, 235, 245, 235),
-            )
-            x, y = point(instance, geometry.cross_centre, local_y)
-            fr._draw_external_texture(
-                texture,
-                x=int(round(x - width * 0.5)),
-                y=int(round(rc.height - y - height * 0.5)),
-                w=width, h=height, alpha=0.92,
-            )
-
-        if s.hit_error_ema_ms is not None:
-            axis = argon_hit_error_axis_y(
-                geometry, s.hit_error_ema_ms, max_window,
-            )
-            points = (
-                point(instance, geometry.scale, axis - 4.0 * geometry.scale),
-                point(instance, 7.0 * geometry.scale, axis),
-                point(instance, geometry.scale, axis + 4.0 * geometry.scale),
-            )
-            _draw_capsule_segment(
-                ctx, points[0], points[1], geometry.chevron_stroke,
-                (1, 1, 1, 0.95),
-            )
-            _draw_capsule_segment(
-                ctx, points[1], points[2], geometry.chevron_stroke,
-                (1, 1, 1, 0.95),
-            )
 
 
 def _argon_unstable_rate(ctx) -> None:

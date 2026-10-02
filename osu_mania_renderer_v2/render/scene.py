@@ -148,6 +148,9 @@ class SceneState:
     # lazer's floatingAverage = old * 0.9 + offset * 0.1. None means that no
     # scored hit has occurred yet, so the indicator remains hidden.
     hit_error_ema_ms: float | None = None
+    # Displayed normalized position after the current 800ms OutQuint move.
+    # Derived from absolute hit timestamps, not mutable renderer frame history.
+    hit_error_chevron_position: float | None = None
     # Average hit offset across the play so far, in ms (positive = late).
     avg_hit_offset_ms: float = 0.0
     # Unstable rate (10 × stddev of all signed hit offsets so far).

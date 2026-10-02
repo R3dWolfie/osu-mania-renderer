@@ -29,6 +29,7 @@ from osu_mania_renderer_v2.gpu.argon_wedge import (
     argon_wedge_transform_point,
 )
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
+from osu_mania_renderer_v2.gpu.hit_error_meter import hit_error_meter_geometry
 from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
 from osu_mania_renderer_v2.render.scene import HitErrorEvent, SceneState
 from osu_mania_renderer_v2.wiki_elements import hud
@@ -36,8 +37,6 @@ from osu_mania_renderer_v2.wiki_elements.context import FrameContext
 from osu_mania_renderer_v2.wiki_elements.hud import (
     ARGON_HEALTH_GLOW_PORTION,
     ARGON_PP_SCALE,
-    argon_hit_error_axis_y,
-    argon_hit_error_meter_geometry,
     argon_hud_geometry,
     hud_component_visibility,
 )
@@ -169,38 +168,20 @@ def test_argon_health_progress_is_continuous_through_rounded_transitions():
         assert np.linalg.norm(np.subtract(after, at)) < 0.01
 
 
-def test_argon_hit_error_pair_uses_source_vertical_geometry():
-    geometry = argon_hit_error_meter_geometry(1280, 720)
-    left, right = geometry.instances
-
-    assert geometry.width == 22
-    assert geometry.height == 244
-    assert geometry.axis_start == 22
-    assert geometry.axis_centre == 122
-    assert geometry.cross_centre == 15
-    assert geometry.bar_length == 200
-    assert geometry.column_size == 14
-    assert geometry.band_size == 2
-    assert geometry.tick_thickness == 4
-    assert geometry.centre_marker_size == 8
-    assert geometry.chevron_size == 8
-    assert geometry.chevron_stroke == 2
-    assert geometry.edge_fade_size == 6
-    assert (left.left, left.top, left.mirrored) == (0, 238, False)
-    assert (right.left, right.top, right.mirrored) == (1258, 238, True)
-    assert argon_hit_error_axis_y(geometry, -127, 127) == 22
-    assert argon_hit_error_axis_y(geometry, 0, 127) == 122
-    assert argon_hit_error_axis_y(geometry, 127, 127) == 222
+def test_argon_mania_meter_uses_same_horizontal_720_origin():
+    geometry = hit_error_meter_geometry(1280, 720)
+    assert (geometry.component_x, geometry.component_top) == (540, 690)
+    assert (geometry.natural_width, geometry.natural_height) == (244, 22)
+    assert 720 - (geometry.component_top + geometry.natural_height) == 8 * geometry.scale
+    assert geometry.cross_centre == 7
 
 
-def test_argon_hit_error_pair_scales_from_720_at_1080p():
-    geometry = argon_hit_error_meter_geometry(1920, 1080)
-
+def test_argon_mania_meter_scales_from_720_at_1080p():
+    geometry = hit_error_meter_geometry(1920, 1080)
     assert geometry.scale == 1.5
-    assert geometry.width == 33
-    assert geometry.height == 366
-    assert geometry.instances[0].top == 357
-    assert geometry.instances[1].left == 1887
+    assert (geometry.component_x, geometry.component_top) == (810, 1035)
+    assert (geometry.natural_width, geometry.natural_height) == (366, 33)
+    assert 1080 - (geometry.component_top + geometry.natural_height) == 8 * geometry.scale
 
 
 @pytest.mark.parametrize(
@@ -406,64 +387,31 @@ def test_show_mods_false_hides_actual_replay_mod_row():
     assert draws == []
 
 
-def test_hit_error_setting_gates_both_argon_meters(monkeypatch):
+def test_hit_error_setting_gates_shared_mania_meter():
     calls = []
-    monkeypatch.setattr(hud, "is_argon_default", lambda ctx, col: True)
-    monkeypatch.setattr(hud, "_argon_hit_error", lambda ctx: calls.append(ctx))
     ctx = SimpleNamespace(
         options=RenderOptions(resolution=(1280, 720), fps=60),
-        fr=SimpleNamespace(),
+        fr=SimpleNamespace(_draw_hit_error_meter=lambda scene: calls.append(scene)),
         scene=SimpleNamespace(),
     )
-
     hud.hit_strip(element=None, skin=None, assets=None, variables=None, ctx=ctx)
-    assert calls == [ctx]
-
+    assert calls == [ctx.scene]
     ctx.options = RenderOptions(
         resolution=(1280, 720), fps=60, show_hit_error_meter=False,
     )
     hud.hit_strip(element=None, skin=None, assets=None, variables=None, ctx=ctx)
-    assert calls == [ctx]
+    assert calls == [ctx.scene]
 
 
-def test_argon_meter_consumes_scene_mania_windows(monkeypatch):
-    from osu_mania_renderer_v2.gpu import renderer as renderer_module
-
+def test_argon_meter_consumes_scene_mania_windows():
     supplied = (18.0, 40.0, 70.0, 100.0, 125.0)
-    seen = []
-    real_bands = renderer_module.lazer_hit_window_bands
-    monkeypatch.setattr(
-        renderer_module,
-        "lazer_hit_window_bands",
-        lambda windows: (seen.append(windows) or real_bands(windows)),
+    calls = []
+    renderer = object.__new__(FrameRenderer)
+    renderer._hit_error_painter = SimpleNamespace(
+        draw=lambda scene: calls.append(scene.hit_error_windows),
     )
-    draws = []
-    gl = SimpleNamespace(blend_func=None)
-    fr = SimpleNamespace(
-        rc=SimpleNamespace(width=1280, height=720, ctx=gl),
-        _flush_sprite_batch=lambda: None,
-        _draw_sprite=lambda *args: draws.append(args),
-        _draw_direct=lambda *args, **kwargs: draws.append(args),
-        _cached_text=lambda text, size, colour: (text, 8, 8),
-        _draw_external_texture=lambda *args, **kwargs: None,
-    )
-    ctx = SimpleNamespace(
-        fr=fr,
-        height=720,
-        scene=SimpleNamespace(
-            hit_error_windows=supplied,
-            hit_error_events=(),
-            hit_error_ema_ms=None,
-        ),
-        draw_sprite=lambda *args: draws.append(args),
-    )
-
-    hud._argon_hit_error(ctx)
-
-    assert seen == [supplied]
-    # Static colour bars and centre markers are emitted for both edge meters.
-    assert any(call[1] < 25 for call in draws if len(call) >= 2)
-    assert any(call[1] > 1250 for call in draws if len(call) >= 2)
+    renderer._draw_hit_error_meter(SimpleNamespace(hit_error_windows=supplied))
+    assert calls == [supplied]
 
 
 def test_standalone_ur_text_has_no_average_offset():
@@ -737,6 +685,7 @@ def test_argon_health_meter_and_ur_gpu_smoke():
             hit_error_windows=windows_for_od(8.0),
             hit_error_events=(HitErrorEvent(-20.0, "300", 100),),
             hit_error_ema_ms=-2.0,
+            hit_error_chevron_position=0.49,
         )
         ctx = FrameContext(
             fr=renderer,
@@ -751,7 +700,7 @@ def test_argon_health_meter_and_ur_gpu_smoke():
 
         ctx.begin_frame()
         hud._draw_argon_hud(ctx)
-        hud._argon_hit_error(ctx)
+        hud.hit_strip(element=None, skin=None, assets=None, variables=None, ctx=ctx)
         hud._argon_unstable_rate(ctx)
         ctx.flush()
 
