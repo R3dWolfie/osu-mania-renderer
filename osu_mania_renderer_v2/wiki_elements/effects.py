@@ -13,6 +13,11 @@ def stage_lights(*, element, skin, assets, variables, ctx) -> None:
     ctx.fr._draw_stage_lights(ctx.scene)
 
 
+def legacy_hit_lighting(*, element, skin, assets, variables, ctx) -> None:
+    """Stable hit effects: all keys/foreground below, legacy judgement above."""
+    ctx.fr._draw_legacy_hit_lighting(ctx.scene)
+
+
 def flashlight(*, element, skin, assets, variables, ctx) -> None:
     if ctx.scene.visual_mods.flashlight:
         # v1 approximation: semi-transparent dark vignette over the frame.

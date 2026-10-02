@@ -1459,8 +1459,8 @@ class FrameRenderer:
         )
 
     def _draw_stage_decorations(self, scene: SceneState | None = None) -> None:
-        """Draw the four stage-decoration sprite slots — stage_left,
-        stage_right, stage_bottom, stage_hint — that osu!mania skins use
+        """Draw the background stage-decoration slots — stage_left,
+        stage_right, stage_hint — that osu!mania skins use
         to theme the playfield (frame textures, hit-line indicators, ...).
         Parsed from `skin.ini` and resolved by the atlas; previously the
         renderer never actually painted any of them, so even skins that
@@ -1475,8 +1475,6 @@ class FrameRenderer:
         Coordinate convention:
           stage_left  : right edge at the playfield's left edge, full height
           stage_right : left edge at the playfield's right edge, full height
-          stage_bottom: horizontal strip flush with the receptor row,
-                        roughly the column-width tall
           stage_hint  : thin horizontal indicator at the receptor centre
 
         UpsideDown skins have already had `receptor_centre_y_gl` flipped
@@ -1567,11 +1565,18 @@ class FrameRenderer:
                 tint=(1, 1, 1, 1),
             )
 
-        # Stage-bottom + stage-hint are positioned RELATIVE TO THE
-        # RECEPTOR ROW, which already accounts for UpsideDown. In normal
-        # mode the receptor sits near the bottom and these draw just
-        # below it; in upside-down the receptor is near the top so they
-        # flip with it.
+        # Stable's stage hint belongs below the notes and keys.
+        rec_y = self.receptor_centre_y_gl
+        rec_h = self.col_w_uniform
+        hint_h = max(2, int(rec_h * 0.15))
+        self._draw_sprite(
+            "hit_light",
+            self.pf_x, rec_y - hint_h // 2, self.pf_w, hint_h,
+            (1, 1, 1, 1),
+        )
+
+    def _draw_legacy_stage_foreground(self) -> None:
+        """Stable's stage-bottom layer: above keys, below hit lighting."""
         rec_y = self.receptor_centre_y_gl
         rec_h = self.col_w_uniform
         # Stage bottom: a base panel anchored with its TOP at the receptor
@@ -1590,18 +1595,10 @@ class FrameRenderer:
         # When upside-down, mirror so the panel sits ABOVE the receptor.
         if self.upside_down:
             sb_y_gl = rec_y
-        # Atlas internal name for `mania-stage-bottom.png` is
-        # "playfield_frame" (legacy); `mania-stage-hint.png` is "hit_light".
+        # Atlas internal name for `mania-stage-bottom.png`.
         self._draw_sprite(
             "playfield_frame",
             self.pf_x, sb_y_gl, self.pf_w, sb_h,
-            (1, 1, 1, 1),
-        )
-        # Stage hint: thin indicator at the receptor centre.
-        hint_h = max(2, int(rec_h * 0.15))
-        self._draw_sprite(
-            "hit_light",
-            self.pf_x, rec_y - hint_h // 2, self.pf_w, hint_h,
             (1, 1, 1, 1),
         )
 
@@ -1615,7 +1612,7 @@ class FrameRenderer:
         ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
 
         self._draw_background(scene)
-        # Stage decoration sprites (stage_left/right/bottom/hint) — drawn
+        # Stage background sprites (stage_left/right/hint) — drawn
         # AFTER the song background but BEFORE the column overlays so they
         # form a themed backdrop behind the playfield. Skins that ship
         # real assets (Night05's 1200x770 starfield) get their look;
@@ -1671,6 +1668,11 @@ class FrameRenderer:
         if not keys_under_notes:
             self._draw_receptors(scene)
         if not is_argon:
+            # Stable SpriteManagerAbove sorts keys (.92/.925), stage bottom
+            # (.94), LightingN/L (.98), then judgement (.998). Complete all
+            # lower layers before drawing lights that can cross columns.
+            self._draw_legacy_stage_foreground()
+            self._draw_legacy_hit_lighting(scene)
             self._draw_combo_and_judgment(scene)
         _show_hit_error_popups, show_ur_summary = self._legacy_timing_overlay_visibility()
         if (
@@ -4047,6 +4049,12 @@ class FrameRenderer:
 
         for c in range(self.rc.key_count):
             self._draw_legacy_key(c, held=scene.keys_held[c])
+
+    def _draw_legacy_hit_lighting(self, scene: SceneState) -> None:
+        """Draw stable's additive LightingN/L layer for all legacy columns."""
+        if self._is_argon_default():
+            return
+        for c in range(self.rc.key_count):
             self._draw_custom_legacy_lighting(
                 scene, c=c, x0=self.col_x[c], cw=self.col_w[c],
                 centre_y=self.receptor_centre_y_gl, held=scene.keys_held[c],

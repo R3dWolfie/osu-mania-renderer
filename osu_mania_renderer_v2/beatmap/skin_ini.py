@@ -237,7 +237,8 @@ def parse_skin_ini(skin_dir: Path) -> SkinIni:
     if not path.is_file():
         return SkinIni()
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # Stable's StreamReader consumes a UTF-8 BOM before the first header.
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return SkinIni()
 

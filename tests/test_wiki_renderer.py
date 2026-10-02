@@ -17,10 +17,12 @@ import pytest
 EXPECTED_ORDER = [
     "background", "stage_decorations", "columns", "stage_lights",
     "receptors_under", "notes", "combo_and_judgment", "receptors_over",
+    "legacy_hit_lighting", "legacy_combo_and_judgment",
     "hit_error_popups", "hit_strip", "progress_bar", "fail_overlay",
     "hp_bar", "banner", "hud", "key_counter", "top_chrome", "flashlight",
     "ur_summary",
-    "miss_break_wash", "fade_to_black", "results_overlay", "watermark",
+    "break_overlay", "miss_break_wash", "fade_to_black", "intro_logo",
+    "results_overlay", "watermark",
 ]
 
 

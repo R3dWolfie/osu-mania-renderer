@@ -115,9 +115,6 @@ def _receptors(ctx) -> None:
             continue
 
         ctx.fr._draw_legacy_key(c, held=held)
-        ctx.fr._draw_custom_legacy_lighting(
-            scene, c=c, x0=x0, cw=cw, centre_y=centre_y, held=held,
-        )
 
 
 def receptors_under(*, element, skin, assets, variables, ctx) -> None:
@@ -531,6 +528,22 @@ def _argon_combo_and_judgment(ctx, *, draw_combo: bool = True) -> None:
     combo_box = 72 * A * pop
     _argon_number(ctx, f"{s.combo}", x=center_x, center_y=centre_y_gl,
                   glyph_h=combo_box, align="center")
+
+
+def combo_and_judgment_under(*, element, skin, assets, variables, ctx) -> None:
+    """Keep Argon's established judgement-before-receptors ordering."""
+    if is_argon_default(ctx, 0):
+        combo_and_judgment(
+            element=element, skin=skin, assets=assets, variables=variables, ctx=ctx,
+        )
+
+
+def combo_and_judgment_over(*, element, skin, assets, variables, ctx) -> None:
+    """Stable's legacy judgement sits above the LightingN/L layer."""
+    if not is_argon_default(ctx, 0):
+        combo_and_judgment(
+            element=element, skin=skin, assets=assets, variables=variables, ctx=ctx,
+        )
 
 
 def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
