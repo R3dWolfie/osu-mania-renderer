@@ -7,7 +7,6 @@ element preserves byte-identical output (the parity test guards it).
 """
 from __future__ import annotations
 
-from osu_mania_renderer_v2.gpu.atlas import column_variant
 from osu_mania_renderer_v2.gpu.legacy_mania import legacy_doubled_alpha_colour
 from osu_mania_renderer_v2.gpu.renderer import LAZER_DEFAULT_COLUMN_LINE_WIDTH_REF
 from osu_mania_renderer_v2.wiki_elements._common import argon_accent, is_argon_default
@@ -20,6 +19,7 @@ _PLACEHOLDER_THRESHOLD_PX2 = 100
 def background(*, element, skin, assets, variables, ctx) -> None:
     # Background is the beatmap image (loaded once via fr.set_background),
     # not a skin element — keep delegating to the engine's bg pass.
+    ctx.fr._stage_clock_ms = ctx.scene.t_ms
     ctx.fr._draw_background(ctx.scene)
 
 
@@ -28,6 +28,9 @@ def stage_decorations(*, element, skin, assets, variables, ctx) -> None:
     Ported from FrameRenderer._draw_stage_decorations: atlas image truth +
     precomputed playfield geometry; no skin.ini variables read here (dims
     are fixed conventions, sprite aspects come from the atlas)."""
+    if ctx.fr._has_split_legacy_stages():
+        ctx.fr._draw_split_stage_decorations()
+        return
     atlas = ctx.atlas
     h = ctx.height
     w = ctx.width
@@ -88,6 +91,9 @@ def stage_foreground(ctx) -> None:
     notes and keys so it covers the lower portion of tall key images (that's
     why lazer's keys look short). Native sprite px × (height/768), centred on
     the playfield, anchored to the bottom edge."""
+    if ctx.fr._has_split_legacy_stages():
+        ctx.fr._draw_split_stage_foreground()
+        return
     atlas = ctx.atlas
     if atlas.global_source("playfield_frame") not in ("user", "beatmap"):
         return
@@ -158,7 +164,7 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
             r, g, b, a = legacy_doubled_alpha_colour(skin_colour)
             colour_boost = 0.0
         else:
-            variant = column_variant(c, key_count)
+            variant = ctx.fr._legacy_column_variant(c)
             if variant == "outer":
                 r, g, b, a = 0.04, 0.04, 0.09, 0.55
             elif variant == "center":
@@ -176,6 +182,9 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
     # even with a single (or no) ColumnLineWidth value. The Argon default
     # has no stable dividers, so this is skipped there.
     if not is_argon_default(ctx, 0):
+        if ctx.fr._has_split_legacy_stages():
+            ctx.fr._draw_split_column_lines()
+            return
         line_widths = section.column_line_width if section else ()
         if section is not None and section.colour_column_line is not None:
             line_tint = legacy_doubled_alpha_colour(

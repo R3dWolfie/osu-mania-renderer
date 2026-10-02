@@ -351,6 +351,7 @@ async def render(
                 ctx=gl.ctx, fbo=gl.fbo,
                 width=options.resolution[0], height=options.resolution[1],
                 key_count=plan.key_count,
+                replay_mods=plan.replay.mods,
             )
             fr = FrameRenderer(
                 rc, options, skin_dir=skin_dir, beatmap_dir=beatmap_dir,

@@ -130,9 +130,9 @@ Global (mania consumes): `score-0..9.png`, `score-comma.png`,
 | `LightFramePerSecond` | int | — | Y | StageLight animation fps |
 | `SpecialStyle` | 0/1/2 | 0 | Y | 0=none, 1=outer/left-special, 2=inner/right-special |
 | `ComboBurstStyle` | 0/1/2 \| L/R/Both | 1 | Y | Side for `comboburst-mania` |
-| `SplitStages` | 0/1 | impl | Y | Force half-split (10K+) |
-| `StageSeparation` | float | 40 | Y | Gap between split halves |
-| `SeparateScore` | 0/1 | 1 | Y | Per-half hitbursts |
+| `SplitStages` | 0/1 | auto | Y | Stable: absent auto-splits >10 keys or KC; 0 forces single, 1 forces split for any total >1 |
+| `StageSeparation` | float | 40 | Y | 480-reference stage-origin gap, minimum 5; boundary ColumnSpacing is additional |
+| `SeparateScore` | 0/1 | 1 | Y | 1: judgement only on hit stage; 0: duplicate hitburst; shared combo appears on both |
 | `KeysUnderNotes` | 0/1 | 0 | Y | Draw key sprites below notes |
 | `UpsideDown` | 0/1 | 0 | Y | Top-scroll like DDR |
 | `KeyFlipWhenUpsideDown[N][D]` | 0/1 | 1 | Y per col/part | Per-column key flip overrides |
@@ -170,7 +170,7 @@ Quirks:
 
 - Multiple `[Mania]` blocks distinguished by `Keys: N`. Processed in
   order; each applies only to charts with exactly N keys.
-- Supported `Keys` values: **1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18**.
+- Stable supports native totals **1–18**, including odd high counts. Its canonical key-mod table covers 1–10 and even 12/14/16/18; that table does not limit native CS.
 - **No-match fallback:** osu-stable uses hard-coded defaults (column
   widths, positions per the wiki defaults). Mirror this — maintain
   per-keycount fallback tables.
@@ -178,7 +178,8 @@ Quirks:
 - `SpecialStyle`:
   - `0` = no special.
   - `1` = "outer"/left-special: relocates `S` to the leftmost lane.
-    For DP (`SplitStages`): special is outer lane of each half.
+    For split stages: style is mirrored on stage two and applies only to
+    an even local count >4. Odd local counts keep their centre special.
   - `2` = "inner"/right-special: mirror of 1.
   - Effective only for even keycounts ≥ 6 (others already have an
     `S` from the default layout).
@@ -338,6 +339,12 @@ We do NOT read:
   returns `outer/inner/center` via a synthetic rule that **matches
   4K/5K/7K only**. **6K, 8K, 9K, 10K+ are wrong** vs the wiki table.
 
+  This paragraph is the original audit snapshot, not current behavior.
+  Round 2 now resolves legacy kinds through stable's stage-local parity and
+  special-column rules in `gpu/legacy_stage_geometry.py`, including skin
+  split overrides and odd high-key totals. The old total-count compatibility
+  helpers remain for Argon/single-stage callers; do not use them for legacy DP.
+
 ---
 
 ## 9. Gap-analysis matrix
@@ -363,7 +370,7 @@ We do NOT read:
 | `NoteBodyStyle` (0/1/2) | Required (v2.5+) | Fixed | P2 | 6 |
 | `SpecialStyle` (1/2) | Required | No | P2 | 4 |
 | `UpsideDown` + flips | Required | No | P3 | 6 |
-| `SplitStages` (10K+) | Required (10K+) | No | P2 | 8 |
+| Stable stage topology + overrides | Required (>10/KC auto; skin can force either direction) | Yes (legacy) | — | 0 |
 | `@2x` precedence everywhere | Required | Yes | — | 0 (done) |
 | Animation-frame discovery for notes | Required | No | P2 | 6 |
 | `score-{0..9,comma,…}` bitmap font | Required | No (uses TTF) | P3 | 6 |
@@ -430,8 +437,10 @@ note sprites.
    array.
 2. `KeysUnderNotes`: draw-order toggle.
 3. `UpsideDown` + flip toggles: vertical flip + per-sprite overrides.
-4. `SplitStages` + `StageSeparation` + `SeparateScore`: render two
-   playfields for 10K+.
+4. Stable `SplitStages` + `StageSeparation` + `SeparateScore`: auto-split
+   totals >10 or KC into ceil(total/2) + floor(total/2), with skin overrides.
+   Native KC never doubles CS; standard conversion doubles its chosen key count
+   before layout. Keep global asset/replay indices; only kinds/chrome are local.
 5. `mania-warningarrow`, `comboburst-mania`, `ColourHold`/`Break`.
 
 ### Phase Z — won't do
@@ -459,8 +468,10 @@ note sprites.
 4. **`SpecialStyle` for SP vs DP.** 6K/8K originally have no `S`;
    `SpecialStyle=1` adds one in outer position. Confirm by inspecting
    peppy's 6K-with-SpecialStyle output before shipping.
-5. **`SplitStages` for keycounts 2–9.** Wiki: "Each keycount > 1 can
-   be split." Treat as P3 except auto-split 10K+.
+5. **`SplitStages` overrides.** Proven in stable: 1 forces a split for any
+   total >1, 0 suppresses both automatic >10 and KC splitting. 1K is single.
+   Runtime verification corrects the earlier >=10 interpretation: 10K is
+   single-stage by default; 11K is the first automatic split mode.
 6. **Per-column `Colour{N}` alpha.** With alpha < 255, lane bg shows
    playfield bg through. Our renderer has no playfield bg → render
    opaque-equivalent against our scene bg.

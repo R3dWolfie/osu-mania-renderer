@@ -199,9 +199,13 @@ def apply_mods(beatmap: BeatmapInfo, replay: ReplayInfo) -> ModResult:
     if mods & Mod.RD:
         warnings.append("Random (RD) is not supported; rendering as NM column order")
 
-    # Key Coop — explicitly unsupported.
+    # KC stage topology consumes the resolved TOTAL key count without changing
+    # replay bits. Standard conversion still takes an explicit final key count.
     if mods & Mod.KC:
-        warnings.append("Key Coop (KC) is not supported; rendering as single playfield")
+        warnings.append(
+            "Key Coop (KC): legacy stage presentation is supported; "
+            "converted maps require the explicit final conversion key count"
+        )
 
     visual = VisualMods(
         hidden=bool(mods & Mod.HD),

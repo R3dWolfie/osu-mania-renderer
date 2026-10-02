@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -50,6 +50,9 @@ from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
     legacy_note_height,
 )
 from osu_mania_renderer_v2.gpu.shaders import load_programs
+from osu_mania_renderer_v2.gpu.legacy_stage_geometry import (
+    LegacyStage, LegacyStageLayout, legacy_stage_layout, legacy_stage_topology,
+)
 from osu_mania_renderer_v2.gpu.text import text_to_texture
 from osu_mania_renderer_v2.render.dim import build_dim_envelope
 from osu_mania_renderer_v2.render.scene import SceneState
@@ -948,6 +951,7 @@ class RenderContext:
     width: int
     height: int
     key_count: int
+    replay_mods: int = 0
 
 
 class FrameRenderer:
@@ -1030,6 +1034,7 @@ class FrameRenderer:
             skin_dir=sk_dir,
             beatmap_dir=bm_dir,
             mania_section=self.mania_section,
+            replay_mods=getattr(rc, "replay_mods", 0),
             score_prefix=(self.skin_ini.score_prefix
                           if self.skin_ini is not None else "score"),
             combo_prefix=(self.skin_ini.combo_prefix
@@ -1309,10 +1314,30 @@ class FrameRenderer:
         self.col_w = tuple(col_w_list)
         self.pf_x = pf_x
         self.pf_w = x - pf_x
+        topology = legacy_stage_topology(K, section, mods=getattr(rc, "replay_mods", 0))
+        if not is_argon and len(topology.stages) > 1:
+            self.stage_layout = legacy_stage_layout(
+                K, section, render_width=rc.width, render_height=rc.height,
+                mods=getattr(rc, "replay_mods", 0),
+            )
+            # Keep global indices: only their presentation X/width changes.
+            self.col_x = self.stage_layout.column_x
+            self.col_w = self.stage_layout.column_width
+            self.pf_x = int(round(self.stage_layout.stages[0].x))
+            self.pf_w = int(round(self.stage_layout.stages[-1].right - self.pf_x))
+        else:
+            # Preserve existing single-stage and Argon positioning exactly.
+            self.stage_layout = LegacyStageLayout((LegacyStage(
+                0, 0, K, special_style=(section.special_style or 0) if section and not is_argon else 0,
+                x=self.pf_x, width=self.pf_w,
+            ),))
         # The "uniform" value HUD callers (hit error bar, key overlay)
         # use as a single column-width reference, sized at the average
         # so variable-pitch layouts still look proportional.
-        self.col_w_uniform = max(1, self.pf_w // K)
+        self.col_w_uniform = (
+            max(1, int(sum(self.col_w) // K))
+            if len(self.stage_layout.stages) > 1 else max(1, self.pf_w // K)
+        )
 
         # Y positions. osu! reference is Y-down 0..480; our GL coords
         # are Y-up 0..rc.height. Conversion: gl_y = h - osu_y * h/480.
@@ -1458,6 +1483,87 @@ class FrameRenderer:
             w=self.rc.width, h=self.rc.height, alpha=alpha,
         )
 
+    def _has_split_legacy_stages(self) -> bool:
+        layout = getattr(self, "stage_layout", None)
+        return layout is not None and len(layout.stages) > 1
+
+    def _legacy_column_variant(self, column: int) -> str:
+        if getattr(self, "stage_layout", None) is not None:
+            return {"1": "outer", "2": "inner", "S": "center"}[
+                self.stage_layout.column_kind(column)
+            ]
+        return column_variant(column, self.rc.key_count)
+
+    def _draw_split_stage_decorations(self) -> None:
+        """Shared stable per-stage chrome; never stretch a frame across the gap.
+
+        Side sprites retain their authored canvas extending outside a stage,
+        just as stable does (large authored canvases can overlap). Do not
+        invent a scissor at the gap or compress these native textures.
+        """
+        h, w = self.rc.height, self.rc.width
+        stages = self.stage_layout.stages
+        for x, width in ((0, stages[0].x), (stages[-1].right, w - stages[-1].right)):
+            if width > 0:
+                self._draw_sprite("column_bg", x, 0, width, h, (0, 0, 0, 0.55))
+        meaningful = any(
+            self.atlas.global_source(name) in ("user", "beatmap")
+            and np.prod(self.atlas.global_native_size(name)) > 100
+            for name in ("stage_left", "stage_right")
+        )
+        for stage in stages:
+            if not meaningful:
+                self._draw_sprite("column_bg", stage.x, 0, stage.width, h, (0, 0, 0, 0.55))
+            side = mania_stage_side_geometry(
+                playfield_left=stage.x, playfield_right=stage.right,
+                stage_height=float(h),
+                left_native_width=self.atlas.global_native_size("stage_left")[0],
+                right_native_width=self.atlas.global_native_size("stage_right")[0],
+            )
+            for name, rect in (("stage_left", side.left_rect), ("stage_right", side.right_rect)):
+                if self.atlas.global_source(name) in ("user", "beatmap"):
+                    self._draw_direct(name, *rect, tint=(1, 1, 1, 1))
+            if self.atlas.global_source("hit_light") in ("user", "beatmap"):
+                native_h = self.atlas.global_native_size("hit_light")[1]
+                hint_h = max(1, int(round(native_h * 0.9 * 1.6026 * h / 768.0)))
+                self._draw_sprite("hit_light", stage.x,
+                                  self.receptor_centre_y_gl - hint_h / 2,
+                                  stage.width, hint_h, (1, 1, 1, 0.9))
+
+    def _draw_split_stage_foreground(self) -> None:
+        if self.atlas.global_source("playfield_frame") not in ("user", "beatmap"):
+            return
+        native_w, native_h = self.atlas.global_native_size("playfield_frame")
+        h = self.rc.height
+        width, height = native_w * h / 480.0, native_h * h / 480.0
+        if width <= 0 or height <= 0:
+            return
+        frame = int(getattr(self, "_stage_clock_ms", 0) * 60 / 1000) % self.atlas.frame_count("playfield_frame")
+        for stage in self.stage_layout.stages:
+            self._draw_direct("playfield_frame", int(round(stage.center_x - width / 2)),
+                              int(round(h - height)) if self.upside_down else 0,
+                              int(round(width)), int(round(height)), (1, 1, 1, 1),
+                              frame_index=frame)
+
+    def _draw_split_column_lines(self) -> None:
+        section = self.mania_section
+        widths = section.column_line_width if section else ()
+        tint = legacy_doubled_alpha_colour(section.colour_column_line) if section and section.colour_column_line else (1, 1, 1, 1)
+        version = self.skin_ini.legacy_version if self.skin_ini else 1.0
+        # ColumnMania uses a native 0.740 line scale, independent of width fit.
+        scale = self.rc.height / 768.0
+        height = self.receptor_centre_y_gl if self.upside_down else self.rc.height - self.receptor_centre_y_gl
+        y = 0 if self.upside_down else self.receptor_centre_y_gl
+        for c, (x, width) in enumerate(zip(self.col_x, self.col_w)):
+            for index, edge in ((c, x), (c + 1, x + width)):
+                if index == c + 1 and version < 2.4 and c != self.rc.key_count - 1:
+                    continue
+                ref = widths[index] if index < len(widths) else 2.0
+                if ref <= 0:
+                    continue
+                ref = max(2.0, ref)
+                self._draw_sprite("column_bg", edge, y, ref * 0.740 * scale, height, tint)
+
     def _draw_stage_decorations(self, scene: SceneState | None = None) -> None:
         """Draw the background stage-decoration slots — stage_left,
         stage_right, stage_hint — that osu!mania skins use
@@ -1480,6 +1586,9 @@ class FrameRenderer:
         UpsideDown skins have already had `receptor_centre_y_gl` flipped
         by `_compute_geometry`, so positions tied to it automatically
         invert; left/right don't depend on orientation."""
+        if self._has_split_legacy_stages():
+            self._draw_split_stage_decorations()
+            return
         if scene is not None and self._is_argon_default():
             self._draw_argon_stage_decorations(scene)
             return
@@ -1577,6 +1686,9 @@ class FrameRenderer:
 
     def _draw_legacy_stage_foreground(self) -> None:
         """Stable's stage-bottom layer: above keys, below hit lighting."""
+        if self._has_split_legacy_stages():
+            self._draw_split_stage_foreground()
+            return
         rec_y = self.receptor_centre_y_gl
         rec_h = self.col_w_uniform
         # Stage bottom: a base panel anchored with its TOP at the receptor
@@ -1603,6 +1715,7 @@ class FrameRenderer:
         )
 
     def draw(self, scene: SceneState) -> None:
+        self._stage_clock_ms = scene.t_ms
         ctx = self.rc.ctx
         fbo = self.rc.fbo
         fbo.use()
@@ -2286,7 +2399,7 @@ class FrameRenderer:
         # py is the GL bottom-left Y of the last pill — same row for all.
         return py
 
-    def _draw_custom_legacy_judgment(self, scene: SceneState) -> None:
+    def _draw_custom_legacy_judgment(self, scene: SceneState, *, center_x: float | None = None) -> None:
         if not self.options.show_judgment or not scene.active_judgments:
             return
         judgment = scene.active_judgments[-1]
@@ -2307,7 +2420,8 @@ class FrameRenderer:
         height = max(1, int(round(
             native_height * texture_scale * animation_scale,
         )))
-        center_x = self.pf_x + self.pf_w / 2.0
+        if center_x is None:
+            center_x = self.pf_x + self.pf_w / 2.0
         center_y = self.score_popup_y_gl
         frame = legacy_judgment_frame(
             judgment.age_ms, self.atlas.frame_count(slot),
@@ -2323,11 +2437,12 @@ class FrameRenderer:
         )
 
     def _draw_custom_legacy_combo(
-        self, scene: SceneState, *, draw_combo: bool,
+        self, scene: SceneState, *, draw_combo: bool, center_x: float | None = None,
     ) -> None:
         if not draw_combo or not self.options.show_combo:
             return
-        center_x = self.pf_x + self.pf_w / 2.0
+        if center_x is None:
+            center_x = self.pf_x + self.pf_w / 2.0
         center_y = self.combo_baseline_y_gl
         texture_scale = self.rc.height / 768.0
         overlap = self.skin_ini.combo_overlap if self.skin_ini is not None else 0
@@ -2395,6 +2510,17 @@ class FrameRenderer:
     ) -> None:
         """Draw the shared Argon or custom legacy stage presentation."""
         if not self._is_argon_default():
+            if self._has_split_legacy_stages():
+                separate = self.mania_section is None or self.mania_section.separate_score is not False
+                for stage in self.stage_layout.stages:
+                    judgments = tuple(j for j in scene.active_judgments
+                                      if not separate or stage.first_column <= j.column < stage.end_column)
+                    self._draw_custom_legacy_judgment(
+                        replace(scene, active_judgments=judgments), center_x=stage.center_x,
+                    )
+                    # Stable duplicates the SAME shared combo regardless of SeparateScore.
+                    self._draw_custom_legacy_combo(scene, draw_combo=draw_combo, center_x=stage.center_x)
+                return
             self._draw_custom_legacy_judgment(scene)
             self._draw_custom_legacy_combo(scene, draw_combo=draw_combo)
             return
@@ -3780,7 +3906,7 @@ class FrameRenderer:
                 r, g, b, a = legacy_doubled_alpha_colour(skin_colour)
                 colour_boost = 0.0
             else:
-                variant = column_variant(c, rc.key_count)
+                variant = self._legacy_column_variant(c)
                 if variant == "outer":
                     r, g, b, a = 0.04, 0.04, 0.09, 0.55
                 elif variant == "center":
@@ -3798,6 +3924,9 @@ class FrameRenderer:
         # ColourColumnLine tints all of them. We treat missing skin
         # values as "draw default-thin white outer borders + no inner
         # dividers", matching the renderer's pre-Phase-B look.
+        if self._has_split_legacy_stages():
+            self._draw_split_column_lines()
+            return
         line_widths = section.column_line_width if section else ()
         if section is not None and section.colour_column_line is not None:
             line_tint = legacy_doubled_alpha_colour(
@@ -3941,7 +4070,7 @@ class FrameRenderer:
         for n in scene.visible_notes:
             x0 = self.col_x[n.column]
             cw = self.col_w[n.column]
-            tint = tints[column_variant(n.column, rc.key_count)]
+            tint = tints[self._legacy_column_variant(n.column)]
             col_has_skin = use_skin_notes and self.atlas.has_skin_note(n.column)
             # Note height: native aspect of the skin's tap sprite when
             # available, else square. Stable/lazer scale X to this column,
@@ -4221,7 +4350,7 @@ class FrameRenderer:
 
     def _legacy_lighting_rect(
         self, slot: str, *, c: int, x0: int, cw: int, centre_y: int,
-    ) -> tuple[int, int, int, int] | None:
+    ) -> tuple[float, int, int, int] | None:
         """Native-aspect rect for a custom legacy LightingN/L sprite."""
         native_w, native_h = self.atlas.global_native_size(slot)
         if native_w <= 0 or native_h <= 0:
@@ -4243,8 +4372,16 @@ class FrameRenderer:
         tex_scale = self.rc.height / 768.0
         light_w = max(1, int(round(native_w * tex_scale * scale)))
         light_h = max(1, int(round(native_h * tex_scale * scale)))
+        # Split columns retain fractional stable coordinates. Integer floor
+        # centring biases the light left, even when note/key rectangles agree.
+        # Consume the shared lane centre without changing native size or Y.
+        light_x = (
+            self.stage_layout.column_center(c) - light_w / 2.0
+            if self._has_split_legacy_stages()
+            else x0 + (cw - light_w) // 2
+        )
         return (
-            x0 + (cw - light_w) // 2,
+            light_x,
             centre_y - light_h // 2,
             light_w,
             light_h,

@@ -6,7 +6,6 @@ pending their own decouple. All byte-identical to FrameRenderer.
 """
 from __future__ import annotations
 
-from osu_mania_renderer_v2.gpu.atlas import column_variant
 from osu_mania_renderer_v2.gpu.legacy_note_geometry import (
     legacy_note_draw_y,
 )
@@ -205,7 +204,7 @@ def _draw_notes_body(ctx) -> None:
                 ctx.draw_sprite("argon_note_glyph", x0, y - nh // 2, cw, nh, (1, 1, 1, 1))
             continue
 
-        tint = _NOTE_TINTS[column_variant(n.column, key_count)]
+        tint = _NOTE_TINTS[ctx.fr._legacy_column_variant(n.column)]
         col_has_skin = use_skin_notes and atlas.has_skin_note(n.column)
         if col_has_skin:
             note_asp = atlas.column_aspect("note_tap", n.column)
@@ -556,6 +555,9 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
     """
     fr = ctx.fr
     s = ctx.scene
+    if getattr(fr, "_has_split_legacy_stages", lambda: False)():
+        fr._draw_combo_and_judgment(s)
+        return
     if is_argon_default(ctx, 0) and ctx.has_argon_font():
         _argon_combo_and_judgment(ctx)
         return

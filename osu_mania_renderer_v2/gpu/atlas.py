@@ -16,9 +16,9 @@ Per-column sprite resolution priority:
 
   1. Skin's explicit override from `skin.ini` `NoteImage{N}` /
      `KeyImage{N}[D]` (per-column path).
-  2. Skin's conventional file for the column's default "kind" — picked
-     from the osu! wiki's per-keycount default layout table (1=outer,
-     2=inner, S=centre).
+  2. Skin's conventional file for the column's "kind", resolved from
+     stable's stage-local ColumnMania.KeyType (1=outer, 2=inner, S=special).
+     Authored overrides keep total-key/global-column indexing.
   3. Bundled role-named PNG that ships with the renderer.
   4. 4×4 transparent placeholder.
 """
@@ -33,6 +33,7 @@ from PIL import Image
 
 from osu_mania_renderer_v2.beatmap.mods import LEGACY_MOD_SKIN_ASSET_NAMES
 from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
+from osu_mania_renderer_v2.gpu.legacy_stage_geometry import legacy_stage_topology
 
 SPRITES_DIR = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 _LOG = logging.getLogger("osu_mania_renderer_v2")
@@ -48,7 +49,9 @@ def column_direct_name(kind: str, column: int) -> str:
     return f"column/{kind}/{column}"
 
 
-# ===== Default per-keycount column layout =====
+# ===== Single-stage compatibility layout (Argon / older callers) =====
+# Legacy atlas/renderers use legacy_stage_geometry, not this total-count
+# table, for stage-local kinds and split SpecialStyle semantics.
 #
 # Each entry maps column index → bundled-sprite kind:
 #   "1" = outer  (mania-note1.png / mania-key1.png)
@@ -379,7 +382,7 @@ _LEGACY_FONT_SLOTS: frozenset[str] = frozenset({
 # Native animation frames used by direct-draw presentation paths. Frame zero
 # remains in ``_direct_images`` for sizing/classification callers.
 _DIRECT_ANIMATION_SLOTS: frozenset[str] = (
-    _LEGACY_JUDGMENT_SLOTS | {"scorebar_colour"}
+    _LEGACY_JUDGMENT_SLOTS | {"scorebar_colour", "playfield_frame"}
 )
 
 
@@ -460,6 +463,7 @@ class SpriteAtlas:
         mania_section: ManiaSection | None = None,
         score_prefix: str = "score",
         combo_prefix: str = "score",
+        replay_mods: int = 0,
     ) -> SpriteAtlas:
         """Build the atlas. Sprite resolution tries beatmap_dir first
         (per-map overrides), then skin_dir, then bundled fallback. This
@@ -589,6 +593,7 @@ class SpriteAtlas:
                     kind=kind, col=col, key_count=key_count,
                     skin_dir=skin_dir, beatmap_dir=beatmap_dir,
                     section=mania_section,
+                    replay_mods=replay_mods,
                 )
                 atlas._column_sources[(kind, col)] = src
                 atlas._column_indices[(kind, col)] = layer_idx
@@ -969,6 +974,7 @@ class SpriteAtlas:
         skin_dir: Path | None,
         beatmap_dir: Path | None,
         section: ManiaSection | None,
+        replay_mods: int = 0,
     ) -> tuple[list[Image.Image], str]:
         """Pick the right PNG(s) for a per-column slot. Returns a frame
         list (length 1 for static, ≥ 1 for animated). See
@@ -982,8 +988,8 @@ class SpriteAtlas:
         `mania-note*T.png`) vertically flipped. We replicate that
         convention so partial skins still produce a proper-looking
         tail cap instead of two head-shaped caps."""
-        special_style = section.special_style if section is not None else None
-        col_kind = effective_column_kind(col, key_count, special_style)
+        topology = legacy_stage_topology(key_count, section, mods=replay_mods)
+        col_kind = topology.column_kind(col)
         candidates = _PER_COLUMN_DEFAULT_FILES.get((kind, col_kind), ())
         animatable = kind in _ANIMATABLE_PER_COLUMN_KINDS
         is_tail = kind == "note_hold_tail"
@@ -1126,6 +1132,7 @@ _ANIMATABLE_GLOBAL_SLOTS: frozenset[str] = _LEGACY_JUDGMENT_SLOTS | frozenset({
     "lighting_n",      # one-shot per hit, at 60fps.
     "lighting_l",      # looped during hold, at AnimationFramerate.
     "scorebar_colour", # HP fill; skins ship scorebar-colour-0..N.
+    "playfield_frame", # Stable's per-stage StageBottom animation at 60fps.
 })
 
 

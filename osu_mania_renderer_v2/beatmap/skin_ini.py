@@ -42,9 +42,8 @@ both are present (matches osu-stable behaviour).
 
 `ColumnColour` from the previous parser was non-standard — dropped.
 
-Note: layout/position keys (ColumnStart, ColumnWidth, HitPosition, …)
-are not in this parser yet; Phase B will add them when we wire dynamic
-playfield geometry.
+Layout/position keys and stable stage-topology options are retained below;
+the renderer owns their resolution and reference-coordinate conversion.
 """
 from __future__ import annotations
 
@@ -112,16 +111,13 @@ class ManiaSection:
     # ───── Phase B: playfield geometry (osu! 640×480 reference) ─────
     #
     # All position/width values are in the osu! 480-ref pixel system.
-    # Consumers scale these to the render resolution via the standard
-    # `target_h / 480.0` factor (or `target_w / 512.0` for X positions
-    # — peppy's reference width is 512 not 640 once you subtract the
-    # 64-px side margins, but the convention is 640-px X-ref. We track
-    # the raw skin.ini value; conversion lives in the consumer).
-    column_start:      int | None = None      # X of column 1 left edge
-    column_right:      int | None = None      # right reserve
-    column_width:      tuple[int, ...] = ()   # per-column widths (N entries)
-    column_spacing:    tuple[int, ...] = ()   # gaps between cols (N-1 entries)
-    column_line_width: tuple[int, ...] = ()   # divider thicknesses (N+1 entries)
+    # Both axes scale by target_h / 480.0. Stable fits split-stage X against
+    # the full screen width in those units, not against beatmap's 512 X units.
+    column_start:      float | None = None    # X of first stage left edge
+    column_right:      float | None = None    # right reserve
+    column_width:      tuple[float, ...] = ()  # global widths (N entries)
+    column_spacing:    tuple[float, ...] = ()  # global gaps (N-1 entries)
+    column_line_width: tuple[float, ...] = ()  # divider thicknesses (N+1)
     barline_height:    float | None = None    # measure-bar thickness
 
     hit_position:     int | None = None       # Y of judgement line
@@ -160,6 +156,10 @@ class ManiaSection:
     # A non-positive or absent value selects the smallest column width.
     width_for_note_height_scale: float | None = None
 
+    # Stable presentation topology; absent SplitStages selects >10/KC auto.
+    split_stages: bool | None = None
+    stage_separation: float | None = None
+    separate_score: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -384,11 +384,11 @@ class _ManiaBuilder:
         self.hit_300g:  str | None = None
 
         # Phase B — playfield geometry.
-        self.column_start:      int | None = None
-        self.column_right:      int | None = None
-        self.column_width:      tuple[int, ...] = ()
-        self.column_spacing:    tuple[int, ...] = ()
-        self.column_line_width: tuple[int, ...] = ()
+        self.column_start:      float | None = None
+        self.column_right:      float | None = None
+        self.column_width:      tuple[float, ...] = ()
+        self.column_spacing:    tuple[float, ...] = ()
+        self.column_line_width: tuple[float, ...] = ()
         self.barline_height:    float | None = None
         self.hit_position:      int | None = None
         self.light_position:    int | None = None
@@ -401,6 +401,9 @@ class _ManiaBuilder:
         self.note_body_style:    int | None = None
         self.note_body_style_by_column: dict[int, int] = {}
         self.width_for_note_height_scale: float | None = None
+        self.split_stages: bool | None = None
+        self.stage_separation: float | None = None
+        self.separate_score: bool | None = None
 
     def consume(self, key: str, value: str) -> None:
         lk = key.lower()
@@ -502,20 +505,29 @@ class _ManiaBuilder:
             return
 
         # Playfield geometry (osu! 480-ref pixels).
+        if lk == "splitstages":
+            self.split_stages = _parse_bool(value)
+            return
+        if lk == "stageseparation":
+            self.stage_separation = _parse_float(value)
+            return
+        if lk == "separatescore":
+            self.separate_score = _parse_bool(value)
+            return
         if lk == "columnstart":
-            self.column_start = _parse_int(value)
+            self.column_start = _parse_float(value)
             return
         if lk == "columnright":
-            self.column_right = _parse_int(value)
+            self.column_right = _parse_float(value)
             return
         if lk == "columnwidth":
-            self.column_width = _parse_csv_ints(value)
+            self.column_width = _parse_csv_floats_preserving_positions(value)
             return
         if lk == "columnspacing":
-            self.column_spacing = _parse_csv_ints(value)
+            self.column_spacing = _parse_csv_floats_preserving_positions(value)
             return
         if lk == "columnlinewidth":
-            self.column_line_width = _parse_csv_ints(value)
+            self.column_line_width = _parse_csv_floats_preserving_positions(value)
             return
         if lk == "barlineheight":
             self.barline_height = _parse_float(value)
@@ -602,6 +614,9 @@ class _ManiaBuilder:
             note_body_style=self.note_body_style,
             note_body_style_by_column=dict(self.note_body_style_by_column),
             width_for_note_height_scale=self.width_for_note_height_scale,
+            split_stages=self.split_stages,
+            stage_separation=self.stage_separation,
+            separate_score=self.separate_score,
         )
 
 
