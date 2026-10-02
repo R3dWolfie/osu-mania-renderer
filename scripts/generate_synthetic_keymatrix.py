@@ -1,9 +1,12 @@
 """Generate deterministic, genuinely playable native Mania 1K..18K fixtures.
 
-Run with the repository Python: python scripts/generate_synthetic_keymatrix.py
-Add --render for both production paths (720p sweep + representative 1080p),
-and --real-fixture for the existing real 12K captures. Outputs are isolated
-under Downloads/test/synthetic-keymatrix; existing outputs are never replaced.
+Run with the repository Python:
+    python scripts/generate_synthetic_keymatrix.py --root /tmp/r3d-keymatrix
+Add --render for both production paths (720p sweep + representative 1080p).
+Optional real-fixture renders require all three explicit inputs:
+--real-replay, --real-beatmap-dir, and --real-skin-dir. Encoding defaults to
+--encoder auto; --encoder-device is forwarded only when explicitly supplied.
+Outputs are isolated under --root; existing outputs are never replaced.
 No generated binaries belong in the repository.
 """
 
@@ -32,7 +35,6 @@ from osu_mania_renderer_v2.beatmap.judgments import compute_judgments
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
 from osu_mania_renderer_v2.gpu.legacy_stage_geometry import legacy_stage_topology
 
-DEFAULT_ROOT = Path("/home/theaussie/Downloads/test/synthetic-keymatrix")
 REPRESENTATIVE = (4, 7, 10, 11, 12, 13, 18)
 
 
@@ -278,7 +280,16 @@ def generate(root: Path) -> dict:
     return manifest
 
 
-def render_matrix(root: Path, manifest: dict, *, real_fixture: bool = False) -> None:
+def render_matrix(
+    root: Path,
+    manifest: dict,
+    *,
+    real_replay: Path | None = None,
+    real_beatmap_dir: Path | None = None,
+    real_skin_dir: Path | None = None,
+    encoder: str = "auto",
+    encoder_device: str | None = None,
+) -> None:
     jobs = []
     for fixture in manifest["fixtures"]:
         keys = fixture["keys"]
@@ -295,16 +306,16 @@ def render_matrix(root: Path, manifest: dict, *, real_fixture: bool = False) -> 
                         True,
                     )
                 )
-    if real_fixture:
+    if real_replay is not None:
         for mode in ("monolithic", "wiki"):
             jobs.append(
                 (
                     mode,
-                    "/home/theaussie/Downloads/test/01M3K2VQ3SP5XMX82GQ6WXAWHP.osr",
-                    "/home/theaussie/Downloads/test/beatmap1",
-                    "/home/theaussie/Downloads/test/skin1",
+                    str(real_replay),
+                    str(real_beatmap_dir),
+                    str(real_skin_dir),
                     "1920x1080",
-                    root / "renders/real-fixture" / f"12K-{mode}-split-alignment.mp4",
+                    root / "renders/real-fixture" / f"real-fixture-{mode}.mp4",
                     False,
                 )
             )
@@ -328,12 +339,12 @@ def render_matrix(root: Path, manifest: dict, *, real_fixture: bool = False) -> 
             "--fps",
             "60",
             "--encoder",
-            "h264_vaapi",
-            "--encoder-device",
-            "/dev/dri/renderD128",
+            encoder,
             "--timeout",
             "1200",
         ]
+        if encoder_device is not None:
+            command += ["--encoder-device", encoder_device]
         if synthetic:
             command += [
                 "--no-result-screen",
@@ -485,8 +496,8 @@ def geometry_report(root: Path, label: str = "after") -> None:
     print(f"Wrote 1K..18K geometry-{label} probes", flush=True)
 
 
-def verify_outputs(root: Path) -> dict:
-    """Probe every expected video, rather than trusting process exit alone."""
+def verify_outputs(root: Path, *, encoder: str = "auto", encoder_device: str | None = None) -> dict:
+    """Probe expected videos and record requested encoder/device settings."""
     expected = []
     for keys in range(1, 19):
         for resolution in ((1280, 720), (1920, 1080)) if keys in REPRESENTATIVE else ((1280, 720),):
@@ -501,13 +512,13 @@ def verify_outputs(root: Path) -> dict:
                     )
                 )
     for mode in ("monolithic", "wiki"):
-        video = root / "renders/real-fixture" / f"12K-{mode}-split-alignment.mp4"
+        video = root / "renders/real-fixture" / f"real-fixture-{mode}.mp4"
         if video.exists():
             expected.append((video, (1920, 1080)))
     result = {
         "fps": 60,
-        "requested_encoder": "h264_vaapi",
-        "device": "/dev/dri/renderD128",
+        "requested_encoder": encoder,
+        "device": encoder_device,
         "videos": [],
     }
     for video, resolution in expected:
@@ -538,28 +549,47 @@ def verify_outputs(root: Path) -> dict:
     return result
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--render", action="store_true")
-    parser.add_argument("--real-fixture", action="store_true")
+    parser.add_argument("--real-replay", type=Path)
+    parser.add_argument("--real-beatmap-dir", type=Path)
+    parser.add_argument("--real-skin-dir", type=Path)
+    parser.add_argument("--encoder", default="auto")
+    parser.add_argument("--encoder-device")
     parser.add_argument("--contact-sheets", action="store_true")
     parser.add_argument("--geometry", action="store_true")
     parser.add_argument("--verify", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    real_inputs = (args.real_replay, args.real_beatmap_dir, args.real_skin_dir)
+    if any(value is not None for value in real_inputs) and not all(
+        value is not None for value in real_inputs
+    ):
+        parser.error(
+            "--real-replay, --real-beatmap-dir, and --real-skin-dir must be supplied together"
+        )
     manifest = generate(args.root)
     print(
         f"Validated {len(manifest['fixtures'])} genuine zero-offset replay fixtures in {args.root}",
         flush=True,
     )
     if args.render:
-        render_matrix(args.root, manifest, real_fixture=args.real_fixture)
+        render_matrix(
+            args.root,
+            manifest,
+            real_replay=args.real_replay,
+            real_beatmap_dir=args.real_beatmap_dir,
+            real_skin_dir=args.real_skin_dir,
+            encoder=args.encoder,
+            encoder_device=args.encoder_device,
+        )
     if args.contact_sheets:
         contact_sheets(args.root)
     if args.geometry:
         geometry_report(args.root)
     if args.verify or args.render:
-        verify_outputs(args.root)
+        verify_outputs(args.root, encoder=args.encoder, encoder_device=args.encoder_device)
 
 
 if __name__ == "__main__":
