@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from math import ceil
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
 from osu_mania_renderer_v2.render.scene import SceneState, VisibleNote
 from osu_mania_renderer_v2.wiki_elements import effects, notes, stage
 from osu_mania_renderer_v2.wiki_elements.context import FrameContext
+from scripts.generate_synthetic_keymatrix import beatmap_bytes, generate, objects, replay_bytes
 
 
 def stable_oracle(
@@ -158,6 +160,21 @@ def test_fractional_split_lights_receptors_and_notes_match_source_centres(keys, 
         # .75px at 1080p default split widths, despite key/note agreement.
         assert rectangle[0] + rectangle[2] / 2 == pytest.approx(x + w / 2)
         assert rectangle[2:] == (84, 141)  # accepted native size is unchanged
+
+
+def test_generator_is_deterministic_and_raw_replays_really_hit(tmp_path):
+    manifest = generate(tmp_path)
+    assert generate(tmp_path) == manifest
+    assert [f["keys"] for f in manifest["fixtures"]] == list(range(1, 19))
+    for fixture in manifest["fixtures"]:
+        keys = fixture["keys"]
+        assert fixture["raw_misses"] == 0
+        assert fixture["raw_MAX_events"] == fixture["objects"] + keys
+        assert len({c for c, p, r in objects(keys) if r - p > 40}) == keys
+        data = beatmap_bytes(keys)
+        assert data == beatmap_bytes(keys)
+        md5 = hashlib.md5(data).hexdigest()
+        assert replay_bytes(keys, md5) == replay_bytes(keys, md5)
 
 
 @pytest.mark.parametrize("keys", range(1, 19))
