@@ -24,6 +24,7 @@ import threading
 from pathlib import Path
 
 from osu_mania_renderer_v2.render.encode import _ffmpeg_prefix
+from osu_mania_renderer_v2.security import ffmpeg_file_input_args
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
@@ -69,7 +70,7 @@ class VideoBackground:
         cmd = [
             *_ffmpeg_prefix(),
             "-hide_banner", "-loglevel", "error",
-            "-i", str(path),
+            *ffmpeg_file_input_args(path),
             "-an", "-sn",
             "-vf", vf,
             "-f", "rawvideo", "-pix_fmt", "rgba",

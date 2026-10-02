@@ -4,8 +4,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+
+from PIL import Image
 
 from osu_mania_renderer_v2.errors import (
     BeatmapParseError,
@@ -18,6 +21,9 @@ from osu_mania_renderer_v2.errors import (
     ReplayParseError,
 )
 from osu_mania_renderer_v2.beatmap.models import RenderOptions
+
+Image.MAX_IMAGE_PIXELS = 50_000_000
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 # GPU renderer imported lazily (its dependency chain pulls in moderngl,
 # which may not be available in every Python environment — e.g. CI,
 # headless wiki-renderer-only builds).

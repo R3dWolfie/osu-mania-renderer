@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 from osu_mania_renderer_v2.errors import EncoderError
+from osu_mania_renderer_v2.security import ffmpeg_file_input_args
 
 # Single-pass loudnorm applied to the MUSIC ALONE (the 2026-07-12 #17 duck
 # fix — normalising the song before hits are mixed on top). The SAME string is
@@ -198,9 +199,9 @@ def build_ffmpeg_cmd(
             cmd += ["-f", "f32le",
                     "-ar", str(LOUDNORM_CACHE_SR),
                     "-ac", str(LOUDNORM_CACHE_CH),
-                    "-i", str(prenormalized_audio_path)]
+                    *ffmpeg_file_input_args(prenormalized_audio_path)]
         else:
-            cmd += ["-i", str(audio_path)]  # raw source (fused path)
+            cmd += ffmpeg_file_input_args(audio_path)  # raw source (fused path)
         song_label = "1:a"
     if audio_path is not None and hitsound_path is not None:
         cmd += ["-i", str(hitsound_path)]

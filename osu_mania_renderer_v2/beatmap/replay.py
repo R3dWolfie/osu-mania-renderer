@@ -9,12 +9,14 @@ from osrparse import GameMode, Replay
 
 from osu_mania_renderer_v2.errors import NotAManiaError, ReplayParseError
 from osu_mania_renderer_v2.beatmap.models import KeyEvent, ReplayInfo
+from osu_mania_renderer_v2.security import bounded_lzma_decompress, validate_replay_payload
 
 
 def parse_replay(path: Path) -> ReplayInfo:
     if not path.exists():
         raise FileNotFoundError(path)
     try:
+        validate_replay_payload(path)
         r = Replay.from_path(path)
     except Exception as e:
         raise ReplayParseError(f"osrparse failed: {e}") from e
@@ -146,8 +148,11 @@ def _recover_leadin_offset(path: Path) -> int:
         off += 8                       # timestamp (int64)
         rlen = struct.unpack_from("<i", data, off)[0]
         off += 4                       # replay-data length (int32)
-        raw = lzma.decompress(data[off:off + rlen],
-                              format=lzma.FORMAT_AUTO).decode("ascii", "replace")
+        if rlen < 0 or rlen > len(data) - off:
+            raise ValueError("invalid replay payload length")
+        raw = bounded_lzma_decompress(
+            data[off:off + rlen], format=lzma.FORMAT_AUTO
+        ).decode("ascii", "replace")
 
         lead = 0
         for i, group in enumerate(raw.rstrip(",").split(",")):

@@ -28,6 +28,7 @@ from pathlib import Path
 from osu_mania_renderer_v2.render.encode import (
     LOUDNORM, LOUDNORM_CACHE_CH, LOUDNORM_CACHE_SR, _ffmpeg_prefix,
 )
+from osu_mania_renderer_v2.security import ffmpeg_file_input_args
 
 # --- contract shared with the sibling engines (osu-std record/audio.py) -------
 DEFAULT_CACHE_DIR = "/data/r3d/loudnorm-cache"
@@ -102,7 +103,7 @@ async def _build(source: Path, rate: float, pitch: bool, target: Path) -> bool:
     af = ",".join(_rate_filters(rate, pitch) + [LOUDNORM])
     cmd = [
         *_ffmpeg_prefix(), "-hide_banner", "-loglevel", "error",
-        "-i", str(source),
+        *ffmpeg_file_input_args(source),
         "-vn", "-af", af,
         "-f", "f32le", "-acodec", "pcm_f32le",
         "-ar", str(LOUDNORM_CACHE_SR), "-ac", str(LOUDNORM_CACHE_CH),

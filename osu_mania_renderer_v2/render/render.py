@@ -52,6 +52,7 @@ from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
 from osu_mania_renderer_v2.render.scene import HitErrorEvent, JudgmentPopup, snapshot
+from osu_mania_renderer_v2.security import safe_related_file
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
@@ -418,15 +419,11 @@ async def build_render_plan(
     if encoder_device is None and Path("/dev/dri/renderD128").exists():
         encoder_device = "/dev/dri/renderD128"
     encoder = await probe_encoder(options.encoder, encoder_device)
-    audio_path: Path | None = None
-    if modded.audio_filename:
-        cand = beatmap_dir / modded.audio_filename
-        if cand.exists():
-            audio_path = cand
-        elif options.audio_required:
-            raise MissingAudioError(f"audio file not found: {cand}")
-        else:
-            log.warning("audio_missing", extra={"expected": str(cand)})
+    audio_path = safe_related_file(beatmap_dir, modded.audio_filename)
+    if modded.audio_filename and audio_path is None:
+        if options.audio_required:
+            raise MissingAudioError("audio file not found in beatmap directory")
+        log.warning("audio_missing")
 
     # End-of-song layout: brief silent gap → results card.
     gameplay_end_ms = modded.total_duration_ms
@@ -522,8 +519,7 @@ async def build_render_plan(
         preview_path=preview_path,
     )
 
-    bg_filename = modded.background_filename
-    bg_path = (beatmap_dir / bg_filename) if bg_filename else None
+    bg_path = safe_related_file(beatmap_dir, modded.background_filename)
     first_note_ms = min((n.time_ms for n in modded.notes), default=0)
     banner_text = (
         f"{modded.artist} - {modded.title} [{modded.difficulty}]   "

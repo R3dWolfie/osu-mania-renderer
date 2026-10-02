@@ -33,6 +33,7 @@ from PIL import Image
 
 from osu_mania_renderer_v2.beatmap.mods import LEGACY_MOD_SKIN_ASSET_NAMES
 from osu_mania_renderer_v2.beatmap.skin_ini import ManiaSection
+from osu_mania_renderer_v2.security import safe_skin_file
 
 SPRITES_DIR = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 _LOG = logging.getLogger("osu_mania_renderer_v2")
@@ -1151,38 +1152,9 @@ def _ci_lookup(base: Path, rel: str) -> Path | None:
     """Resolve a relative path under `base` case-INSENSITIVELY. osu! skins are
     authored on Windows (case-insensitive FS), so a skin.ini `ComboPrefix:
     Combo` legitimately points at `combo-0.png`; on Linux that mismatch makes
-    the file vanish. Exact match is the fast path; otherwise each path
-    component is matched ignoring case."""
-    # osu! skin.ini paths are Windows-authored (backslash separators). On a
-    # CIFS mount a literal backslash in a path component makes stat() raise
-    # EINVAL (not ENOENT), which Path.is_file() re-raises -> the whole render
-    # crashes. Normalise before the fast path touches the FS, and guard other
-    # SMB-hostile names by falling through to the component-wise walk.
-    rel = rel.replace("\\", "/")
-    p = base / rel
-    try:
-        if p.is_file():
-            return p
-    except OSError:
-        pass
-    cur = base
-    for part in rel.split("/"):
-        nxt = cur / part
-        if nxt.exists():
-            cur = nxt
-            continue
-        match = None
-        try:
-            for entry in cur.iterdir():
-                if entry.name.lower() == part.lower():
-                    match = entry
-                    break
-        except OSError:
-            return None
-        if match is None:
-            return None
-        cur = match
-    return cur if cur.is_file() else None
+    the file vanish. The shared lookup preserves that case-folding while also
+    rejecting absolute paths, traversal, and symlink escapes from skin.ini."""
+    return safe_skin_file(base, rel)
 
 
 def _try_skin_file(skin_dir: Path, filename: str) -> Image.Image | None:
