@@ -98,6 +98,7 @@ class ManiaSection:
     stage_bottom: str | None = None
     stage_hint:   str | None = None
     stage_light:  str | None = None
+    warning_arrow: str | None = None
 
     # Judgement-popup overrides.
     hit_0:     str | None = None
@@ -379,6 +380,7 @@ class _ManiaBuilder:
         self.stage_bottom: str | None = None
         self.stage_hint:   str | None = None
         self.stage_light:  str | None = None
+        self.warning_arrow: str | None = None
 
         self.lighting_n:       str | None = None
         self.lighting_l:       str | None = None
@@ -532,6 +534,9 @@ class _ManiaBuilder:
         if lk == "stagelight":
             self.stage_light = value
             return
+        if lk == "warningarrow":
+            self.warning_arrow = value
+            return
         if lk == "lightingn":
             self.lighting_n = value
             return
@@ -632,6 +637,7 @@ class _ManiaBuilder:
             stage_bottom=self.stage_bottom,
             stage_hint=self.stage_hint,
             stage_light=self.stage_light,
+            warning_arrow=self.warning_arrow,
             lighting_n=self.lighting_n,
             lighting_l=self.lighting_l,
             lighting_n_width=self.lighting_n_width,

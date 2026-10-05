@@ -265,3 +265,23 @@ def test_both_skins_and_both_paths_call_same_horizontal_painter(is_argon):
     hud.hit_strip(element=None, skin=None, assets=None, variables=None, ctx=ctx)
     assert calls == [scene, scene]
     assert not hasattr(hud, "_argon_hit_error")
+
+
+def test_frame_state_carries_concurrent_legacy_lights_and_hold_colour_without_history():
+    from osu_mania_renderer_v2.render.scene import LightingNEvent
+    from osu_mania_renderer_v2.render.legacy_mania_events import build_legacy_mania_presentation
+    from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, Note
+    entries = [(1000, JudgmentEvent(1000,0,'300',0)),
+               (1100, JudgmentEvent(1100,0,'geki',0))]
+    plan = _plan(entries)
+    plan.legacy_presentation = build_legacy_mania_presentation(
+        (HoldNote(1,1000,2000),Note(0,970),Note(0,1100)),
+        tuple(KeyEvent(t,k) for t,k in [(1000,3),(1050,2),(1100,3),(1120,2),(2000,0)]), 4)
+    for now in (1150,1300,1000,1150):
+        scene = _state(plan,now)
+        if now == 1150:
+            assert scene.lighting_n_events == (LightingNEvent(0,'300',150),LightingNEvent(0,'geki',50))
+            assert scene.legacy_hold_colour_mix == .5
+        if now == 1300:
+            assert scene.lighting_n_events == ()
+            assert scene.legacy_hold_colour_mix == 1

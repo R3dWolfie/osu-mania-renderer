@@ -84,7 +84,8 @@ def _skin_provides_mania(ctx) -> bool:
     provides = ctx.mania_section is not None
     if not provides:
         atlas = ctx.atlas
-        for kind in ("note_tap", "note_hold_head", "note_hold_body", "receptor_off"):
+        for kind in ("note_tap", "note_hold_head", "note_hold_body", "note_hold_tail",
+                     "receptor_off", "receptor_on"):
             if any(atlas.column_source(kind, c) in ("user", "beatmap")
                    for c in range(ctx.key_count)):
                 provides = True
@@ -94,7 +95,7 @@ def _skin_provides_mania(ctx) -> bool:
         provides = any(
             atlas.global_source(g) in ("user", "beatmap")
             for g in ("stage_left", "stage_right", "playfield_frame",
-                      "stage_light", "hit_light")
+                      "stage_light", "hit_light", "lighting_n", "lighting_l", "warning_arrow")
         )
     cache["provides"] = provides
     return provides

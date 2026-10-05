@@ -434,6 +434,9 @@ def convert_standard_to_mania(
             sv_multiplier=1.0,         # force constant scroll speed
             uninherited=True,
             beat_length_ms=tp.beat_length_ms,
+            time_signature=tp.time_signature,
+            raw_beat_length_ms=tp.raw_beat_length_ms,
+            raw_time_ms=tp.raw_time_ms,
         )
         for tp in timing_points if tp.uninherited
     )

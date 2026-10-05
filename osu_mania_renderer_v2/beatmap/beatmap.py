@@ -282,6 +282,7 @@ def _parse_timing_points(block: str) -> tuple:
             custom_index = int(parts[4])
             volume = int(parts[5])
             uninherited = parts[6].strip() == "1"
+            time_signature = int(parts[2])
         except ValueError:
             continue
         beat_length_ms = 500.0
@@ -303,6 +304,9 @@ def _parse_timing_points(block: str) -> tuple:
             custom_index=custom_index, volume=volume,
             sv_multiplier=sv_multiplier, uninherited=uninherited,
             beat_length_ms=beat_length_ms,
+            time_signature=max(1, time_signature),
+            raw_beat_length_ms=beat_length,
+            raw_time_ms=float(parts[0]),
         ))
     out.sort(key=lambda tp: tp.time_ms)
     return tuple(out)

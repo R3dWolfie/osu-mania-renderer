@@ -215,6 +215,7 @@ GLOBAL_SPRITE_NAMES: tuple[str, ...] = (
     "judgment_100",
     "judgment_50",
     "judgment_miss",
+    "warning_arrow",
     # Argon default-skin pieces (white shapes, tinted per-column at draw).
     # No user-skin filename map → always resolve to the bundle PNG.
     "argon_note_body",
@@ -816,6 +817,14 @@ class SpriteAtlas:
         height rather than an aspect-scale of column width."""
         return self._column_native_sizes.get((kind, col), (0, 0))
 
+    def column_frame_native_size(self, kind: str, col: int, frame: int) -> tuple[float, float]:
+        """pAnimation swaps dimensions while retaining initial VectorScale."""
+        image = self.direct_frame_image(column_direct_name(kind, col), frame)
+        if image is None:
+            return self.column_native_size(kind, col)
+        scale = image.info.get("scale_adjust", 1)
+        return image.width / scale, image.height / scale
+
     def column_source(self, kind: str, col: int) -> str:
         """`"user"` if the column's sprite came from the skin, `"bundle"`
         if from the renderer's bundled fallback, `"missing"` otherwise."""
@@ -883,6 +892,7 @@ class SpriteAtlas:
             "stage_left": "mania-stage-left.png", "stage_right": "mania-stage-right.png",
             "hit_light": "mania-stage-hint.png", "playfield_frame": "mania-stage-bottom.png",
             "stage_light": "mania-stage-light.png",
+            "warning_arrow": "mania-warningarrow.png",
             "lighting_n": "lightingN.png", "lighting_l": "lightingL.png",
             **{f"judgment_{key}": f"mania-hit{value}.png" for key, value in
                (("geki", "300g"), ("300", "300"), ("katu", "200"),
@@ -1058,6 +1068,7 @@ def _global_section_override(section: ManiaSection, slot: str) -> str | None:
         "stage_left":       section.stage_left,
         "stage_right":      section.stage_right,
         "stage_light":      section.stage_light,
+        "warning_arrow":    section.warning_arrow,
         "playfield_frame":  section.stage_bottom,
         "hit_light":        section.stage_hint,
         "lighting_n":       section.lighting_n,
@@ -1081,6 +1092,7 @@ _DIRECT_DRAW_SLOTS: frozenset[str] = frozenset({
     "scorebar_bg", "scorebar_colour", "stage_left", "stage_right",
     "scorebar_marker", "scorebar_ki", "scorebar_kidanger", "scorebar_kidanger2",
     "playfield_frame",
+    "warning_arrow",
     "argon_wedge",   # retained resource slot; current HUD wedges are procedural.
     "argon_hp",      # glossy HP tube — crisp + stretches to fill.
     "argon_card",    # rounded results/avatar card — tinted at draw.

@@ -42,13 +42,13 @@ def test_legacy_note_draw_y_uses_lazer_edge_anchors(
 @pytest.mark.parametrize(
     ("upside_down", "is_tail", "expected"),
     [
-        (False, False, 400),
-        (False, True, 400),
-        (True, False, 361),
-        (True, True, 361),
+        (False, False, 400.75),
+        (False, True, 400.75),
+        (True, False, 361.25),
+        (True, True, 361.25),
     ],
 )
-def test_legacy_note_draw_y_truncates_non_integer_geometry_deterministically(
+def test_legacy_note_draw_y_preserves_source_float_geometry(
     upside_down, is_tail, expected,
 ):
     assert legacy_note_draw_y(

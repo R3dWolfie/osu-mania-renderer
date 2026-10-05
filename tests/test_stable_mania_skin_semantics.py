@@ -212,6 +212,8 @@ def test_tail_rendered_pixels_and_both_paths(tmp_path, case, up, version, settin
     asymmetric(tmp_path / f"{target}{'-0' if animated else ''}.png")
     if animated:
         asymmetric(tmp_path / f"{target}-1.png")
+    if case in ("conventional_t", "explicit_t", "animated_t"):
+        asymmetric(tmp_path / "head.png")  # this fixture specifies 16px cap geometry
     Image.new("RGBA", (8,8), (0,255,0,255)).save(tmp_path / "body.png")
     fields = {"default":"", "base_false":"NoteFlipWhenUpsideDown:0\n",
               "global_t_false":"NoteFlipWhenUpsideDownT:0\n",
@@ -296,16 +298,15 @@ def test_single_stage_default_and_clamps_are_not_broadcast():
     assert layout.column_x == (136,231,236,266)
 
 
-def test_nonmatching_mania_block_still_selects_stable_default_geometry():
+def test_nonmatching_mania_block_keeps_argon_without_current_mania_material():
     from osu_mania_renderer_v2.beatmap.skin_ini import SkinIni
     fr = object.__new__(FrameRenderer)
     fr.rc = SimpleNamespace(key_count=4, width=640, height=480, replay_mods=0)
     fr.skin_ini = SkinIni(mania=(ManiaSection(7),), legacy_version=2.7)
     fr.mania_section = None
-    assert not fr._is_argon_default()
-    fr._compute_playfield_geometry()
-    assert fr.col_x == (136,166,196,226)
-    assert fr.receptor_centre_y_gl == 78
+    fr.atlas = SimpleNamespace(column_source=lambda *a: "classic",
+                               global_source=lambda *a: "classic")
+    assert fr._is_argon_default()
 
 
 def test_mania_colours_cast_int32_to_bytes_and_retain_break_alpha(tmp_path):

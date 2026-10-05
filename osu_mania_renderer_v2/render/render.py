@@ -55,8 +55,12 @@ from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
 from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
+from osu_mania_renderer_v2.render.legacy_mania_events import (
+    LegacyManiaPresentation, build_legacy_mania_presentation,
+)
 from osu_mania_renderer_v2.render.scene import (
     HitErrorEvent, HoldVisualState, JudgmentPopup, build_hold_visual_states, snapshot,
+    sliding_colour_mix, lighting_n_events_at,
 )
 
 log = logging.getLogger("osu_mania_renderer_v2")
@@ -196,6 +200,8 @@ class RenderPlan:
     score_scale: float = 1.0
     score_final: int | None = None
     hold_visual_states: dict[tuple[int, int], HoldVisualState] = field(default_factory=dict)
+    legacy_timing: Any = None
+    legacy_presentation: LegacyManiaPresentation = field(default_factory=LegacyManiaPresentation)
 
 
 async def build_render_plan(
@@ -253,6 +259,13 @@ async def build_render_plan(
     # Retain actual head matches before aggregate tally reconciliation can
     # demote them or promote unmatched events to synthetic zero-offset hits.
     matched_head_events = judgments.events
+    # Source presentation is immutable replay evidence. Header reconciliation
+    # below remains authoritative for scoring/HUD, never AddHitLight or LN input.
+    legacy_presentation = build_legacy_mania_presentation(
+        modded.notes, replay.key_events, modded.key_count,
+        od=beatmap.overall_difficulty, source_mode=beatmap.source_mode,
+        mods=replay.mods, rate=mod_res.audio_rate,
+    )
     modded_od = getattr(modded, "overall_difficulty", None)
     hit_error_windows = (
         windows_for_od(float(modded_od))
@@ -535,6 +548,12 @@ async def build_render_plan(
     bg_filename = modded.background_filename
     bg_path = (beatmap_dir / bg_filename) if bg_filename else None
     first_note_ms = min((n.time_ms for n in modded.notes), default=0)
+    from osu_mania_renderer_v2.render.legacy_mania_timing import LegacyManiaTiming
+    legacy_timing = LegacyManiaTiming.build(
+        tps, first_note_ms=first_note_ms,
+        last_note_ms=max((getattr(n, "end_time_ms", n.time_ms) for n in modded.notes), default=0),
+        scroll_speed=options.scroll_speed or SCROLL_SPEED_BASELINE, rate=mod_res.audio_rate,
+    )
     banner_text = (
         f"{modded.artist} - {modded.title} [{modded.difficulty}]   "
         f"{replay.player_name}"
@@ -584,6 +603,8 @@ async def build_render_plan(
         mod_mult=_mod_mult, mania_mw=_mania_mw,
         score_scale=_score_scale, score_final=_score_final,
         hold_visual_states=hold_visual_states,
+        legacy_timing=legacy_timing,
+        legacy_presentation=legacy_presentation,
     )
 
 
@@ -616,6 +637,17 @@ def build_frame_state(
         max_hold_dur_ms=plan.max_hold_dur_ms,
         hold_visual_states=getattr(plan, "hold_visual_states", None),
     )
+    legacy_timing = getattr(plan, "legacy_timing", None)
+    legacy_scene = None
+    if legacy_timing is not None:
+        legacy_scene = snapshot(
+            notes=plan.modded.notes, key_events=replay.key_events,
+            t_ms=t_ms, key_count=key_count, approach_ms=plan.effective_approach_ms,
+            visual_mods=plan.visual_mods, consumed_times=plan.judged_hits,
+            note_times=plan.note_times, max_hold_dur_ms=plan.max_hold_dur_ms,
+            hold_visual_states=getattr(plan, "hold_visual_states", None),
+            movement_timeline=legacy_timing,
+        )
     # Active judgments use the actual effective judgment time (press time for
     # hits, scheduled time for misses), matching the score/combo fold below.
     # This also gives each new legacy animation an exact age-zero/frame-zero
@@ -922,10 +954,17 @@ def build_frame_state(
     else:
         fade = 0.0
     fade = max(0.0, min(1.0, fade))
+    presentation = getattr(plan, "legacy_presentation", LegacyManiaPresentation())
     scene_full = scene.__class__(
         t_ms=scene.t_ms, visible_notes=scene.visible_notes,
         keys_held=scene.keys_held, visual_mods=scene.visual_mods,
         active_judgments=active,
+        legacy_timing=legacy_timing,
+        legacy_visible_notes=legacy_scene.visible_notes if legacy_scene else None,
+        lighting_n_events=lighting_n_events_at(presentation.normal_hit_facts,
+                                              presentation.normal_hit_times, t_ms, presentation.rate),
+        legacy_hold_colour_mix=sliding_colour_mix(presentation.sliding_intervals, t_ms),
+        legacy_long_lights=presentation.long_lights_at(t_ms),
         hold_light_press_age_ms=scene.hold_light_press_age_ms,
         hold_light_release_age_ms=scene.hold_light_release_age_ms,
         score=(plan.score_final

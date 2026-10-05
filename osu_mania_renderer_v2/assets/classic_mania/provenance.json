@@ -344,6 +344,16 @@
     "scorebar-marker@2x.png": {
       "source": "osu-master/osu!gameplay/Resources/scorebar-marker@2x.png",
       "sha256": "7c052a6e62ffd4833a2bc191b86bd7487db8e3e1f924251b4af667741ca0d30f"
+    },
+    "mania-warningarrow.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-warningarrow.png",
+      "sha256": "696164f3a7d2ecacc393427c3c27fd1d01f3e6234e933aefb2757649742dec09"
+    },
+    "mania-warningarrow@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-warningarrow@2x.png",
+      "sha256": "b6e68ca516feb96c5368550708a1cb1cce0e29bbddbe96187d421df827e51a9d"
     }
-  }
+  },
+  "attribution": "Official osu! default resources by peppy / ppy Pty Ltd; unmodified archive bytes, not R3D-original art.",
+  "upstream_licence": "https://github.com/ppy/osu-resources/blob/master/LICENCE.md"
 }

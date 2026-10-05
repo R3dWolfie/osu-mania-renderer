@@ -59,6 +59,11 @@ class TimingPoint:
     # (e.g. 500 → 120 BPM). Carried so the nightcore-hitsounds overlay can
     # know where the beats are without scanning the .osu again.
     beat_length_ms: float = 500.0
+    # Source/presentation metadata; inherited SV and time signatures must not
+    # be lost when constructing stable's movement and measure timelines.
+    time_signature: int = 4
+    raw_beat_length_ms: float | None = None
+    raw_time_ms: float | None = None
 
 
 @dataclass(frozen=True)

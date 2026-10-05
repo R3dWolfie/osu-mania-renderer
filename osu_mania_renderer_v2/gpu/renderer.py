@@ -22,6 +22,7 @@ from osu_mania_renderer_v2.beatmap.models import RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import LegacyModIcon, legacy_mod_icons
 from osu_mania_renderer_v2.beatmap.skin_ini import (
     DEFAULT_COLOUR_BREAK,
+    DEFAULT_COLOUR_HOLD,
     ManiaSection,
     parse_skin_ini,
 )
@@ -58,6 +59,7 @@ from osu_mania_renderer_v2.gpu.legacy_stage_geometry import (
 from osu_mania_renderer_v2.gpu.text import text_to_texture
 from osu_mania_renderer_v2.render.dim import build_dim_envelope
 from osu_mania_renderer_v2.render.scene import SceneState
+from osu_mania_renderer_v2.render.legacy_mania_timing import LegacyManiaTiming, animation_frame
 
 log = logging.getLogger("osu_mania_renderer_v2")
 
@@ -990,6 +992,11 @@ class FrameRenderer:
         # Compute playfield geometry once. Honoured by all per-frame
         # draws via self.pf_x / self.pf_w / self.col_x / self.col_w.
         self._compute_playfield_geometry()
+        self._legacy_timing = LegacyManiaTiming.build(
+            timing_points, first_note_ms=first_note_ms,
+            last_note_ms=max(note_starts, default=first_note_ms),
+            scroll_speed=self.options.scroll_speed or 17, rate=rate,
+        )
 
     def _make_quad_geometry(self) -> None:
         ctx = self.rc.ctx
@@ -1011,8 +1018,6 @@ class FrameRenderer:
         switch the playfield to lazer's Argon stage-unit geometry."""
         if self.mania_section is not None:
             return False
-        if self.skin_ini is not None and any(0 < m.keys <= 18 for m in self.skin_ini.mania):
-            return False  # no exact block still selects stable default Mania semantics
         a = self.atlas
         K = self.rc.key_count
         for kind in ("note_tap", "note_hold_head", "note_hold_body", "note_hold_tail",
@@ -1021,7 +1026,7 @@ class FrameRenderer:
                 if a.column_source(kind, c) in ("user", "beatmap"):
                     return False
         for g in ("stage_left", "stage_right", "playfield_frame",
-                  "stage_light", "hit_light"):
+                  "stage_light", "hit_light", "lighting_n", "lighting_l", "warning_arrow"):
             if a.global_source(g) in ("user", "beatmap"):
                 return False
         return True
@@ -1751,6 +1756,8 @@ class FrameRenderer:
             for stage in stages:
                 self._legacy_active_stage = stage
                 self._flush_sprite_batch()
+                self._draw_legacy_scroll_guides(scene)
+                self._flush_sprite_batch()
                 self.apply_note_cover(scene.visual_mods.hidden, scene.visual_mods.fade_in, scene.combo)
                 self._draw_notes(scene)
                 self._flush_sprite_batch()
@@ -1765,6 +1772,47 @@ class FrameRenderer:
                 self._draw_combo_and_judgment(scene, draw_combo=False)
         finally:
             self._legacy_active_stage = None
+
+    def _draw_legacy_scroll_guides(self, scene: SceneState) -> None:
+        """HM's note-manager .62 barlines then .63 warning arrows."""
+        timing = getattr(scene, "legacy_timing", None) or getattr(self, "_legacy_timing", None)
+        if timing is None:
+            return
+        section = self.mania_section
+        hit = section.hit_position if section and section.hit_position is not None else 402
+        hit = max(240, min(480, hit))
+        bar_height = section.barline_height if section and section.barline_height is not None else 1.2
+        colour = section.colour_barline if section and section.colour_barline is not None else (255,255,255,255)
+        colour = legacy_disallow_zero_alpha_colour(colour)
+        stages = self._legacy_presentation_stages()
+        if bar_height > 0:
+            height = bar_height * self.rc.height / 768
+            for when in timing.measures:
+                position = timing.position(when, scene.t_ms, hit, bar_height)
+                if position is None:
+                    continue
+                y = legacy_mania_position_gl(position, self.rc.height, self.upside_down)
+                for stage in stages:
+                    self._draw_sprite("column_bg", stage.x, y - height / 2, stage.width, height, colour)
+        native_w, native_h = self.atlas.global_native_size("warning_arrow")
+        scale = self.rc.height / 768 * self._legacy_stage_minimum_ratio()
+        width, height = native_w * scale, native_h * scale
+        if width <= 0 or height <= 0:
+            return
+        extra_distance = -height * 480 / self.rc.height
+        for when in timing.warning_times:
+            position = timing.position(when, scene.t_ms, hit, extra_distance)
+            if position is None:
+                continue
+            y = legacy_mania_position_gl(position, self.rc.height, self.upside_down)
+            # FlipOrigin(TopCentre): upscroll uses BottomCentre independently
+            # of the UV flip. No guessed tween or note-approach clock.
+            y = y if self.upside_down else y - height
+            for stage in stages:
+                self._draw_direct("warning_arrow", stage.center_x - width / 2,
+                                  y, width, height, (1,1,1,1),
+                                  source_bottom=1.0 if self.upside_down else 0.0,
+                                  source_top=0.0 if self.upside_down else 1.0)
 
     def _legacy_stage_minimum_ratio(self) -> float:
         version = self.skin_ini.legacy_version if self.skin_ini else 1.0
@@ -2380,6 +2428,10 @@ class FrameRenderer:
             center_x = self.pf_x + self.pf_w / 2.0
         center_y = self.combo_baseline_y_gl
         texture_scale = self.rc.height / 768.0 * self._legacy_stage_minimum_ratio()
+        hold_colour = self.mania_section.colour_hold if self.mania_section and self.mania_section.colour_hold is not None else DEFAULT_COLOUR_HOLD
+        mix = getattr(scene, "legacy_hold_colour_mix", 0.0)
+        rgba = tuple(int(255 + (value - 255) * mix) for value in hold_colour)
+        combo_tint = legacy_disallow_zero_alpha_colour(rgba)
         overlap = self.skin_ini.combo_overlap if self.skin_ini is not None else 0
         if self._legacy_font_available("combo"):
             if scene.combo > 0:
@@ -2391,6 +2443,7 @@ class FrameRenderer:
                     scale=texture_scale,
                     overlap=overlap,
                     scale_y=legacy_combo_y_scale(scene.combo_age_ms),
+                    tint=combo_tint,
                 )
             break_scale, break_alpha = legacy_combo_break_animation(
                 getattr(scene, "combo_break_age_ms", 9999),
@@ -2437,7 +2490,7 @@ class FrameRenderer:
             y=int(round(center_y - drawn_height / 2.0)),
             w=width,
             h=drawn_height,
-            alpha=0.95,
+            alpha=0.95 * combo_tint[3], tint=combo_tint[:3],
         )
 
     def _draw_combo_and_judgment(
@@ -3661,7 +3714,8 @@ class FrameRenderer:
         # therefore select the same paused frame as sequential rendering.
         elapsed = getattr(note, "hold_animation_elapsed_ms", None)
         if elapsed is not None:
-            return legacy_hold_body_frame(active=True, elapsed_active_ms=elapsed,
+            timing = getattr(scene, "legacy_timing", None) or getattr(self, "_legacy_timing", None)
+            return legacy_hold_body_frame(active=True, elapsed_active_ms=elapsed * (timing.rate if timing else 1),
                                           frame_count=frame_count)
         active = bool(getattr(note, "hold_active", False))
         key = (note.column, note.time_ms)
@@ -3688,6 +3742,10 @@ class FrameRenderer:
         if self._is_argon_default():
             self._draw_argon_notes(scene)
             return
+
+        if getattr(scene, "legacy_visible_notes", None) is not None:
+            scene = replace(scene, visible_notes=scene.legacy_visible_notes)
+        timing = getattr(scene, "legacy_timing", None) or getattr(self, "_legacy_timing", None)
 
         rc = self.rc
         w = rc.width
@@ -3725,26 +3783,15 @@ class FrameRenderer:
         # untinted (the skin's own colours stay intact). Otherwise use
         # the renderer's signature tinted-circle look.
         use_skin_notes = self.atlas.has_skin_notes()
-        # Per-note animation phase. Spec says each note's animation
-        # starts from frame 0 at the note's spawn moment (≈ time_ms
-        # minus approach_ms). Using note.time_ms directly as the
-        # phase reference is visually equivalent for looped animations
-        # and saves the approach_ms lookup — the modulo just shifts
-        # which frame is on screen at any given world time.
         world_ms = scene.t_ms
 
         def _animated_idx(kind: str, col: int, note_time_ms: int = 0) -> int:
-            """Resolve a per-column slot to its current frame layer
-            index. Each note gets its own animation phase keyed off
-            `note_time_ms`; pass 0 for world-time-synced animation
-            (used by non-note slots that share a single phase)."""
             base = self.atlas.column_slot_index(kind, col)
             n_frames = self.atlas.column_frame_count(kind, col)
             if n_frames <= 1:
                 return base
-            fps = self._note_anim_fps(n_frames)
-            elapsed_ms = world_ms - note_time_ms
-            return base + int(elapsed_ms * fps / 1000.0) % n_frames
+            start = timing.first_movement_start(note_time_ms, self._legacy_hit_position_ref()) if timing else 0
+            return base + animation_frame(world_ms, start, n_frames, timing.rate if timing else 1)
 
         for n in scene.visible_notes:
             if n.column not in self._legacy_presentation_columns():
@@ -3782,17 +3829,28 @@ class FrameRenderer:
                 col_has_skin and self.atlas.has_skin_hold(n.column)
             )
             if n.is_hold:
-                y_head = to_screen_y(n.head_y_fraction)
-                y_tail = to_screen_y(n.tail_y_fraction)
+                if timing:
+                    y_head = self._legacy_moving_note_y(scene, n, timing, head_h)
+                    end_time = n.end_time_ms if n.end_time_ms is not None else n.time_ms
+                    y_tail = self._legacy_moving_y(timing, end_time, scene.t_ms, tail_h)
+                else:
+                    y_head = to_screen_y(n.head_y_fraction)
+                    y_tail = to_screen_y(n.tail_y_fraction)
                 body_top = min(y_head, y_tail)
                 body_h = abs(y_head - y_tail)
                 if col_has_skin_hold:
                     head_idx = _animated_idx("note_hold_head", n.column, n.time_ms)
-                    tail_idx = _animated_idx("note_hold_tail", n.column, n.time_ms)
+                    tail_idx = _animated_idx("note_hold_tail", n.column,
+                                             n.end_time_ms if n.end_time_ms is not None else n.time_ms)
+                    head_frame = head_idx - self.atlas.column_slot_index("note_hold_head", n.column)
+                    tail_frame = tail_idx - self.atlas.column_slot_index("note_hold_tail", n.column)
+                    head_w, head_h = self._legacy_cap_dimensions("note_hold_head", n.column, head_frame)
+                    tail_w, tail_h = self._legacy_cap_dimensions("note_hold_tail", n.column, tail_frame)
                     self._draw_legacy_hold_note(
                         scene, n, x0=x0, cw=cw, y_head=y_head, y_tail=y_tail,
                         head_h=head_h, tail_h=tail_h,
                         head_idx=head_idx, tail_idx=tail_idx,
+                        head_width=head_w, tail_width=tail_w, timing=timing,
                     )
                 else:
                     pad = cw // 6
@@ -3807,13 +3865,16 @@ class FrameRenderer:
                                       y_tail - local_note_h // 2,
                                       cw, local_note_h, tint)
             else:
-                y = to_screen_y(n.y_fraction)
+                y = (self._legacy_moving_y(timing, n.time_ms, scene.t_ms, local_note_h)
+                     if timing else to_screen_y(n.y_fraction))
                 if col_has_skin:
                     tap_idx = _animated_idx("note_tap", n.column, n.time_ms)
+                    frame = tap_idx - self.atlas.column_slot_index("note_tap", n.column)
+                    tap_w, local_note_h = self._legacy_cap_dimensions("note_tap", n.column, frame)
                     self._draw_legacy_cap(
-                        tap_idx, n.column, "", x0,
+                        tap_idx, n.column, "", x0 + (cw - tap_w) / 2,
                         legacy_note_draw_y(y, local_note_h, upside_down=upside_down),
-                        cw, local_note_h,
+                        tap_w, local_note_h,
                     )
                 else:
                     trail_step = max(4, local_note_h // 4)
@@ -3854,11 +3915,47 @@ class FrameRenderer:
         """Draw stable's additive LightingN/L layer for all legacy columns."""
         if self._is_argon_default():
             return
+        events = getattr(scene, "lighting_n_events", None)
         for c in self._legacy_presentation_columns():
             self._draw_custom_legacy_lighting(
                 scene, c=c, x0=self.col_x[c], cw=self.col_w[c],
                 centre_y=self.receptor_centre_y_gl, held=scene.keys_held[c],
+                draw_normal=events is None,
             )
+        # Every L was inserted when columns were constructed; N instances
+        # follow in successful-hit insertion order, including cross-column ties.
+        for event in events or ():
+            if event.column in self._legacy_presentation_columns():
+                self._draw_legacy_normal_lighting(event.column, event.age_ms, event.judgment)
+
+    def _legacy_hit_position_ref(self):
+        section = self.mania_section
+        return max(240, min(480, section.hit_position if section and section.hit_position is not None else 402))
+
+    def _legacy_moving_y(self, timing, when, now, height):
+        hit = self._legacy_hit_position_ref()
+        position = timing.position(when, now, hit, height * 480 / self.rc.height)
+        if position is None:
+            position = hit + timing.distance_at(now) - timing.distance_at(when)
+        return legacy_mania_position_gl(position, self.rc.height, self.upside_down)
+
+    def _legacy_moving_note_y(self, scene, note, timing, height):
+        if note.hold_head_hit and scene.t_ms >= note.time_ms:
+            if note.hold_active:
+                return self.receptor_centre_y_gl
+            if note.hold_drop_time_ms is not None:
+                return self._legacy_moving_y(timing, max(note.time_ms, note.hold_drop_time_ms), scene.t_ms, height)
+        return self._legacy_moving_y(timing, note.time_ms, scene.t_ms, height)
+
+    def _legacy_cap_dimensions(self, kind, column, frame):
+        initial_w, initial_h = self.atlas.column_native_size(kind, column)
+        lookup = getattr(self.atlas, "column_frame_native_size", None)
+        native_w, native_h = lookup(kind, column, frame) if lookup else (initial_w, initial_h)
+        section = self.mania_section
+        configured = section.width_for_note_height_scale if section else None
+        height_width = configured * self.rc.height / 480 if configured and configured > 0 else min(self.col_w)
+        denominator = initial_w or 1
+        return self.col_w[column] * native_w / denominator, height_width * native_h / denominator
 
     def _draw_legacy_key(self, column: int, *, held: bool) -> None:
         """LegacyKeyArea's X stretch, native Y, edge anchor and source swap."""
@@ -3878,20 +3975,46 @@ class FrameRenderer:
         self, scene, note, *, x0: float, cw: float,
         y_head: float, y_tail: float, head_h: float, tail_h: float,
         head_idx: int, tail_idx: int,
+        head_width: float | None = None, tail_width: float | None = None, timing=None,
     ) -> None:
         """One native legacy hold authority for frozen head/body/tail masking."""
         def to_screen_y(fraction):
             if fraction is None:
                 return None
+            if timing:
+                position = self._legacy_hit_position_ref() + (fraction - 1) * 480
+                return legacy_mania_position_gl(position, self.rc.height, self.upside_down)
             receptor = self.receptor_centre_y_gl
             if self.upside_down:
                 return int(fraction * receptor)
             return int(receptor + (1.0 - fraction) * (self.rc.height - receptor))
 
+        body_head_height, clip_head_height = head_h, head_h
+        if timing:
+            _, body_head_height = self._legacy_cap_dimensions("note_hold_head", note.column, 0)
+            hit_time = getattr(note, "hold_hit_time_ms", None)
+            if hit_time is not None:
+                count = self.atlas.column_frame_count("note_hold_head", note.column)
+                phase = timing.first_movement_start(note.time_ms, self._legacy_hit_position_ref())
+                _, clip_head_height = self._legacy_cap_dimensions("note_hold_head", note.column,
+                    animation_frame(hit_time, phase, count, timing.rate))
+        body_head_y = to_screen_y(note.body_head_y_fraction)
+        if timing and note.end_time_ms is not None:
+            position = timing.position(note.time_ms, scene.t_ms, self._legacy_hit_position_ref(),
+                                       body_head_height * 240 / self.rc.height,
+                                       note.end_time_ms - note.time_ms)
+            if position is not None:
+                body_head_y = legacy_mania_position_gl(position, self.rc.height, self.upside_down)
+        clip_head_y = to_screen_y(note.hold_clip_head_y_fraction)
+        if timing and note.hold_drop_time_ms is not None and scene.t_ms >= note.hold_drop_time_ms:
+            clip_head_y = y_head
         geometry = legacy_hold_geometry(
             y_head, y_tail, head_h, tail_h, upside_down=self.upside_down,
-            body_head_y=to_screen_y(note.body_head_y_fraction),
-            clip_head_y=to_screen_y(note.hold_clip_head_y_fraction),
+            body_head_y=body_head_y, clip_head_y=clip_head_y,
+            body_head_height=body_head_height, clip_head_height=clip_head_height,
+            full_body_length=(abs(timing.distance_at(note.end_time_ms) - timing.distance_at(note.time_ms))
+                              * self.rc.height / 480
+                              if timing and note.end_time_ms is not None else None),
         )
         self._draw_legacy_hold_body(
             scene, note, x0=x0, cw=cw,
@@ -3905,15 +4028,18 @@ class FrameRenderer:
             minimum_y=geometry.clip_min_y, maximum_y=geometry.clip_max_y,
         )
         if tail is not None:
+            tail_width = cw if tail_width is None else tail_width
+            tail_x = x0 + (cw - tail_width) / 2
             if tail.source_bottom == 0 and tail.source_top == 1:
-                self._draw_sprite_idx(tail_idx, x0, tail.y, cw, tail.height, (1,1,1,1))
+                self._draw_sprite_idx(tail_idx, tail_x, tail.y, tail_width, tail.height, (1,1,1,1))
             else:
                 self._draw_sprite_idx_cropped_y(
-                    tail_idx, x0, tail.y, cw, tail.height, (1,1,1,1),
+                    tail_idx, tail_x, tail.y, tail_width, tail.height, (1,1,1,1),
                     source_bottom=tail.source_bottom, source_top=tail.source_top,
                 )
-        self._draw_legacy_cap(head_idx, note.column, "H", x0,
-                              geometry.head_draw_y, cw, head_h)
+        head_width = cw if head_width is None else head_width
+        self._draw_legacy_cap(head_idx, note.column, "H", x0 + (cw - head_width) / 2,
+                              geometry.head_draw_y, head_width, head_h)
 
     def _legacy_note_flip(self, column: int, part: str = "") -> bool:
         return legacy_note_flip(
@@ -4081,13 +4207,25 @@ class FrameRenderer:
         cw: int,
         centre_y: int,
         held: bool,
+        draw_normal: bool = True,
     ) -> None:
         """Draw only skin-authored custom legacy hold / hit lighting."""
         press_ages = getattr(scene, "hold_light_press_age_ms", ())
         release_ages = getattr(scene, "hold_light_release_age_ms", ())
         press_age = press_ages[c] if c < len(press_ages) else -1
         release_age = release_ages[c] if c < len(release_ages) else -1
-        if (press_age >= 0 and release_age < 120
+        long_lights = getattr(scene, "legacy_long_lights", None)
+        if long_lights is not None:
+            light = long_lights[c] if c < len(long_lights) else None
+            press_age = light.animation_age_ms if light is not None else -1
+            alpha = light.alpha if light is not None else 0
+        elif release_age < 0:
+            alpha = min(1.0, press_age / LEGACY_HIT_EXPLOSION_FADE_IN_MS)
+        else:
+            at_release = min(1.0, max(0.0, (press_age - release_age) /
+                                      LEGACY_HIT_EXPLOSION_FADE_IN_MS))
+            alpha = at_release * (1.0 - release_age / LEGACY_HIT_EXPLOSION_FADE_OUT_MS)
+        if (press_age >= 0 and alpha > 0
                 and self.atlas.global_source("lighting_l") in ("beatmap", "user", "classic")):
             rect = self._legacy_lighting_rect(
                 "lighting_l", c=c, x0=x0, cw=cw, centre_y=centre_y,
@@ -4099,17 +4237,11 @@ class FrameRenderer:
                 if frames > 1:
                     fps = self._legacy_hold_light_fps(frames)
                     frame = int(press_age * fps / 1000.0) % frames
-                if release_age < 0:
-                    alpha = min(1.0, press_age / LEGACY_HIT_EXPLOSION_FADE_IN_MS)
-                else:
-                    at_release = min(1.0, max(0.0, (press_age - release_age) /
-                                              LEGACY_HIT_EXPLOSION_FADE_IN_MS))
-                    alpha = at_release * (1.0 - release_age / LEGACY_HIT_EXPLOSION_FADE_OUT_MS)
                 self._draw_additive_sprite_idx(
                     base + frame, *rect, (1.0, 1.0, 1.0, alpha),
                 )
 
-        if c >= len(scene.hit_light_age_ms):
+        if not draw_normal or c >= len(scene.hit_light_age_ms):
             return
         age = scene.hit_light_age_ms[c]
         judgment = (
@@ -4117,6 +4249,9 @@ class FrameRenderer:
             if c < len(scene.hit_light_judgment)
             else ""
         )
+        self._draw_legacy_normal_lighting(c, age, judgment)
+
+    def _draw_legacy_normal_lighting(self, c, age, judgment):
         alpha = legacy_hit_explosion_alpha(age)
         if alpha <= 0 or judgment not in self._JUDGMENT_LIGHT:
             return
@@ -4125,7 +4260,7 @@ class FrameRenderer:
             # note-circle flash. Explicit transparent assets remain authoritative.
             return
         rect = self._legacy_lighting_rect(
-            "lighting_n", c=c, x0=x0, cw=cw, centre_y=centre_y,
+            "lighting_n", c=c, x0=self.col_x[c], cw=self.col_w[c], centre_y=self.receptor_centre_y_gl,
         )
         if rect is None:
             return
