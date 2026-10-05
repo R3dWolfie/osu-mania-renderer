@@ -123,7 +123,7 @@ def legacy_stage_topology(
     *,
     mods: int = 0,
 ) -> LegacyStageLayout:
-    """Skin override wins over >10/KC auto split; 1K can never split.
+    """Skin override wins over >=10/KC auto split; 1K can never split.
 
     Stable supports 1..18 keys, but does not clamp native CS here. Do not
     silently discard columns in malformed/extended maps either.
@@ -134,7 +134,7 @@ def legacy_stage_topology(
         section = None
     override = section.split_stages if section is not None else None
     split = key_count > 1 and (
-        override if override is not None else key_count > 10 or bool(mods & Mod.KC)
+        override if override is not None else key_count >= 10 or bool(mods & Mod.KC)
     )
     counts = ((key_count + 1) // 2, key_count // 2) if split else (key_count,)
     style = section.special_style if section is not None else 0

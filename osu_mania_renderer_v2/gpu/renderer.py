@@ -40,6 +40,8 @@ from osu_mania_renderer_v2.gpu.legacy_mania import (
     legacy_hold_body_frame,
     legacy_hold_body_segments,
     legacy_note_body_style,
+    legacy_note_flip,
+    legacy_key_flip,
     legacy_stage_light_fps,
     legacy_stage_light_geometry,
     legacy_stage_light_presentation,
@@ -349,14 +351,12 @@ def legacy_lighting_scale(
         if 0 <= column < len(widths):
             configured_width = widths[column]
 
-    if configured_width != 0:
+    if configured_width > 0:
         return configured_width / 30.0
 
     if effective_column_width is None:
         column_widths = section.column_width if section is not None else ()
-        if len(column_widths) == 1:
-            effective_column_width = float(column_widths[0])
-        elif 0 <= column < len(column_widths):
+        if 0 <= column < len(column_widths):
             effective_column_width = float(column_widths[column])
         else:
             effective_column_width = 30.0
@@ -561,7 +561,7 @@ def mania_health_geometry(
 
 def mania_health_new_default(fill_source: str, marker_source: str) -> bool:
     """Mirror stable's new-default scorebar asset-source test."""
-    return fill_source == "bundle" or marker_source in ("user", "beatmap")
+    return fill_source in ("classic", "bundle") or marker_source == "user"
 
 
 def _scorebar_asset_metrics(image: Image.Image | None) -> LegacyScorebarAssetMetrics:
@@ -860,11 +860,13 @@ class FrameRenderer:
         breaks: tuple = (),
         approach_ms: int | None = None,
         rate: float = 1.0,
+        timing_points: tuple = (),
     ) -> None:
         self.rc = rc
         # Settings-page toggles. Pass options to gate optional HUD draws.
         self.options = options or RenderOptions(resolution=(rc.width, rc.height), fps=60)
         self.first_note_ms = first_note_ms
+        self._legacy_timing_points = timing_points
         # Background dim envelope (std's DimEnvelope, ported in dim.py): the
         # dim GLIDES intro→game as the first note begins its scroll-in
         # (approach_ms = RenderPlan.effective_approach_ms), brightens into
@@ -930,9 +932,7 @@ class FrameRenderer:
             combo_prefix=(self.skin_ini.combo_prefix
                           if self.skin_ini is not None else "score"),
         )
-        self._legacy_scorebar_classification = (
-            self._classify_legacy_scorebar_layout()
-        )
+        self._legacy_scorebar_classification = None
         self._make_quad_geometry()
 
         # Instanced sprite pipeline. Per-vertex buffer is the 4-corner
@@ -1011,9 +1011,12 @@ class FrameRenderer:
         switch the playfield to lazer's Argon stage-unit geometry."""
         if self.mania_section is not None:
             return False
+        if self.skin_ini is not None and any(0 < m.keys <= 18 for m in self.skin_ini.mania):
+            return False  # no exact block still selects stable default Mania semantics
         a = self.atlas
         K = self.rc.key_count
-        for kind in ("note_tap", "note_hold_head", "note_hold_body", "receptor_off"):
+        for kind in ("note_tap", "note_hold_head", "note_hold_body", "note_hold_tail",
+                     "receptor_off", "receptor_on"):
             for c in range(K):
                 if a.column_source(kind, c) in ("user", "beatmap"):
                     return False
@@ -1205,7 +1208,7 @@ class FrameRenderer:
         self.pf_x = pf_x
         self.pf_w = x - pf_x
         topology = legacy_stage_topology(K, section, mods=getattr(rc, "replay_mods", 0))
-        if not is_argon and len(topology.stages) > 1:
+        if not is_argon:
             self.stage_layout = legacy_stage_layout(
                 K, section, render_width=rc.width, render_height=rc.height,
                 mods=getattr(rc, "replay_mods", 0),
@@ -1213,8 +1216,8 @@ class FrameRenderer:
             # Keep global indices: only their presentation X/width changes.
             self.col_x = self.stage_layout.column_x
             self.col_w = self.stage_layout.column_width
-            self.pf_x = int(round(self.stage_layout.stages[0].x))
-            self.pf_w = int(round(self.stage_layout.stages[-1].right - self.pf_x))
+            self.pf_x = self.stage_layout.stages[0].x
+            self.pf_w = self.stage_layout.stages[-1].right - self.pf_x
         else:
             # Preserve existing single-stage and Argon positioning exactly.
             self.stage_layout = LegacyStageLayout((LegacyStage(
@@ -1238,17 +1241,14 @@ class FrameRenderer:
         # when set; otherwise keep the renderer's bottom-offset default
         # so non-skinned renders look unchanged.
         if section is not None and section.hit_position is not None:
-            self.receptor_centre_y_gl = osu_y_to_gl(section.hit_position)
+            self.receptor_centre_y_gl = osu_y_to_gl(max(240, min(480, section.hit_position)))
         elif is_argon:
             # lazer Stage.HIT_TARGET_POSITION = 110 stage units from the
             # bottom (×height/768). This gives the tall key area below the
             # hit line that lazer's Argon shows.
             self.receptor_centre_y_gl = int(round(110.0 * rc.height / 768.0))
         else:
-            avg_rec_h = int(self.col_w_uniform * RECEPTOR_HEIGHT_REL_COL)
-            self.receptor_centre_y_gl = (
-                int(rc.height * RECEPTOR_BOTTOM_OFFSET_FRAC) + avg_rec_h // 2
-            )
+            self.receptor_centre_y_gl = osu_y_to_gl(402)
 
         # UpsideDown: when the skin's [Mania] block sets `UpsideDown: 1`
         # (FNF, several rhythm-game-themed skins) the playfield flips
@@ -1285,7 +1285,8 @@ class FrameRenderer:
                 section.combo_position, rc.height, self.upside_down,
             )))
         else:
-            self.combo_baseline_y_gl = int(rc.height * 0.58)
+            self.combo_baseline_y_gl = (int(rc.height * 0.58) if is_argon else
+                                        legacy_mania_position_gl(111, rc.height, self.upside_down))
 
         if section is not None and section.score_position is not None:
             self.score_popup_y_gl = int(round(legacy_mania_position_gl(
@@ -1293,7 +1294,8 @@ class FrameRenderer:
             )))
         else:
             # Default lives just below combo baseline (renderer-historical).
-            self.score_popup_y_gl = self.combo_baseline_y_gl - 8
+            self.score_popup_y_gl = (self.combo_baseline_y_gl - 8 if is_argon else
+                                     legacy_mania_position_gl(325, rc.height, self.upside_down))
 
     def set_background(self, path: Path | None) -> None:
         if path is None or not path.exists():
@@ -1396,29 +1398,40 @@ class FrameRenderer:
         for x, width in ((0, stages[0].x), (stages[-1].right, w - stages[-1].right)):
             if width > 0:
                 self._draw_sprite("column_bg", x, 0, width, h, (0, 0, 0, 0.55))
-        meaningful = any(
-            self.atlas.global_source(name) in ("user", "beatmap")
-            and np.prod(self.atlas.global_native_size(name)) > 100
-            for name in ("stage_left", "stage_right")
-        )
         for stage in stages:
-            if not meaningful:
-                self._draw_sprite("column_bg", stage.x, 0, stage.width, h, (0, 0, 0, 0.55))
             side = mania_stage_side_geometry(
-                playfield_left=stage.x, playfield_right=stage.right,
+                playfield_left=stage.x + 0.05 * h / 480, playfield_right=stage.right + 0.05 * h / 480,
                 stage_height=float(h),
                 left_native_width=self.atlas.global_native_size("stage_left")[0],
                 right_native_width=self.atlas.global_native_size("stage_right")[0],
             )
             for name, rect in (("stage_left", side.left_rect), ("stage_right", side.right_rect)):
-                if self.atlas.global_source(name) in ("user", "beatmap"):
+                if self.atlas.global_source(name) in ("user", "beatmap", "classic"):
                     self._draw_direct(name, *rect, tint=(1, 1, 1, 1))
-            if self.atlas.global_source("hit_light") in ("user", "beatmap"):
+    def _draw_legacy_stage_targets(self) -> None:
+        """Stage manager .62: StageHint and JudgementLine, above column .6/.61."""
+        if self._is_argon_default():
+            return
+        h = self.rc.height
+        section = self.mania_section
+        stages = self._legacy_presentation_stages()
+        for stage in stages:
+            if self.atlas.global_source("hit_light") in ("user", "beatmap", "classic"):
                 native_h = self.atlas.global_native_size("hit_light")[1]
-                hint_h = max(1, int(round(native_h * 0.9 * 1.6026 * h / 768.0)))
-                self._draw_sprite("hit_light", stage.x,
-                                  self.receptor_centre_y_gl - hint_h / 2,
-                                  stage.width, hint_h, (1, 1, 1, 0.9))
+                hint_h = native_h * 0.9 * 1.6026 * h / 768.0
+                self._draw_sprite_idx_cropped_y(
+                    self.atlas.index_of("hit_light"), stage.x,
+                    self.receptor_centre_y_gl - hint_h / 2,
+                    stage.width, hint_h, (1, 1, 1, 0.9),
+                    source_bottom=1.0 if self.upside_down else 0.0,
+                    source_top=0.0 if self.upside_down else 1.0,
+                )
+            if section is None or section.judgement_line is not False:
+                colour = (section.colour_judgement_line if section else None) or (255,255,255,255)
+                rgb = tuple(c / 255 for c in colour[:3])
+                line_h = 0.7 * 1.6026 * h / 768.0
+                y = self.receptor_centre_y_gl if self.upside_down else self.receptor_centre_y_gl - line_h
+                self._draw_sprite("column_bg", stage.x, y, stage.width, line_h, (*rgb, 0.9 * (colour[3] / 255 if colour[3] else 1.0)))
 
     def _draw_split_stage_foreground(self) -> None:
         if self.atlas.global_source("playfield_frame") not in ("user", "beatmap"):
@@ -1429,7 +1442,7 @@ class FrameRenderer:
         if width <= 0 or height <= 0:
             return
         frame = int(getattr(self, "_stage_clock_ms", 0) * 60 / 1000) % self.atlas.frame_count("playfield_frame")
-        for stage in self.stage_layout.stages:
+        for stage in self._legacy_presentation_stages():
             self._draw_direct("playfield_frame", int(round(stage.center_x - width / 2)),
                               int(round(h - height)) if self.upside_down else 0,
                               int(round(width)), int(round(height)), (1, 1, 1, 1),
@@ -1445,6 +1458,8 @@ class FrameRenderer:
         height = self.receptor_centre_y_gl if self.upside_down else self.rc.height - self.receptor_centre_y_gl
         y = 0 if self.upside_down else self.receptor_centre_y_gl
         for c, (x, width) in enumerate(zip(self.col_x, self.col_w)):
+            if c not in self._legacy_presentation_columns():
+                continue
             for index, edge in ((c, x), (c + 1, x + width)):
                 if index == c + 1 and version < 2.4 and c != self.rc.key_count - 1:
                     continue
@@ -1452,7 +1467,7 @@ class FrameRenderer:
                 if ref <= 0:
                     continue
                 ref = max(2.0, ref)
-                self._draw_sprite("column_bg", edge, y, ref * 0.740 * scale, height, tint)
+                self._draw_sprite("column_bg", edge - (0.10 * self.rc.height / 480 if index == c + 1 and c == self.rc.key_count - 1 else 0), y, ref * 0.740 * scale, height, tint)
 
     def _draw_stage_decorations(self, scene: SceneState | None = None) -> None:
         """Draw the background stage-decoration slots — stage_left,
@@ -1476,7 +1491,7 @@ class FrameRenderer:
         UpsideDown skins have already had `receptor_centre_y_gl` flipped
         by `_compute_geometry`, so positions tied to it automatically
         invert; left/right don't depend on orientation."""
-        if self._has_split_legacy_stages():
+        if not self._is_argon_default():
             self._draw_split_stage_decorations()
             return
         if scene is not None and self._is_argon_default():
@@ -1576,7 +1591,7 @@ class FrameRenderer:
 
     def _draw_legacy_stage_foreground(self) -> None:
         """Stable's stage-bottom layer: above keys, below hit lighting."""
-        if self._has_split_legacy_stages():
+        if not self._is_argon_default():
             self._draw_split_stage_foreground()
             return
         rec_y = self.receptor_centre_y_gl
@@ -1623,60 +1638,30 @@ class FrameRenderer:
         # visible, so non-decorated skins are unaffected.
         self._draw_stage_decorations(scene)
         is_argon = self._is_argon_default()
-        custom_scorebar_layout = self._selected_legacy_scorebar_layout()
-        draw_mania_side_health = (
-            self.options.show_hp_bar
-            and not is_argon
-            and self._has_custom_health_bar_assets()
-            and custom_scorebar_layout is not LegacyScorebarLayout.STANDARD_HUD
-        )
+        draw_mania_side_health = self._uses_legacy_mania_health()
         if draw_mania_side_health:
-            # HpBarMania belongs to StageMania.SpriteManagerBelow. Keep the
-            # authored side gauge with stage decoration, before playfield
-            # columns/notes and global HUD chrome.
             self._draw_hp_bar(scene)
-        self._draw_columns(scene)
-        if self.options.show_key_overlay:
-            self._draw_stage_lights(scene)
-
-        # KeysUnderNotes (from skin's [Mania] block): when true, the
-        # receptors are drawn UNDER the notes so falling notes appear to
-        # pass on top of the key strip. Default (and most skins) is the
-        # opposite — keys on top of notes — which is the renderer's
-        # historical behaviour.
-        keys_under_notes = bool(
-            self.mania_section is not None
-            and self.mania_section.keys_under_notes
-        )
-
-        if keys_under_notes:
-            self._draw_receptors(scene)
-
-        # HD/FI uniforms only apply to scrolling notes. Flush the pre-notes
-        # batch before changing those uniforms, otherwise any queued sprite
-        # would be drawn with the wrong HD state.
-        self._flush_sprite_batch()
-        self.apply_note_cover(
-            scene.visual_mods.hidden, scene.visual_mods.fade_in, scene.combo)
-        self._draw_notes(scene)
-        self._flush_sprite_batch()
-        self._hd_active = False
-        self._fi_active = False
-
-        # Preserve Argon's established ordering. Custom legacy judgment lives
-        # in stable's stage-above manager, so it is drawn after receptors too.
+        keys_under_notes = bool(self.mania_section and self.mania_section.keys_under_notes)
         if is_argon:
-            self._draw_combo_and_judgment(scene)
+            self._draw_columns(scene)
+            if self.options.show_key_overlay:
+                self._draw_stage_lights(scene)
+            if keys_under_notes:
+                self._draw_receptors(scene)
+        else:
+            self._draw_legacy_stage_managers(scene)
 
-        if not keys_under_notes:
-            self._draw_receptors(scene)
-        if not is_argon:
-            # Stable SpriteManagerAbove sorts keys (.92/.925), stage bottom
-            # (.94), LightingN/L (.98), then judgement (.998). Complete all
-            # lower layers before drawing lights that can cross columns.
-            self._draw_legacy_stage_foreground()
-            self._draw_legacy_hit_lighting(scene)
+        if is_argon:
+            self._flush_sprite_batch()
+            self.apply_note_cover(scene.visual_mods.hidden, scene.visual_mods.fade_in, scene.combo)
+            self._draw_notes(scene)
+            self._flush_sprite_batch()
+            self._hd_active = self._fi_active = False
             self._draw_combo_and_judgment(scene)
+            if not keys_under_notes:
+                self._draw_receptors(scene)
+        else:
+            self._draw_legacy_stage_gameplay(scene)
         _show_hit_error_popups, show_ur_summary = self._legacy_timing_overlay_visibility()
         if (
             getattr(self.options, "hud_opacity", 1.0) > 0.0
@@ -1727,6 +1712,66 @@ class FrameRenderer:
         # Final flush — anything still queued goes out before the FBO
         # readback in render.py picks up this frame's pixels.
         self._flush_sprite_batch()
+
+    def _legacy_presentation_stages(self):
+        active = getattr(self, "_legacy_active_stage", None)
+        if active is not None:
+            return (active,)
+        layout = getattr(self, "stage_layout", None)
+        return layout.stages if layout is not None else ()
+
+    def _legacy_presentation_columns(self):
+        active = getattr(self, "_legacy_active_stage", None)
+        return (range(active.first_column, active.end_column) if active is not None
+                else range(self.rc.key_count))
+
+    def _draw_legacy_stage_managers(self, scene: SceneState) -> None:
+        """ST.DrawBelow: all stage managers, after all below managers."""
+        try:
+            for stage in self._legacy_presentation_stages() or (None,):
+                self._legacy_active_stage = stage
+                self._draw_columns(scene)
+                self._draw_legacy_stage_targets()
+                if self.options.show_key_overlay:
+                    self._draw_stage_lights(scene)
+                if self.mania_section and self.mania_section.keys_under_notes:
+                    self._draw_receptors(scene)
+        finally:
+            self._legacy_active_stage = None
+
+    def _draw_legacy_stage_gameplay(self, scene: SceneState) -> None:
+        """ST.Draw: each stage's notes followed by that stage's above manager.
+
+        Below managers/stage managers have already all been drawn. Keep the
+        shared compositor here so wide lights and negative spacing obey the
+        same cross-stage painter order in the wiki and monolithic paths.
+        """
+        stages = self._legacy_presentation_stages() or (None,)
+        try:
+            for stage in stages:
+                self._legacy_active_stage = stage
+                self._flush_sprite_batch()
+                self.apply_note_cover(scene.visual_mods.hidden, scene.visual_mods.fade_in, scene.combo)
+                self._draw_notes(scene)
+                self._flush_sprite_batch()
+                self._hd_active = self._fi_active = False
+                centres = (stage.center_x,) if stage else (self.pf_x + self.pf_w / 2,)
+                for centre in centres:
+                    self._draw_custom_legacy_combo(scene, draw_combo=True, center_x=centre)
+                if not (self.mania_section and self.mania_section.keys_under_notes):
+                    self._draw_receptors(scene)
+                self._draw_legacy_stage_foreground()
+                self._draw_legacy_hit_lighting(scene)
+                self._draw_combo_and_judgment(scene, draw_combo=False)
+        finally:
+            self._legacy_active_stage = None
+
+    def _legacy_stage_minimum_ratio(self) -> float:
+        version = self.skin_ini.legacy_version if self.skin_ini else 1.0
+        if version < 2.4:
+            return 1.0  # full-height stable stages do not scale old HUD sprites
+        width_ref = sum(self.col_w) * 480.0 / self.rc.height
+        return min(1.0, width_ref / (30.0 * self.rc.key_count))
 
     def _draw_watermark(self, text: str) -> None:
         """Bottom-right white text, ~22px, low-opacity. Cached so we don't
@@ -2300,7 +2345,7 @@ class FrameRenderer:
         native_width, native_height = self.atlas.global_native_size(slot)
         if native_width <= 0 or native_height <= 0:
             return
-        texture_scale = self.rc.height / 768.0
+        texture_scale = self.rc.height / 768.0 * self._legacy_stage_minimum_ratio()
         animation_scale = legacy_judgment_scale(
             judgment.age_ms, miss=judgment.judgment == "miss",
         )
@@ -2334,7 +2379,7 @@ class FrameRenderer:
         if center_x is None:
             center_x = self.pf_x + self.pf_w / 2.0
         center_y = self.combo_baseline_y_gl
-        texture_scale = self.rc.height / 768.0
+        texture_scale = self.rc.height / 768.0 * self._legacy_stage_minimum_ratio()
         overlap = self.skin_ini.combo_overlap if self.skin_ini is not None else 0
         if self._legacy_font_available("combo"):
             if scene.combo > 0:
@@ -2371,7 +2416,7 @@ class FrameRenderer:
                         break_colour[0] / 255.0,
                         break_colour[1] / 255.0,
                         break_colour[2] / 255.0,
-                        break_alpha,
+                        break_alpha * (break_colour[3] / 255.0 if len(break_colour) > 3 and break_colour[3] else 1.0),
                     ),
                     additive=True,
                 )
@@ -2402,7 +2447,7 @@ class FrameRenderer:
         if not self._is_argon_default():
             if self._has_split_legacy_stages():
                 separate = self.mania_section is None or self.mania_section.separate_score is not False
-                for stage in self.stage_layout.stages:
+                for stage in self._legacy_presentation_stages():
                     judgments = tuple(j for j in scene.active_judgments
                                       if not separate or stage.first_column <= j.column < stage.end_column)
                     self._draw_custom_legacy_judgment(
@@ -2530,67 +2575,27 @@ class FrameRenderer:
             ),
         )
 
-    def _draw_hp_bar(self, scene: SceneState) -> None:
-        """Draw the cached custom layout choice, or the procedural fallback."""
-        if not getattr(self.options, "show_hp_bar", True):
-            return
-        # The Argon health tube is part of the shared Argon HUD. Standard-mode
-        # scorebar assets do not replace it when the skin supplies no Mania
-        # presentation contract.
-        if self._is_argon_default():
-            return
-        hp = max(0.0, min(1.0, scene.hp))
-        if self._has_custom_health_bar_assets():
-            display_hp = self._legacy_display_hp_for_scene(scene)
-            fill_frame = self._legacy_scorebar_frame_for_scene(scene)
-            if (
-                self._selected_legacy_scorebar_layout()
-                is LegacyScorebarLayout.STANDARD_HUD
-            ):
-                self._draw_standard_legacy_health_bar(
-                    display_hp, frame_index=fill_frame,
-                )
-                return
-            self._draw_mania_health_bar(
-                display_hp, frame_index=fill_frame,
-            )
-            return
+    def _uses_legacy_mania_health(self) -> bool:
+        """Active legacy Mania always owns HpBarMania in the below manager."""
+        return getattr(self.options, "show_hp_bar", True) and not self._is_argon_default()
 
-        # Existing R3D fallback: vertical HP track on the left of the
-        # playfield, fed by actual per-judgment HP deltas.
-        rc = self.rc
-        pf_x = self.pf_x
-        pf_w = self.pf_w
-        bar_w = max(6, int(rc.width * 0.008))
-        bar_x = pf_x - bar_w - max(4, int(rc.width * 0.004))
-        col_w = self.col_w_uniform
-        rec_h = int(col_w * RECEPTOR_HEIGHT_REL_COL)
-        bar_y = int(rc.height * RECEPTOR_BOTTOM_OFFSET_FRAC) + rec_h + 8
-        bar_h = rc.height - bar_y - 80
-        # Dim track behind the fill.
-        self._draw_sprite("column_bg", bar_x, bar_y, bar_w, bar_h,
-                          (0.15, 0.15, 0.2, 0.6))
-        # Filled portion colour shifts red as HP gets low so failing plays
-        # are visually obvious even without an actual "fail" event.
-        if hp > 0.5:
-            r, g, b = 0.65, 0.35, 0.95   # purple
-        elif hp > 0.2:
-            r, g, b = 0.95, 0.55, 0.25   # orange
-        else:
-            r, g, b = 0.95, 0.30, 0.30   # red
-        fill_h = int(bar_h * hp)
-        self._draw_sprite("column_bg", bar_x, bar_y, bar_w, fill_h,
-                          (r, g, b, 0.95))
+    def _draw_hp_bar(self, scene: SceneState) -> None:
+        if not self._uses_legacy_mania_health():
+            return
+        self._draw_mania_health_bar(
+            self._legacy_display_hp_for_scene(scene),
+            frame_index=self._legacy_scorebar_frame_for_scene(scene),
+        )
 
     def _has_custom_health_bar_assets(self) -> bool:
         """Whether a same-tier custom background/fill pair was resolved."""
         source = self.atlas.global_source("scorebar_bg")
-        if source not in ("user", "beatmap"):
+        if source not in ("user", "beatmap", "classic"):
             return False
         bg_w, bg_h = self.atlas.global_native_size("scorebar_bg")
         fill_w, fill_h = self.atlas.global_native_size("scorebar_colour")
         return (
-            self.atlas.global_source("scorebar_colour") == source
+            self.atlas.global_source("scorebar_colour") in ("user", "beatmap", "classic")
             and bg_w > 0
             and bg_h > 0
             and fill_w > 0
@@ -2657,7 +2662,8 @@ class FrameRenderer:
         background_native = atlas.global_native_size("scorebar_bg")
         fill_native = atlas.global_native_size("scorebar_colour")
         geometry = mania_health_geometry(
-            stage_right=self.pf_x + self.pf_w,
+            stage_right=(self.stage_layout.stages[-1].right if getattr(self, "stage_layout", None)
+                         else self.pf_x + self.pf_w),
             stage_top=0.0,
             stage_height=float(rc.height),
             background_native_size=background_native,
@@ -3531,7 +3537,8 @@ class FrameRenderer:
         )
         keys_held = scene.keys_held
         release_ages = getattr(scene, "key_release_age_ms", ())
-        for c in range(rc.key_count):
+        press_ages = getattr(scene, "key_press_age_ms", ())
+        for c in self._legacy_presentation_columns():
             held = c < len(keys_held) and bool(keys_held[c])
             release_age = release_ages[c] if c < len(release_ages) else None
             presentation = legacy_stage_light_presentation(
@@ -3540,6 +3547,9 @@ class FrameRenderer:
                 time_ms=scene.t_ms,
                 frame_count=frames,
                 fps=fps,
+                press_age_ms=press_ages[c] if c < len(press_ages) else 0.0,
+                release_duration_ms=int(400 * 100 / self._legacy_bpm_at(
+                    scene.t_ms - release_age if release_age is not None and release_age >= 0 else scene.t_ms)),
             )
             if not presentation.visible:
                 continue
@@ -3557,29 +3567,28 @@ class FrameRenderer:
                 continue
             tint = self._stage_light_tint(c)
             tint_alpha = tint[3] if len(tint) > 3 else 1.0
-            self._draw_sprite_idx(
-                base_idx + presentation.frame,
-                geometry.x,
-                geometry.y,
-                geometry.width,
-                geometry.height,
-                (tint[0], tint[1], tint[2], presentation.alpha * tint_alpha),
-            )
+            colour = (tint[0], tint[1], tint[2], presentation.alpha * tint_alpha)
+            if self.upside_down:
+                self._draw_sprite_idx_cropped_y(
+                    base_idx + presentation.frame, geometry.x, geometry.y,
+                    geometry.width, geometry.height, colour,
+                    source_bottom=1.0, source_top=0.0)
+            else:
+                self._draw_sprite_idx(base_idx + presentation.frame,
+                                      geometry.x, geometry.y, geometry.width,
+                                      geometry.height, colour)
+
+    def _legacy_bpm_at(self, time_ms: float) -> float:
+        beat_length = 500.0  # parser's default when a map has no red timing point
+        for point in getattr(self, "_legacy_timing_points", ()):
+            if point.time_ms > time_ms:
+                break
+            if point.uninherited and point.beat_length_ms > 0:
+                beat_length = point.beat_length_ms
+        return 60000.0 / beat_length
 
     def _note_anim_fps(self, frame_count: int) -> float:
-        """FPS for tap-note / hold-head / hold-tail animations.
-
-        Per the wiki: notes animate at `[General] AnimationFramerate`
-        (no [Mania]-level override). `-1` derives danser-style
-        (1000/frame_count ms per frame ⇒ fps == frame_count). Spec hard
-        default is 60.
-        """
-        if self.skin_ini is not None and self.skin_ini.animation_framerate:
-            af = self.skin_ini.animation_framerate
-            if af > 0:
-                return float(af)
-            if af == -1 and frame_count > 1:
-                return float(frame_count)
+        """HC/LN never calls SetFramerateFromSkin; pAnimation defaults to60."""
         return 60.0
 
     def _stage_light_fps(self, frame_count: int) -> float:
@@ -3588,22 +3597,8 @@ class FrameRenderer:
         return legacy_stage_light_fps(self.mania_section)
 
     def _legacy_hold_light_fps(self, frame_count: int) -> float:
-        """Preserve the pre-existing LightingL cadence outside this fix."""
-        section = self.mania_section
-        if section is not None and section.light_frame_per_second is not None:
-            value = section.light_frame_per_second
-            if value > 0:
-                return float(value)
-            if value == -1 and frame_count > 1:
-                return float(frame_count)
-        skin_ini = getattr(self, "skin_ini", None)
-        if skin_ini is not None and skin_ini.animation_framerate:
-            af = skin_ini.animation_framerate
-            if af > 0:
-                return float(af)
-            if af == -1 and frame_count > 1:
-                return float(frame_count)
-        return 60.0
+        """ColumnMania uses max(170/count, 1000/60) for both hit lights."""
+        return 1000.0 / max(170.0 / max(1, frame_count), 1000.0 / 60.0)
 
     def _stage_light_tint(self, col: int) -> tuple[float, float, float, float]:
         """RGBA tint for a column's authored stage-light.
@@ -3614,8 +3609,6 @@ class FrameRenderer:
         section = self.mania_section
         if section is not None:
             rgba = section.colour_light.get(col + 1)
-            if rgba is None:
-                rgba = section.colour_light.get(col)
             if rgba is not None:
                 return legacy_disallow_zero_alpha_colour(rgba)
         return 1.0, 1.0, 1.0, 1.0
@@ -3639,74 +3632,23 @@ class FrameRenderer:
         col_w = self.col_w_uniform
         kiai_boost = 0.04 if (scene is not None and scene.is_kiai) else 0.0
         section = self.mania_section
-        for c in range(rc.key_count):
+        for c in self._legacy_presentation_columns():
             # Skin's Colour{N} is 1-indexed; column index is 0-based.
             skin_colour = None
             if section is not None:
                 skin_colour = section.colour.get(c + 1)
-                if skin_colour is None:
-                    # Some skins use 0-indexed Colour entries — accept both.
-                    skin_colour = section.colour.get(c)
             if skin_colour is not None:
                 r, g, b, a = legacy_doubled_alpha_colour(skin_colour)
                 colour_boost = 0.0
             else:
-                variant = self._legacy_column_variant(c)
-                if variant == "outer":
-                    r, g, b, a = 0.04, 0.04, 0.09, 0.55
-                elif variant == "center":
-                    r, g, b, a = 0.07, 0.06, 0.12, 0.55
-                else:
-                    r, g, b, a = 0.05, 0.05, 0.11, 0.45
-                colour_boost = kiai_boost
+                r, g, b, a = 0.0, 0.0, 0.0, 1.0
+                colour_boost = 0.0
             self._draw_sprite("column_bg", self.col_x[c], 0,
                               self.col_w[c], h,
                               (r + colour_boost, g + colour_boost,
                                b + colour_boost * 1.5, a))
 
-        # Column dividers + outer borders. Spec: ColumnLineWidth is a
-        # csv of (N+1) ints — width per divider in 480-ref pixels — and
-        # ColourColumnLine tints all of them. We treat missing skin
-        # values as "draw default-thin white outer borders + no inner
-        # dividers", matching the renderer's pre-Phase-B look.
-        if self._has_split_legacy_stages():
-            self._draw_split_column_lines()
-            return
-        line_widths = section.column_line_width if section else ()
-        if section is not None and section.colour_column_line is not None:
-            line_tint = legacy_doubled_alpha_colour(
-                section.colour_column_line,
-            )
-        else:
-            line_tint = (1.0, 1.0, 1.0, 0.9)
-
-        def _divider_x(idx: int) -> int:
-            """X of the idx-th divider. idx 0 = left of col 0,
-            idx K = right of col K-1, anything in between = between cols."""
-            if idx >= rc.key_count:
-                return self.col_x[-1] + self.col_w[-1]
-            return self.col_x[idx]
-
-        if line_widths and len(line_widths) >= rc.key_count + 1:
-            # Convert from 480-ref pixels to render pixels. osu! pixels
-            # scale by target_height / 480 (the 4:3 region's height).
-            px_per_ref = h / 480.0
-            for c in range(rc.key_count + 1):
-                lw_ref = line_widths[c]
-                if lw_ref <= 0:
-                    continue
-                lw = max(1, int(round(lw_ref * px_per_ref)))
-                x_centre = _divider_x(c)
-                self._draw_sprite("column_bg",
-                                  x_centre - lw // 2, 0,
-                                  lw, h, line_tint)
-        # Skins that don't author ColumnLineWidth get NO dividers. The
-        # previous behaviour was to draw a thin white outer border on
-        # the left+right edges of the playfield as a pre-skinning visual
-        # cue — but every uploaded skin we test ends up looking less
-        # polished with those uninvited lines. The user explicitly asked
-        # to suppress them ("Lines"). Skins that WANT dividers ship a
-        # ColumnLineWidth (even all-zero suppresses dividers explicitly).
+        self._draw_split_column_lines()
 
     def _legacy_hold_body_frame_index(
         self,
@@ -3715,40 +3657,32 @@ class FrameRenderer:
         frame_count: int,
     ) -> int:
         """Renderer-local 30ms hold-body animation, active only while held."""
-        active = (
-            0 <= note.column < len(scene.keys_held)
-            and scene.keys_held[note.column]
-            and note.head_y_fraction >= 1.0
-            and note.tail_y_fraction < 1.0
-        )
+        # Replay-backed elapsed time freezes at the first drop. Direct seeks
+        # therefore select the same paused frame as sequential rendering.
+        elapsed = getattr(note, "hold_animation_elapsed_ms", None)
+        if elapsed is not None:
+            return legacy_hold_body_frame(active=True, elapsed_active_ms=elapsed,
+                                          frame_count=frame_count)
+        active = bool(getattr(note, "hold_active", False))
         key = (note.column, note.time_ms)
-        starts = getattr(self, "_legacy_hold_body_started_ms", None)
-        lasts = getattr(self, "_legacy_hold_body_last_ms", None)
-        if starts is None:
-            starts = {}
-            self._legacy_hold_body_started_ms = starts
-        if lasts is None:
-            lasts = {}
-            self._legacy_hold_body_last_ms = lasts
-
-        if not active:
-            starts.pop(key, None)
-            lasts.pop(key, None)
-            return legacy_hold_body_frame(
-                active=False,
-                elapsed_active_ms=0.0,
-                frame_count=frame_count,
-            )
-
+        states = getattr(self, "_legacy_hold_body_animation", None)
+        if states is None:
+            states = self._legacy_hold_body_animation = {}
         now = float(scene.t_ms)
-        if key not in starts or now < lasts.get(key, now):
-            starts[key] = now
-        lasts[key] = now
-        return legacy_hold_body_frame(
-            active=True,
-            elapsed_active_ms=now - starts[key],
-            frame_count=frame_count,
-        )
+        previous = states.get(key)
+        if previous is None or now < previous[0]:
+            start, frame, was_active = now, 0, False
+        else:
+            _, start, frame, was_active = previous
+        if active:
+            if not was_active:
+                start = now - frame * 30.0
+            frame = legacy_hold_body_frame(active=True, elapsed_active_ms=now - start,
+                                            frame_count=frame_count)
+        # pAnimation.CurrentFrame, called while inactive, retains the current
+        # frame and snaps its phase so a later activation resumes that frame.
+        states[key] = (now, start, frame, active)
+        return frame
 
     def _draw_notes(self, scene: SceneState) -> None:
         if self._is_argon_default():
@@ -3813,6 +3747,8 @@ class FrameRenderer:
             return base + int(elapsed_ms * fps / 1000.0) % n_frames
 
         for n in scene.visible_notes:
+            if n.column not in self._legacy_presentation_columns():
+                continue
             x0 = self.col_x[n.column]
             cw = self.col_w[n.column]
             tint = tints[self._legacy_column_variant(n.column)]
@@ -3874,23 +3810,11 @@ class FrameRenderer:
                 y = to_screen_y(n.y_fraction)
                 if col_has_skin:
                     tap_idx = _animated_idx("note_tap", n.column, n.time_ms)
-                    trail_step = max(4, local_note_h // 4)
-                    for k in (2, 1):
-                        ghost_y = y + k * trail_step
-                        ghost_alpha = 0.20 / k
-                        self._draw_sprite_idx(
-                            tap_idx, x0, legacy_note_draw_y(
-                                ghost_y, local_note_h,
-                                upside_down=upside_down,
-                            ),
-                            cw, local_note_h, (1, 1, 1, ghost_alpha),
-                        )
-                    self._draw_sprite_idx(tap_idx, x0,
-                                          legacy_note_draw_y(
-                                              y, local_note_h,
-                                              upside_down=upside_down,
-                                          ),
-                                          cw, local_note_h, (1, 1, 1, 1))
+                    self._draw_legacy_cap(
+                        tap_idx, n.column, "", x0,
+                        legacy_note_draw_y(y, local_note_h, upside_down=upside_down),
+                        cw, local_note_h,
+                    )
                 else:
                     trail_step = max(4, local_note_h // 4)
                     for k in (2, 1):
@@ -3921,14 +3845,16 @@ class FrameRenderer:
             self._draw_argon_receptors(scene)
             return
 
-        for c in range(self.rc.key_count):
-            self._draw_legacy_key(c, held=scene.keys_held[c])
+        for c in self._legacy_presentation_columns():
+            release_ages = getattr(scene, "key_release_age_ms", ())
+            age = release_ages[c] if c < len(release_ages) else -1
+            self._draw_legacy_key(c, held=scene.keys_held[c] or 0 <= age < 80)
 
     def _draw_legacy_hit_lighting(self, scene: SceneState) -> None:
         """Draw stable's additive LightingN/L layer for all legacy columns."""
         if self._is_argon_default():
             return
-        for c in range(self.rc.key_count):
+        for c in self._legacy_presentation_columns():
             self._draw_custom_legacy_lighting(
                 scene, c=c, x0=self.col_x[c], cw=self.col_w[c],
                 centre_y=self.receptor_centre_y_gl, held=scene.keys_held[c],
@@ -3940,11 +3866,12 @@ class FrameRenderer:
         _width, native_height = self.atlas.column_native_size(kind, column)
         height = max(1, int(round(native_height * self.rc.height / 768.0)))
         y = self.rc.height - height if self.upside_down else 0
+        flip = legacy_key_flip(self.mania_section, column, upside_down=self.upside_down)
         self._draw_legacy_column_direct(
             column_direct_name(kind, column),
             self.col_x[column], y, self.col_w[column], height,
-            source_bottom=1.0 if self.upside_down else 0.0,
-            source_top=0.0 if self.upside_down else 1.0,
+            source_bottom=1.0 if flip else 0.0,
+            source_top=0.0 if flip else 1.0,
         )
 
     def _draw_legacy_hold_note(
@@ -3971,22 +3898,35 @@ class FrameRenderer:
             body_y=geometry.body_y, body_height=geometry.body_height,
             clip_min_y=geometry.clip_min_y, clip_max_y=geometry.clip_max_y,
         )
+        flip = self._legacy_note_flip(note.column, "T")
         tail = legacy_clip_y_segment(
-            LegacyHoldBodySegment(geometry.tail_draw_y, tail_h, 0.0, 1.0),
+            LegacyHoldBodySegment(geometry.tail_draw_y, tail_h,
+                                  1.0 if flip else 0.0, 0.0 if flip else 1.0),
             minimum_y=geometry.clip_min_y, maximum_y=geometry.clip_max_y,
         )
         if tail is not None:
-            if tail.y == geometry.tail_draw_y and tail.height == tail_h:
-                self._draw_sprite_idx(tail_idx, x0, tail.y, cw, tail.height, (1, 1, 1, 1))
+            if tail.source_bottom == 0 and tail.source_top == 1:
+                self._draw_sprite_idx(tail_idx, x0, tail.y, cw, tail.height, (1,1,1,1))
             else:
                 self._draw_sprite_idx_cropped_y(
-                    tail_idx, x0, tail.y, cw, tail.height, (1, 1, 1, 1),
+                    tail_idx, x0, tail.y, cw, tail.height, (1,1,1,1),
                     source_bottom=tail.source_bottom, source_top=tail.source_top,
                 )
-        # Stable depths: body .795 < rear .7975 < head .8. Both complete
-        # and cropped tails stay below the full, unmasked authored head.
-        self._draw_sprite_idx(head_idx, x0, geometry.head_draw_y,
-                              cw, head_h, (1, 1, 1, 1))
+        self._draw_legacy_cap(head_idx, note.column, "H", x0,
+                              geometry.head_draw_y, cw, head_h)
+
+    def _legacy_note_flip(self, column: int, part: str = "") -> bool:
+        return legacy_note_flip(
+            self.mania_section, column, part, upside_down=self.upside_down,
+            legacy_version=self.skin_ini.legacy_version if self.skin_ini is not None else 1.0,
+        )
+
+    def _draw_legacy_cap(self, index, column, part, x, y, width, height) -> None:
+        if self._legacy_note_flip(column, part):
+            self._draw_sprite_idx_cropped_y(index, x, y, width, height, (1,1,1,1),
+                                           source_bottom=1.0, source_top=0.0)
+        else:
+            self._draw_sprite_idx(index, x, y, width, height, (1,1,1,1))
 
     def _draw_legacy_hold_body(
         self, scene, note, *, x0: float, cw: float,
@@ -4006,6 +3946,8 @@ class FrameRenderer:
         )
         for segment in legacy_hold_body_segments(
             body_y, body_height, tile_height, style, upside_down=self.upside_down,
+            flip_vertical=self._legacy_note_flip(column, "L"),
+            height_ratio=self.rc.height / 768.0,
         ):
             segment = legacy_clip_y_segment(
                 segment, minimum_y=clip_min_y, maximum_y=clip_max_y,
@@ -4102,7 +4044,8 @@ class FrameRenderer:
             return None
         kind = "n" if slot == "lighting_n" else "l"
         px_per_ref = self.rc.height / 480.0
-        effective_column_width = cw / px_per_ref
+        fit = getattr(getattr(self, "stage_layout", None), "width_scale", 1.0)
+        effective_column_width = cw / px_per_ref / fit if fit else 30.0
         scale = legacy_lighting_scale(
             self.mania_section,
             c,
@@ -4114,17 +4057,14 @@ class FrameRenderer:
                 else None
             ),
         )
+        scale *= fit
         tex_scale = self.rc.height / 768.0
         light_w = max(1, int(round(native_w * tex_scale * scale)))
         light_h = max(1, int(round(native_h * tex_scale * scale)))
         # Split columns retain fractional stable coordinates. Integer floor
         # centring biases the light left, even when note/key rectangles agree.
         # Consume the shared lane centre without changing native size or Y.
-        light_x = (
-            self.stage_layout.column_center(c) - light_w / 2.0
-            if self._has_split_legacy_stages()
-            else x0 + (cw - light_w) // 2
-        )
+        light_x = x0 + (cw - light_w) / 2.0
         return (
             light_x,
             centre_y - light_h // 2,
@@ -4143,7 +4083,12 @@ class FrameRenderer:
         held: bool,
     ) -> None:
         """Draw only skin-authored custom legacy hold / hit lighting."""
-        if held and self.atlas.global_source("lighting_l") in ("beatmap", "user"):
+        press_ages = getattr(scene, "hold_light_press_age_ms", ())
+        release_ages = getattr(scene, "hold_light_release_age_ms", ())
+        press_age = press_ages[c] if c < len(press_ages) else -1
+        release_age = release_ages[c] if c < len(release_ages) else -1
+        if (press_age >= 0 and release_age < 120
+                and self.atlas.global_source("lighting_l") in ("beatmap", "user", "classic")):
             rect = self._legacy_lighting_rect(
                 "lighting_l", c=c, x0=x0, cw=cw, centre_y=centre_y,
             )
@@ -4153,14 +4098,13 @@ class FrameRenderer:
                 frame = 0
                 if frames > 1:
                     fps = self._legacy_hold_light_fps(frames)
-                    age = scene.key_press_age_ms[c] if c < len(scene.key_press_age_ms) else 0
-                    frame = int(age * fps / 1000.0) % frames
-                press_age = (
-                    scene.key_press_age_ms[c]
-                    if c < len(scene.key_press_age_ms)
-                    else LEGACY_HIT_EXPLOSION_FADE_IN_MS
-                )
-                alpha = min(1.0, max(0.0, press_age / LEGACY_HIT_EXPLOSION_FADE_IN_MS))
+                    frame = int(press_age * fps / 1000.0) % frames
+                if release_age < 0:
+                    alpha = min(1.0, press_age / LEGACY_HIT_EXPLOSION_FADE_IN_MS)
+                else:
+                    at_release = min(1.0, max(0.0, (press_age - release_age) /
+                                              LEGACY_HIT_EXPLOSION_FADE_IN_MS))
+                    alpha = at_release * (1.0 - release_age / LEGACY_HIT_EXPLOSION_FADE_OUT_MS)
                 self._draw_additive_sprite_idx(
                     base + frame, *rect, (1.0, 1.0, 1.0, alpha),
                 )
@@ -4176,7 +4120,7 @@ class FrameRenderer:
         alpha = legacy_hit_explosion_alpha(age)
         if alpha <= 0 or judgment not in self._JUDGMENT_LIGHT:
             return
-        if self.atlas.global_source("lighting_n") not in ("beatmap", "user"):
+        if self.atlas.global_source("lighting_n") not in ("beatmap", "user", "classic"):
             # A custom skin with no authored LightingN gets no fabricated R3D
             # note-circle flash. Explicit transparent assets remain authoritative.
             return
@@ -4270,7 +4214,7 @@ class FrameRenderer:
         else:
             r, g, b, a = tint
         source_bottom = max(0.0, min(1.0, source_bottom))
-        source_top = max(source_bottom, min(1.0, source_top))
+        source_top = max(0.0, min(1.0, source_top))
         self._instance_arr[self._instance_count] = (
             (x / sw) * 2 - 1,
             (y / sh) * 2 - 1,

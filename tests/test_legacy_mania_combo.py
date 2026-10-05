@@ -72,12 +72,13 @@ class _ComboAtlas:
 
 def _renderer():
     renderer = object.__new__(FrameRenderer)
-    renderer.rc = SimpleNamespace(width=1280, height=768)
+    renderer.rc = SimpleNamespace(width=1280, height=768, key_count=4)
+    renderer.col_w = (48,) * 4
     renderer.options = SimpleNamespace(show_combo=True)
     renderer.pf_x = 440
     renderer.pf_w = 400
     renderer.combo_baseline_y_gl = 300
-    renderer.skin_ini = SimpleNamespace(combo_overlap=4)
+    renderer.skin_ini = SimpleNamespace(combo_overlap=4, legacy_version=2.7)
     renderer.mania_section = ManiaSection(keys=4)
     renderer.atlas = _ComboAtlas()
     renderer.normal = []

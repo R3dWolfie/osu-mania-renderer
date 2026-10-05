@@ -105,6 +105,8 @@ class BeatmapInfo:
     # parse (mods.apply_mods rescales them to REAL/video time alongside the
     # notes). Drives the background dim envelope's breaks phase (dim.py).
     breaks: tuple = ()  # tuple[tuple[int, int], ...]
+    # Original .osu mode controls stable skin-source eligibility on converts.
+    source_mode: int = 3
 
 
 @dataclass(frozen=True)

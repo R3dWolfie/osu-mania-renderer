@@ -397,87 +397,8 @@ def fail_overlay(*, element, skin, assets, variables, ctx) -> None:
 
 
 def hp_bar(*, element, skin, assets, variables, ctx) -> None:
-    """Health bar at the TOP — legacy scorebar when the skin ships it,
-    else the Argon source-shaped path."""
-    if not ctx.options.show_hp_bar:
-        return
-    # Argon default: the health line is drawn in _draw_argon_hud (after the
-    # wedge, so it isn't covered). hp_bar runs before hud in RENDER_ORDER.
-    if is_argon_default(ctx, 0):
-        return
-    hp = max(0.0, min(1.0, getattr(ctx.scene, "hp", 1.0)))
-    if ctx.atlas.global_source("scorebar_bg") == "user":
-        hp = ctx.fr._legacy_display_hp_for_scene(ctx.scene)
-        fill_frame = ctx.fr._legacy_scorebar_frame_for_scene(ctx.scene)
-        _legacy_scorebar(ctx, hp, frame_index=fill_frame)
-    else:
-        _argon_health(ctx, hp)
-
-
-def _legacy_scorebar(ctx, hp: float, *, frame_index: int = 0) -> None:
-    """lazer LegacyHealthDisplay. Top-left, sprites scaled osu-px→render
-    (s = height/480). scorebar-bg at (0,0); the colour fill sits at the
-    old/new style offset and is clipped to HP×width (empties from the
-    right); the marker rides the fill's right edge. New style = the skin
-    ships scorebar-marker."""
-    atlas = ctx.atlas
-    # Legacy HUD textures render at native px × (height/768) — measured:
-    # Vio scorebar-bg 40px → 59px at 1125h (×1.475).
-    s = ctx.height / 768.0
-    new_style = atlas.global_source("scorebar_marker") == "user"
-
-    bg_w, bg_h = atlas.global_native_size("scorebar_bg")
-    _draw_tl(ctx, "scorebar_bg", 0, 0, bg_w * s, bg_h * s, (1, 1, 1, 1), direct=True)
-
-    col_w, col_h = atlas.global_native_size("scorebar_colour")
-    if col_w <= 0:
-        return
-    # Fill offset in lazer's 768-space (osu value × 1.6): new (12,12.48),
-    # old (4.8,16).
-    off_x, off_y = (12.0, 12.48) if new_style else (4.8, 16.0)
-    fill_w_full = col_w * s
-    fill_h = col_h * s
-    fill_w = hp * fill_w_full        # clip-approx: solid bars squish ≈ clip
-    fr_tint = _scorebar_fill_colour(hp) if new_style else (1.0, 1.0, 1.0)
-    _draw_tl(ctx, "scorebar_colour", off_x * s, off_y * s, fill_w, fill_h,
-             (*fr_tint, 1.0), direct=True, frame_index=frame_index)
-
-    # Marker at the right edge of the fill, centred (new) / top edge (old).
-    right_x = off_x * s + fill_w
-    if new_style:
-        mk = "scorebar_marker"
-        mw, mh = atlas.global_native_size(mk)
-        mcx = right_x
-        mcy = off_y * s + fill_h / 2.0
-        _draw_tl(ctx, mk, mcx - mw * s / 2.0, mcy - mh * s / 2.0,
-                 mw * s, mh * s, (*fr_tint, 1.0))
-    else:
-        # Old style: ki / kidanger / kidanger2 by HP, centred on the edge.
-        mk = ("scorebar_kidanger2" if hp < 0.2
-              else "scorebar_kidanger" if hp < 0.5 else "scorebar_ki")
-        if atlas.global_source(mk) == "user":
-            mw, mh = atlas.global_native_size(mk)
-            _draw_tl(ctx, mk, right_x - mw * s / 2.0, off_y * s - mh * s / 2.0,
-                     mw * s, mh * s, (1, 1, 1, 1))
-
-
-def _argon_health(ctx, hp: float) -> None:
-    """Argon procedural health: a rounded white capsule at (50,20), W=300,
-    BarHeight=30 (lazer ArgonSkin coords, scaled by height/768), filling
-    0→HP left→right over a dim track, cyan trailing glow."""
-    s = ctx.height / 768.0
-    x = 50 * s
-    top = 20 * s
-    w = 300 * s
-    bh = max(3, int(30 * s))
-    # Dim track (full width) then the white fill 0→HP.
-    _draw_tl(ctx, "column_bg", x, top, w, bh, (0.10, 0.11, 0.13, 0.85))
-    fill_w = hp * w
-    # Trailing cyan glow just past the fill head.
-    glow_w = max(2, int(6 * s))
-    _draw_tl(ctx, "column_bg", x + fill_w, top, glow_w, bh,
-             (0.49, 0.84, 0.99, 0.5))
-    _draw_tl(ctx, "column_bg", x, top, fill_w, bh, (1, 1, 1, 0.95))
+    """Legacy health is owned by the early stage pass; Argon by its HUD."""
+    return
 
 
 def banner(*, element, skin, assets, variables, ctx) -> None:

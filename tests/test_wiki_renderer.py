@@ -15,7 +15,7 @@ import pytest
 
 # Canonical painter order — must match gpu/renderer.py::FrameRenderer.draw().
 EXPECTED_ORDER = [
-    "background", "stage_decorations", "columns", "stage_lights",
+    "background", "stage_decorations", "legacy_health", "columns", "legacy_stage_targets", "stage_lights",
     "receptors_under", "notes", "combo_and_judgment", "receptors_over",
     "legacy_hit_lighting", "legacy_combo_and_judgment",
     "hit_error_popups", "hit_strip", "progress_bar", "fail_overlay",
@@ -49,7 +49,7 @@ def test_wiki_path_renders_argon(tmp_path, fixtures_dir):
         pytest.skip("RUN_SLOW=1 required (GL + ffmpeg)")
     import asyncio
 
-    from osu_mania_renderer_v2.models import RenderOptions
+    from osu_mania_renderer_v2.beatmap.models import RenderOptions
     import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries
     from osu_mania_renderer_v2.wiki_renderer import render as wiki
 
@@ -61,7 +61,9 @@ def test_wiki_path_renders_argon(tmp_path, fixtures_dir):
 
     asyncio.run(wiki(
         osr_path=osr, beatmap_dir=fixtures_dir, output_path=out,
-        options=RenderOptions(resolution=(854, 480), fps=30),
+        options=RenderOptions(resolution=(854, 480), fps=30,
+                              encoder="h264_vaapi" if Path("/dev/dri/renderD128").exists() else "libx264",
+                              encoder_device="/dev/dri/renderD128" if Path("/dev/dri/renderD128").exists() else None),
         skin_dir=skin, default_skin_dir=dflt,
     ))
     assert out.exists() and out.stat().st_size > 100_000

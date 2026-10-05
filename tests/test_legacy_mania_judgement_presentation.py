@@ -77,7 +77,9 @@ def test_success_and_miss_scale_phases_match_legacy_source():
 
 def test_custom_judgment_uses_selected_native_frame_and_existing_geometry():
     renderer = object.__new__(FrameRenderer)
-    renderer.rc = SimpleNamespace(width=1280, height=768)
+    renderer.rc = SimpleNamespace(width=1280, height=768, key_count=4)
+    renderer.col_w = (48,) * 4
+    renderer.skin_ini = None
     renderer.options = SimpleNamespace(show_judgment=True)
     renderer.pf_x = 400
     renderer.pf_w = 320
@@ -109,7 +111,9 @@ def test_custom_judgment_uses_selected_native_frame_and_existing_geometry():
 
 def test_static_at2x_judgment_draw_uses_design_size_not_backing_raster():
     renderer = object.__new__(FrameRenderer)
-    renderer.rc = SimpleNamespace(width=1280, height=768)
+    renderer.rc = SimpleNamespace(width=1280, height=768, key_count=4)
+    renderer.col_w = (48,) * 4
+    renderer.skin_ini = None
     renderer.options = SimpleNamespace(show_judgment=True)
     renderer.pf_x = 400
     renderer.pf_w = 320

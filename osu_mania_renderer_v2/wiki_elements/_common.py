@@ -75,6 +75,9 @@ def _skin_provides_mania(ctx) -> bool:
     """True if the USER skin supplies any mania content — a [Mania] section in
     skin.ini, or any user/beatmap mania sprite (note/key/stage). Cached per
     render."""
+    resolver = getattr(ctx.fr, "_is_argon_default", None)
+    if callable(resolver):
+        return not resolver()
     cache = ctx.persistent.setdefault("_skinmeta", {})
     if "provides" in cache:
         return cache["provides"]

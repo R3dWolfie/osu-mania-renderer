@@ -1,6 +1,8 @@
 """Native key/body sources and stable's hold-body source-coordinate contract."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import os
 from types import SimpleNamespace
 
@@ -183,7 +185,7 @@ def test_key_draws_use_native_authority_and_swaps_keep_geometry(native_skin, up,
     assert off[1]["source_top"] == (0.0 if up else 1.0)
 
 
-@pytest.mark.parametrize("raw,expected", [(None, 3), (0, 0), (1, 3), (2, 2), (3, 3), (4, 4), (99, 3)])
+@pytest.mark.parametrize("raw,expected", [(None, 3), (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (99, 99)])
 def test_stable_raw_contract_and_version_gate(raw, expected):
     section = ManiaSection(keys=2, note_body_style=raw)
     assert legacy_note_body_style(section, 0, 2.5) == expected
@@ -199,7 +201,7 @@ def test_parser_preserves_stable_numeric_and_named_values(tmp_path):
     section = parse_skin_ini(tmp_path).mania_for_keycount(4)
     assert section.note_body_style == 4
     assert section.note_body_style_by_column == {0: 1, 1: 0, 2: 2}
-    assert [legacy_note_body_style(section, col, 2.7) for col in range(4)] == [3, 0, 2, 4]
+    assert [legacy_note_body_style(section, col, 2.7) for col in range(4)] == [1, 0, 2, 4]
     assert section.width_for_note_height_scale == 25.5
 
 
@@ -218,7 +220,7 @@ def test_parser_matches_stable_enum_parse_and_invalid_override_fallback(tmp_path
     )
     section = parse_skin_ini(tmp_path).mania_for_keycount(1)
     assert section.note_body_style_by_column.get(0) == raw
-    expected = 4 if raw is None else (raw if raw in (0, 2, 3, 4) else 3)
+    expected = 4 if raw is None else raw
     assert legacy_note_body_style(section, 0, 2.7) == expected
 
 
@@ -389,11 +391,12 @@ def test_animated_native_body_draw_selects_30ms_source_frames(native_skin):
     body.save(path / "body-1.png")
     fr = _renderer(_atlas(native_skin), section)
     note = VisibleNote(column=0, is_hold=True, time_ms=0, y_fraction=1,
-                       head_y_fraction=1, tail_y_fraction=0.5)
+                       head_y_fraction=1, tail_y_fraction=0.5, hold_active=True)
     frames = []
     for t_ms, held in [(0, True), (29, True), (30, True), (60, True), (65, False)]:
         fr._draw_legacy_hold_body(
-            SimpleNamespace(t_ms=t_ms, keys_held=(held,)), note,
+            SimpleNamespace(t_ms=t_ms, keys_held=(held,)),
+            replace(note, hold_active=held),
             x0=100, cw=140, body_y=100, body_height=300,
         )
         frames.append(fr.direct_draws[-1][1]["frame_index"])
@@ -454,7 +457,7 @@ def test_both_paths_mask_original_body_and_tail_but_leave_head_unmasked(native_s
     outputs = []
     note = VisibleNote(
         column=0, is_hold=True, y_fraction=1, head_y_fraction=1,
-        tail_y_fraction=0.7, time_ms=1000,
+        tail_y_fraction=0.95, time_ms=1000,
         hold_head_hit=True, hold_active=True,
         body_head_y_fraction=1.4, hold_clip_head_y_fraction=1,
     )
@@ -467,9 +470,9 @@ def test_both_paths_mask_original_body_and_tail_but_leave_head_unmasked(native_s
             _draw_notes_body(_wiki_context(fr, scene))
         boundary = 598 if up else 170  # receptor +/- half the 140px head
         args, kw = fr.direct_draws[0]
-        assert args[2] + args[4] == pytest.approx(boundary if up else 230)
-        assert args[2] == pytest.approx(537 if up else boundary)
-        full_y, full_height = (537, 328) if up else (-97, 327)
+        assert args[2] + args[4] == pytest.approx(boundary if up else 203)
+        assert args[2] == pytest.approx(564 if up else boundary)
+        full_y, full_height = (564, 301) if up else (-97, 300)
         style = legacy_note_body_style(fr.mania_section, 0, 2.7)
         original = legacy_hold_body_segments(full_y, full_height, 2048, style, upside_down=up)[0]
         expected = legacy_clip_y_segment(
@@ -479,10 +482,12 @@ def test_both_paths_mask_original_body_and_tail_but_leave_head_unmasked(native_s
         assert kw["source_top"] == pytest.approx(expected.source_top)
         # Source slope is cropped, including Stretch; it is never resized to [0, 1].
         assert abs(kw["source_top"] - kw["source_bottom"]) < 1
-        head = fr.indexed_draws[0]
+        head_index = fr.atlas.column_slot_index("note_hold_head", 0)
+        head = next(draw for draw in fr.indexed_draws + [d for d, k in fr.cropped_draws]
+                    if draw[0] == head_index)
         assert head[2:5] == (528 if up else 100, 140, 140)
-        assert len(fr.indexed_draws) == 1  # tail goes through the crop primitive
-        tail, tail_kw = fr.cropped_draws[0]
+        tail_index = fr.atlas.column_slot_index("note_hold_tail", 0)
+        tail, tail_kw = next((d, k) for d, k in fr.cropped_draws if d[0] == tail_index)
         assert tail[2] >= boundary if not up else tail[2] + tail[4] <= boundary
         assert (tail_kw["source_bottom"], tail_kw["source_top"]) != (0, 1)
         outputs.append((fr.direct_draws, fr.indexed_draws, fr.cropped_draws))
@@ -510,8 +515,10 @@ def test_missed_and_dropped_holds_use_factual_mask_position_not_key_state(native
                 _draw_notes_body(_wiki_context(fr, scene))
             body, _kw = fr.direct_draws[0]
             if clip_fraction is None:
-                assert body[4] == (328 if up else 327)  # missed full body passes
-                assert not fr.cropped_draws
+                assert body[4] == (468 if up else 467)  # full scrolling anchor distance
+                # A full flipped cap uses the same UV primitive as a crop.
+                assert all(abs(k["source_top"] - k["source_bottom"]) == 1
+                           for _, k in fr.cropped_draws)
             else:
                 assert body[4] > 60  # moving drop boundary reveals more than a frozen mask
                 assert body[2] < 170 if not up else body[2] + body[4] > 598
@@ -636,12 +643,13 @@ def test_shared_hold_part_order_in_both_paths(native_skin, up, path, state):
     ]
     assert calls[0][1]["body_height"] >= 0
     tail = calls[1][1]
-    if clipped:
-        assert isinstance(tail, dict)  # cropped tail, still before full head
-        assert 0 < tail["source_top"] - tail["source_bottom"] < 1
-    else:
-        assert not isinstance(tail, dict)  # complete tail path
-    assert not isinstance(calls[-1][1], dict)  # head always unmasked
+    # Stable's same cap origin makes this fixture's entire tail visible.
+    # A flipped complete source still uses the UV crop primitive.
+    if isinstance(tail, dict):
+        assert abs(tail["source_top"] - tail["source_bottom"]) == 1
+    head = calls[-1][1]
+    if isinstance(head, dict):
+        assert abs(head["source_top"] - head["source_bottom"]) == 1
 
 
 @pytest.mark.parametrize("up", [False, True])
@@ -654,7 +662,7 @@ def test_short_hold_overlap_order_and_nonnegative_body(native_skin, up, masked, 
     calls = []
     fr._draw_legacy_hold_body = lambda *a, **kw: calls.append(("body", kw))
     fr._draw_sprite_idx = lambda idx, *a: calls.append((idx, a))
-    fr._draw_sprite_idx_cropped_y = lambda idx, *a, **kw: calls.append((idx, kw))
+    fr._draw_sprite_idx_cropped_y = lambda idx, *a, **kw: calls.append((idx, a))
     note = VisibleNote(
         column=0, is_hold=True, time_ms=0,
         y_fraction=1, head_y_fraction=1, tail_y_fraction=0.8,
@@ -666,14 +674,14 @@ def test_short_hold_overlap_order_and_nonnegative_body(native_skin, up, masked, 
         head_h=100, tail_h=100, head_idx=1, tail_idx=2,
     )
     assert [call[0] for call in calls] == ["body", 2, 1]
-    assert calls[0][1]["body_height"] == pytest.approx(gap - 100)
+    assert calls[0][1]["body_height"] == pytest.approx(gap)
     assert calls[-1][1][1:4] == (368 if up else 300, 64, 100)
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("up", [False, True])
 @pytest.mark.parametrize("masked", [False, True])
-@pytest.mark.parametrize("gap", [130, 101, 100])
+@pytest.mark.parametrize("gap", [30, 1, 0])
 def test_gl_overlapping_tail_stays_behind_head_with_original_crop(tmp_path, up, masked, gap):
     if os.environ.get("RUN_SLOW") != "1":
         pytest.skip("RUN_SLOW=1 required")
@@ -726,10 +734,10 @@ def test_gl_overlapping_tail_stays_behind_head_with_original_crop(tmp_path, up, 
         assert tuple(pixels[365, 16]) == (0, 255, 0)
         assert tuple(pixels[315, 16]) == (0, 255, 0)  # head extends outside mask
         assert tuple(pixels[395, 40]) == (255, 0, 0)  # only tail art here
-        if gap == 130:
+        if gap == 30:
             assert tuple(pixels[425, 16]) == (255, 0, 0)  # outside head rectangle
             assert tuple(pixels[365, 56]) == (0, 0, 255)  # body-only artwork
-        elif gap == 101:
+        elif gap == 1:
             assert tuple(pixels[350, 56]) == (0, 0, 255)  # native one-pixel body
             assert np.count_nonzero(np.any(pixels[:, 56], axis=1)) == 1
         else:

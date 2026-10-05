@@ -77,7 +77,7 @@ def test_all_stable_keycounts_mapping_and_renderer_geometry(keys):
     fr = renderer_geometry(keys)
     stages = fr.stage_layout.stages
     assert sum(s.column_count for s in stages) == keys
-    assert len(stages) == (2 if keys > 10 else 1)
+    assert len(stages) == (2 if keys >= 10 else 1)
     for c in range(keys):
         s, local = fr.stage_layout.locate(c)
         assert s.first_column + local == c
@@ -85,10 +85,10 @@ def test_all_stable_keycounts_mapping_and_renderer_geometry(keys):
         assert fr.col_w[c] > 0
         if c:
             assert fr.col_x[c] >= fr.col_x[c - 1] + fr.col_w[c - 1]
-    if keys <= 10:
+    if keys < 10:
         # Preserve the accepted historical 42-ref default and centring.
-        assert fr.col_w == (94,) * keys
-        assert fr.col_x == tuple(round((1920 - 94 * keys) / 2) + c * 94 for c in range(keys))
+        assert fr.col_w == (67.5,) * keys
+        assert fr.col_x == tuple(136 * 2.25 + c * 67.5 for c in range(keys))
     else:
         expected, expected_stages, fit = stable_oracle(keys)
         assert tuple(s.column_count for s in stages) == ((keys + 1) // 2, keys // 2)
@@ -110,7 +110,7 @@ def test_authored_split_override_uses_expected_path(keys, split):
         expected, _, _ = stable_oracle(keys)
         assert tuple(zip(fr.col_x, fr.col_w)) == pytest.approx(expected)
     else:
-        assert fr.col_w == (94,) * keys
+        assert fr.col_w == (67.5,) * keys
 
 
 @pytest.mark.parametrize("keys", [10, 11, 12, 13, 18])
@@ -199,6 +199,7 @@ def test_every_column_consumer_uses_source_geometry_without_receptor_rewrites(ke
     )
     indexed, receptors, holds = [], [], []
     fr._draw_sprite_idx = lambda *args: indexed.append(args)
+    fr._draw_sprite_idx_cropped_y = lambda *args, **kw: indexed.append(args)
     fr._draw_legacy_column_direct = lambda *args, **kw: receptors.append(args)
     fr._draw_legacy_hold_note = lambda scene, note, **kw: holds.append((note.column, kw))
     fr._stage_light_fps = lambda count: 60
@@ -211,7 +212,8 @@ def test_every_column_consumer_uses_source_geometry_without_receptor_rewrites(ke
         ctx = FrameContext(fr, None, None, None, 1920, 1080, keys, scene=scene)
         notes._receptors(ctx)
         notes._draw_notes_body(ctx)
-        effects.stage_lights(element=None, skin=None, assets=None, variables=None, ctx=ctx)
+        # Native light primitive is shared by both stage-manager compositors.
+        ctx.fr._draw_stage_lights(ctx.scene)
     else:
         fr._draw_receptors(scene)
         fr._draw_notes(scene)
@@ -225,7 +227,7 @@ def test_every_column_consumer_uses_source_geometry_without_receptor_rewrites(ke
         assert holds[c][0] == c
         assert (holds[c][1]["x0"], holds[c][1]["cw"]) == pytest.approx((x, width))
         taps = [call for call in indexed if call[0] == c]
-        assert len(taps) == 3  # tap + both authored ghosts
+        assert len(taps) == 1  # HC has one sprite and no fabricated ghosts
         assert all((call[1], call[3]) == pytest.approx((x, width)) for call in taps)
         for slot in ("lighting_n", "lighting_l"):
             light = fr._legacy_lighting_rect(slot, c=c, x0=x, cw=width, centre_y=100)
@@ -259,11 +261,11 @@ def test_split_chrome_edges_are_source_stage_local(keys, wiki):
     for index, (x, width) in enumerate(expected_stages):
         left, right = direct[index * 2 : index * 2 + 2]
         assert left[0] == "stage_left" and right[0] == "stage_right"
-        assert left[1] + left[3] == pytest.approx(x)
-        assert right[1] == pytest.approx(x + width)
+        assert left[1] + left[3] == pytest.approx(x + 0.05 * 1080 / 480)
+        assert right[1] == pytest.approx(x + width + 0.05 * 1080 / 480)
     hints = [call for call in sprites if call[0] == "hit_light"]
-    assert len(hints) == 2
-    assert [(call[1], call[3]) for call in hints] == expected_stages
+    # StageHint belongs to the stage manager, after columns.
+    assert hints == []
 
 
 @pytest.mark.slow

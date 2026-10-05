@@ -30,6 +30,10 @@ def _keys_under_notes(ctx) -> bool:
 
 
 def _receptors(ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        ctx.fr._draw_receptors(ctx.scene)
+        return
+
     """Argon key area, or shared native legacy key artwork."""
     scene = ctx.scene
     centre_y = ctx.receptor_centre_y_gl
@@ -117,12 +121,18 @@ def _receptors(ctx) -> None:
 
 
 def receptors_under(*, element, skin, assets, variables, ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        return
     # Drawn before notes only when the skin sets KeysUnderNotes.
     if _keys_under_notes(ctx):
         _receptors(ctx)
 
 
 def _draw_notes_body(ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        ctx.fr._draw_notes(ctx.scene)
+        return
+
     """Tap + hold notes (head/body/tail) with NoteBodyStyle tiling, skin
     per-column sprites + animation, and the falling tap trail. Ported
     verbatim from FrameRenderer._draw_notes."""
@@ -275,6 +285,9 @@ def _draw_notes_body(ctx) -> None:
 
 
 def notes(*, element, skin, assets, variables, ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        ctx.fr._draw_legacy_stage_gameplay(ctx.scene)
+        return
     # HD/FI uniforms apply only to scrolling notes — flush around them so
     # queued sprites aren't drawn with the wrong HD state (mirrors draw()).
     scene = ctx.scene
@@ -538,11 +551,8 @@ def combo_and_judgment_under(*, element, skin, assets, variables, ctx) -> None:
 
 
 def combo_and_judgment_over(*, element, skin, assets, variables, ctx) -> None:
-    """Stable's legacy judgement sits above the LightingN/L layer."""
-    if not is_argon_default(ctx, 0):
-        combo_and_judgment(
-            element=element, skin=skin, assets=assets, variables=variables, ctx=ctx,
-        )
+    # Legacy stage-above composition is shared by the notes pass.
+    return
 
 
 def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
@@ -636,6 +646,8 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
 
 
 def receptors_over(*, element, skin, assets, variables, ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        return
     # Default: keys on top of notes.
     if not _keys_under_notes(ctx):
         _receptors(ctx)

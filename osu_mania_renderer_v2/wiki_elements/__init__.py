@@ -20,7 +20,9 @@ from osu_mania_renderer_v2.wiki_elements import effects, hud, notes, stage
 _ORDER = [
     ("background", stage.background),
     ("stage_decorations", stage.stage_decorations),
+    ("legacy_health", stage.legacy_health),
     ("columns", stage.columns),
+    ("legacy_stage_targets", stage.legacy_stage_targets),
     ("stage_lights", effects.stage_lights),
     ("receptors_under", notes.receptors_under),
     ("notes", notes.notes),

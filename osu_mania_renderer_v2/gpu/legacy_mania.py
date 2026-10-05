@@ -75,12 +75,38 @@ def legacy_note_body_style(
         if configured is None:
             configured = section.note_body_style
 
-    # SkinMania.GetNoteBodyStyle defaults to 3. Section.ConvertString uses
-    # Enum.Parse, so raw 1 (and other unnamed integers) reaches the draw
-    # switch's default branch, which has the same alignment as raw 3.
-    if configured not in _VALID_NOTE_BODY_STYLES:
-        return LEGACY_NOTE_BODY_REPEAT_BOTTOM
-    return configured
+    # Enum.Parse permits unnamed integers. Preserve raw intent; the draw
+    # switch (not the parser/resolver) supplies RepeatBottom for unknown values.
+    return configured if configured is not None else LEGACY_NOTE_BODY_REPEAT_BOTTOM
+
+
+def legacy_key_flip(section, column: int, *, upside_down: bool) -> bool:
+    """SkinMania.GetFlipVertical(Key): column > global > true, no version gate."""
+    if not upside_down:
+        return False
+    if section is None:
+        return True
+    value = section.key_flip_by_column.get(column)
+    if value is None:
+        value = section.key_flip_when_upside_down
+    return value if value is not None else True
+
+
+def legacy_note_flip(section, column: int, part: str = "", *,
+                     upside_down: bool, legacy_version: float) -> bool:
+    """Final source UV sign from HC/LN, including the rear's logical inversion."""
+    part = part.upper()
+    default = True
+    if part == "H":
+        default = legacy_note_flip(section, column, upside_down=upside_down,
+                                   legacy_version=legacy_version)
+    resolved = False
+    if upside_down and legacy_version >= 2.5:
+        value = section.note_flip_by_column.get((column, part)) if section else None
+        if value is None and section:
+            value = section.note_flip_when_upside_down.get(part)
+        resolved = value if value is not None else default
+    return not resolved if part == "T" else resolved
 
 
 @dataclass(frozen=True)
@@ -126,6 +152,8 @@ def legacy_hold_body_segments(
     style: int,
     *,
     upside_down: bool = False,
+    flip_vertical: bool | None = None,
+    height_ratio: float = 1.0,
 ) -> tuple[LegacyHoldBodySegment, ...]:
     """Lay out stable's source phase, then mirror into GL Y-up for upscroll.
 
@@ -137,17 +165,24 @@ def legacy_hold_body_segments(
     if body_height <= 0 or tile_height <= 0:
         return ()
 
+    if flip_vertical is None:
+        flip_vertical = upside_down
     if style == LEGACY_NOTE_BODY_STRETCH:
-        bounds = (1.0, 0.0) if upside_down else (0.0, 1.0)
+        bounds = (1.0, 0.0) if flip_vertical else (0.0, 1.0)
         return (LegacyHoldBodySegment(body_y, body_height, *bounds),)
 
+    native_height = tile_height / height_ratio
+    source_length = body_height / height_ratio
+    # HM reads DrawHeight / HeightRatio before setting the manual wrapped
+    # DrawHeight. Integer DrawTop truncation occurs in source space.
     if style == LEGACY_NOTE_BODY_REPEAT_TOP:
-        phase = 0.0
+        draw_top = int(native_height - source_length)
     elif style == LEGACY_NOTE_BODY_REPEAT_TOP_AND_BOTTOM:
-        phase = ((tile_height - body_height) / 2.0) % tile_height
+        draw_top = int((native_height - source_length) / 2.0)
     else:
-        # RepeatBottom, including the compatibility fallback.
-        phase = (-body_height) % tile_height
+        draw_top = 0
+    # GL bottom->top runs opposite source rows before a vertical flip.
+    phase = (-(draw_top + source_length) * height_ratio) % tile_height
 
     segments: list[LegacyHoldBodySegment] = []
     cursor = 0.0
@@ -164,12 +199,15 @@ def legacy_hold_body_segments(
         cursor += segment_height
         source_offset = 0.0
     if upside_down:
-        return tuple(LegacyHoldBodySegment(
+        segments = list(LegacyHoldBodySegment(
             y=body_y + body_height - (segment.y - body_y) - segment.height,
             height=segment.height,
             source_bottom=segment.source_top,
             source_top=segment.source_bottom,
         ) for segment in reversed(segments))
+    if flip_vertical != upside_down:
+        segments = [LegacyHoldBodySegment(s.y, s.height, 1 - s.source_bottom,
+                                           1 - s.source_top) for s in segments]
     return tuple(segments)
 
 
@@ -179,8 +217,11 @@ def legacy_hold_body_frame(
     elapsed_active_ms: float,
     frame_count: int,
 ) -> int:
-    """Select a 30 ms legacy body frame, resetting to zero when inactive."""
-    if not active or frame_count <= 1 or elapsed_active_ms <= 0:
+    """Select a 30 ms body frame from its accumulated active clock.
+
+    The caller pauses that clock while inactive; pAnimation retains its frame.
+    """
+    if frame_count <= 1 or elapsed_active_ms <= 0:
         return 0
     return int(elapsed_active_ms / LEGACY_HOLD_BODY_FRAME_MS) % frame_count
 
@@ -196,7 +237,7 @@ class LegacyStageLightPresentation:
 def legacy_stage_light_fps(
     section: _ManiaStageLightConfig | None,
 ) -> float:
-    """Resolve current lazer's legacy Mania stage-light frame rate."""
+    """Resolve stable's Mania stage-light frame rate."""
     if section is None or section.light_frame_per_second is None:
         return 60.0
     value = section.light_frame_per_second
@@ -210,16 +251,14 @@ def legacy_stage_light_presentation(
     time_ms: float,
     frame_count: int,
     fps: float,
+    press_age_ms: float | None = None,
+    release_duration_ms: float = 250.0,
 ) -> LegacyStageLightPresentation:
     """Calculate presentation from immutable replay-derived input evidence."""
-    # lazer's legacy animation starts against the current gameplay clock and
-    # keeps running whether the light is hidden, held, or fading out. Input
-    # transitions affect only opacity and vertical scale.
-    frame = (
-        int(time_ms * fps / 1000.0) % frame_count
-        if frame_count > 1 and fps > 0
-        else 0
-    )
+    # CI resets animation on every key-down. Exact replay ages also preserve
+    # subframe press/release pairs and deterministic direct seeks.
+    elapsed = max(0.0, press_age_ms or 0.0)
+    frame = int(elapsed * fps / 1000.0) % frame_count if frame_count > 1 and fps > 0 else 0
 
     if held:
         return LegacyStageLightPresentation(True, frame, 1.0, 1.0)
@@ -227,11 +266,11 @@ def legacy_stage_light_presentation(
     if (
         release_age_ms is None
         or release_age_ms < 0
-        or release_age_ms >= LEGACY_STAGE_LIGHT_RELEASE_MS
+        or release_age_ms >= release_duration_ms
     ):
         return LegacyStageLightPresentation(False, 0, 0.0, 0.0)
 
-    amount = 1.0 - release_age_ms / LEGACY_STAGE_LIGHT_RELEASE_MS
+    amount = 1.0 - release_age_ms / release_duration_ms
     return LegacyStageLightPresentation(True, frame, amount, amount)
 
 

@@ -108,7 +108,7 @@ def parse_beatmap(
             approach_rate=approach_rate,
             total_break_time_ms=_parse_total_break_time(events),
             kiai_points=_parse_kiai_points(sections.get("TimingPoints", "")),
-        ), breaks=_parse_breaks(events))
+        ), breaks=_parse_breaks(events), source_mode=mode)
 
     try:
         key_count = int(float(difficulty["CircleSize"]))

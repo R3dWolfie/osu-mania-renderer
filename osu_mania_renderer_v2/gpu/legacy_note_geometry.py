@@ -32,13 +32,10 @@ def legacy_note_draw_y(
     is_tail: bool = False,
 ) -> int:
     """Return the GL lower-Y coordinate for an edge-anchored legacy note."""
-    # Source authority:
-    # osu.Game.Rulesets.Mania/Skinning/Legacy/LegacyNotePiece.cs
-    # osu.Game.Rulesets.Mania/Skinning/Legacy/LegacyHoldNoteTailPiece.cs
-    # Tap/head use the scrolling direction's edge anchor; tail intentionally
-    # uses the opposite edge.
-    top_edge_is_anchor = upside_down != is_tail
-    draw_y = anchor_y - sprite_height if top_edge_is_anchor else anchor_y
+    # HC and LN share FlipOrigin(BottomCentre). TextureGlSingle.Draw uses
+    # abs(scale) for the rectangle and a negative scale ONLY to invert UVs.
+    # Rear art has a different sign, not a different anchor.
+    draw_y = anchor_y - sprite_height if upside_down else anchor_y
     return int(draw_y)
 
 
@@ -64,7 +61,7 @@ def legacy_hold_geometry(
     body_head_y: int | float | None = None,
     clip_head_y: int | float | None = None,
 ) -> LegacyHoldGeometry:
-    """Combine legacy cap edge anchors with lazer's half-cap body overlap."""
+    """HM places the body at the scrolling head centre, using full note length."""
     head_draw_y = legacy_note_draw_y(
         y_head, head_height, upside_down=upside_down,
     )
@@ -76,7 +73,9 @@ def legacy_hold_geometry(
         head_centre = legacy_note_draw_y(
             body_head_y, head_height, upside_down=upside_down,
         ) + head_height / 2.0
-    tail_centre = tail_draw_y + tail_height / 2.0
+    scrolling_head = y_head if body_head_y is None else body_head_y
+    body_length = abs(y_tail - scrolling_head)
+    body_y = head_centre - body_length if upside_down else head_centre
     boundary = None
     if clip_head_y is not None:
         # Stable FreezeNote: HitPosition - SpriteHeight(head)/2, converted
@@ -85,8 +84,8 @@ def legacy_hold_geometry(
     return LegacyHoldGeometry(
         head_draw_y=head_draw_y,
         tail_draw_y=tail_draw_y,
-        body_y=min(head_centre, tail_centre),
-        body_height=abs(tail_centre - head_centre),
+        body_y=body_y,
+        body_height=body_length,
         clip_min_y=boundary if not upside_down else None,
         clip_max_y=boundary if upside_down else None,
     )

@@ -291,26 +291,20 @@ _ANIMATABLE_PER_COLUMN_KINDS: frozenset[str] = frozenset({
 
 # Default conventional filename(s) for (kind, col_kind). Tried in order
 # inside the skin dir; first hit wins.
-_PER_COLUMN_DEFAULT_FILES: dict[tuple[str, str], tuple[str, ...]] = {
-    ("note_tap",       "1"): ("mania-note1.png",),
-    ("note_tap",       "2"): ("mania-note2.png", "mania-note1.png"),
-    ("note_tap",       "S"): ("mania-noteS.png", "mania-note1.png"),
-    ("note_hold_head", "1"): ("mania-note1H.png", "mania-note1.png"),
-    ("note_hold_head", "2"): ("mania-note2H.png", "mania-note2.png", "mania-note1.png"),
-    ("note_hold_head", "S"): ("mania-noteSH.png", "mania-noteS.png", "mania-note1.png"),
-    ("note_hold_body", "1"): ("mania-note1L.png",),
-    ("note_hold_body", "2"): ("mania-note2L.png", "mania-note1L.png"),
-    ("note_hold_body", "S"): ("mania-noteSL.png", "mania-note1L.png"),
-    ("note_hold_tail", "1"): ("mania-note1T.png", "mania-note1H.png", "mania-note1.png"),
-    ("note_hold_tail", "2"): ("mania-note2T.png", "mania-note2H.png", "mania-note2.png"),
-    ("note_hold_tail", "S"): ("mania-noteST.png", "mania-noteSH.png", "mania-noteS.png"),
-    ("receptor_off",   "1"): ("mania-key1.png",),
-    ("receptor_off",   "2"): ("mania-key2.png", "mania-key1.png"),
-    ("receptor_off",   "S"): ("mania-keyS.png", "mania-key1.png"),
-    ("receptor_on",    "1"): ("mania-key1D.png", "mania-key1.png"),
-    ("receptor_on",    "2"): ("mania-key2D.png", "mania-key2.png", "mania-key1D.png"),
-    ("receptor_on",    "S"): ("mania-keySD.png", "mania-keyS.png", "mania-key1D.png"),
+_PER_COLUMN_DEFAULT_FILES = {
+    (kind, suffix): (f"{prefix}{suffix}{postfix}.png",)
+    for kind, prefix, postfix in (
+        ("note_tap", "mania-note", ""),
+        ("note_hold_head", "mania-note", "H"),
+        ("note_hold_body", "mania-note", "L"),
+        ("note_hold_tail", "mania-note", "T"),
+        ("receptor_off", "mania-key", ""),
+        ("receptor_on", "mania-key", "D"),
+    )
+    for suffix in ("1", "2", "S")
 }
+CLASSIC_MANIA_DIR = Path(__file__).resolve().parent.parent / "assets" / "classic_mania"
+
 
 # Bundled fallback PNG stems for (kind, col_kind). These ship with the
 # renderer, used when neither a skin override nor a conventional file
@@ -532,7 +526,7 @@ class SpriteAtlas:
                                  # Legacy lighting is drawn at native aspect;
                                  # stretch-fill avoids applying aspect twice
                                  # after the renderer sizes its destination.
-                                 "lighting_n", "lighting_l", "stage_light",
+                                 "lighting_n", "lighting_l", "stage_light", "hit_light",
                                  # Argon note body/glyph: non-square (1.43:1);
                                  # stretch so the note renders at lazer's
                                  # 60:42 aspect, not letterboxed-squished.
@@ -606,7 +600,7 @@ class SpriteAtlas:
                 # Design units = pixels / ScaleAdjust (@2x → /2), per lazer.
                 sa = frames[0].info.get("scale_adjust", 1)
                 atlas._column_native_sizes[(kind, col)] = (first_w / sa, first_h / sa)
-                if kind in ("receptor_off", "receptor_on", "note_hold_body"):
+                if kind in PER_COLUMN_KINDS:
                     name = column_direct_name(kind, col)
                     atlas._direct_images[name] = frames[0]
                     atlas._direct_frame_images[name] = tuple(frames)
@@ -617,6 +611,8 @@ class SpriteAtlas:
                     from_beatmap += 1
                 elif src == "user":
                     from_user += 1
+                elif src == "classic":
+                    from_classic += 1
                 elif src == "bundle":
                     from_bundle += 1
                 else:
@@ -834,7 +830,7 @@ class SpriteAtlas:
         art ships through instead of being shadowed by the capsule."""
         return any(
             self._column_sources.get(("note_tap", c)) in (
-                "user", "beatmap", "bundle",
+                "user", "beatmap", "classic", "bundle",
             )
             for c in range(self.key_count)
         )
@@ -848,7 +844,7 @@ class SpriteAtlas:
         the capsule even though the bundled assets are dedicated
         hold/tap art."""
         return self._column_sources.get(("note_tap", col)) in (
-            "user", "beatmap", "bundle",
+            "user", "beatmap", "classic", "bundle",
         )
 
     def has_skin_hold(self, col: int) -> bool:
@@ -858,7 +854,7 @@ class SpriteAtlas:
         capsule fallback so a head-only skin doesn't render a
         Frankensteined rectangular body."""
         return all(
-            self._column_sources.get((kind, col)) in ("user", "beatmap", "bundle")
+            self._column_sources.get((kind, col)) in ("user", "beatmap", "classic", "bundle")
             for kind in ("note_hold_head", "note_hold_body", "note_hold_tail")
         )
 
@@ -883,6 +879,34 @@ class SpriteAtlas:
         Animation discovery (`<base>-0.png`, …) runs per tier for
         animatable slots so per-skin animations are honoured. All
         frames must come from the same tier (danser's rule)."""
+        legacy_names = {
+            "stage_left": "mania-stage-left.png", "stage_right": "mania-stage-right.png",
+            "hit_light": "mania-stage-hint.png", "playfield_frame": "mania-stage-bottom.png",
+            "stage_light": "mania-stage-light.png",
+            "lighting_n": "lightingN.png", "lighting_l": "lightingL.png",
+            **{f"judgment_{key}": f"mania-hit{value}.png" for key, value in
+               (("geki", "300g"), ("300", "300"), ("katu", "200"),
+                ("100", "100"), ("50", "50"), ("miss", "0"))},
+            **{f"scorebar_{key}": f"scorebar-{key}.png" for key in
+               ("bg", "colour", "marker", "ki", "kidanger", "kidanger2")},
+        }
+        if slot in legacy_names:
+            frames, source = _legacy_named_images(
+                _global_section_override(section, slot) if section else None,
+                legacy_names[slot], animatable=slot in _ANIMATABLE_GLOBAL_SLOTS,
+                skin_dir=skin_dir,
+                beatmap_dir=None if slot.startswith("scorebar_") else beatmap_dir,
+            )
+            if frames:
+                return frames, source
+            if slot == "lighting_l":
+                return SpriteAtlas._resolve_global(
+                    "lighting_n", skin_dir=skin_dir, beatmap_dir=beatmap_dir, section=section)
+            if slot == "stage_light":
+                classic = _try_skin_file(SPRITES_DIR, "classic_stage_light.png")
+                if classic is not None:
+                    return [classic], "classic"
+            return [Image.new("RGBA", (4, 4), (0, 0, 0, 0))], "missing"
         candidates = _GLOBAL_SKIN_FILE_MAP.get(slot, ())
         # Combo glyphs use [Fonts] ComboPrefix (default "score" → fall back to
         # the score font). e.g. slot "combo_5" → "<prefix>-5.png".
@@ -976,120 +1000,56 @@ class SpriteAtlas:
         section: ManiaSection | None,
         replay_mods: int = 0,
     ) -> tuple[list[Image.Image], str]:
-        """Pick the right PNG(s) for a per-column slot. Returns a frame
-        list (length 1 for static, ≥ 1 for animated). See
-        `_resolve_global` for the priority chain — additionally, the
-        per-column skin.ini override (`NoteImage{N}` / `KeyImage{N}`)
-        takes precedence over both beatmap and skin conventional files
-        (the author explicitly named the file, so honour it).
+        """SkinMania.Load(All), with LN's exact resolved-H rear fallback.
 
-        Hold-tail orientation: stable mania renders any non-T file used
-        as a tail (i.e. a head/tap fallback when the skin doesn't ship
-        `mania-note*T.png`) vertically flipped. We replicate that
-        convention so partial skins still produce a proper-looking
-        tail cap instead of two head-shaped caps."""
+        Source images are never transformed. Orientation belongs to the
+        shared rendering resolver, for every authored/default/fallback tier.
+        """
         topology = legacy_stage_topology(key_count, section, mods=replay_mods)
         col_kind = topology.column_kind(col)
-        candidates = _PER_COLUMN_DEFAULT_FILES.get((kind, col_kind), ())
-        animatable = kind in _ANIMATABLE_PER_COLUMN_KINDS
-        is_tail = kind == "note_hold_tail"
-
-        def _maybe_flip_tail(frames: list[Image.Image], src_filename: str) -> list[Image.Image]:
-            # lazer's LegacyHoldNoteTailPiece INVERTS the scroll direction, so
-            # the tail is always flipped vertically relative to the head for a
-            # downward-scrolling stage — both for real `*T` tails (e.g. Night05's
-            # flat-top mania-note1T → rounded-top cap) and head-as-tail
-            # fallbacks. (UpsideDown stages, handled separately, would not flip.)
-            if not is_tail:
-                return frames
-            return [f.transpose(Image.FLIP_TOP_BOTTOM) for f in frames]
-
-        # Skin's explicit per-column override (named path).
-        if skin_dir is not None:
-            override = _per_column_override(section, kind, col)
-            if override is not None:
-                if animatable:
-                    frames = _try_animation_frames(skin_dir, (f"{override}.png",))
-                    if frames:
-                        # Tail override paths name the actual file the
-                        # author wants used — `note_image_t` is the T
-                        # slot so no flip. If somehow `note_image` (tap)
-                        # was used as tail (shouldn't happen since the
-                        # consumer table picks the right dict per kind)
-                        # we'd flip — but the consumer doesn't, so this
-                        # is moot.
-                        return frames, "user"
-                img = _try_skin_override(skin_dir, override)
-                if img is not None:
-                    return [img], "user"
-
-            # Per the osu! spec, when NoteImageNH / NoteImageNT is
-            # *specified* but the file is missing, the head/tail
-            # falls back to the tap sprite (NoteImageN). Some skins
-            # rely on this (e.g. minimaly ships mania/upH.png for 3 of
-            # 4 columns but accidentally omitted col 2's `upH.png` —
-            # without this fallback the renderer drops all the way to
-            # the bundled circle, producing a stray blue blob mid-frame
-            # where col 2's hold head should be).
-            if kind in ("note_hold_head", "note_hold_tail"):
-                tap_override = _per_column_override(section, "note_tap", col)
-                if tap_override is not None:
-                    if animatable:
-                        frames = _try_animation_frames(
-                            skin_dir, (f"{tap_override}.png",),
-                        )
-                        if frames:
-                            return _maybe_flip_tail(frames, tap_override), "user"
-                    img = _try_skin_override(skin_dir, tap_override)
-                    if img is not None:
-                        return (
-                            _maybe_flip_tail([img], tap_override), "user",
-                        )
-
-        # Per-map override (BEATMAP tier). Per candidate, try animation
-        # then static — exhausting one candidate's variants before
-        # moving to the next preserves the skin author's per-column
-        # intent (e.g. `mania-note2.png` static beats `mania-note1-N.png`
-        # animated as a fallback for col 1).
-        if beatmap_dir is not None:
-            for candidate in candidates:
-                if animatable:
-                    frames = _try_animation_frames(beatmap_dir, (candidate,))
-                    if frames:
-                        return _maybe_flip_tail(frames, candidate), "beatmap"
-                img = _try_skin_file(beatmap_dir, candidate)
-                if img is not None:
-                    return _maybe_flip_tail([img], candidate), "beatmap"
-
-        # Skin's conventional file — same per-candidate precedence.
-        if skin_dir is not None:
-            for candidate in candidates:
-                if animatable:
-                    frames = _try_animation_frames(skin_dir, (candidate,))
-                    if frames:
-                        return _maybe_flip_tail(frames, candidate), "user"
-                img = _try_skin_file(skin_dir, candidate)
-                if img is not None:
-                    return _maybe_flip_tail([img], candidate), "user"
-
-        # Bundled role PNG (single-frame, already in correct orientation).
-        stem = _BUNDLED_FALLBACK_STEM.get((kind, col_kind))
-        if stem is not None:
-            bundled = SPRITES_DIR / f"{stem}.png"
-            if bundled.exists():
-                return [Image.open(bundled).convert("RGBA")], "bundle"
-
+        name = _PER_COLUMN_DEFAULT_FILES[(kind, col_kind)][0]
+        frames, source = _legacy_named_images(
+            _per_column_override(section, kind, col), name,
+            animatable=kind in _ANIMATABLE_PER_COLUMN_KINDS,
+            skin_dir=skin_dir, beatmap_dir=beatmap_dir,
+        )
+        if frames:
+            return frames, source
+        if kind == "note_hold_tail":
+            return SpriteAtlas._resolve_column(
+                kind="note_hold_head", col=col, key_count=key_count,
+                skin_dir=skin_dir, beatmap_dir=beatmap_dir, section=section,
+                replay_mods=replay_mods,
+            )
         return [Image.new("RGBA", (4, 4), (0, 0, 0, 0))], "missing"
 
 
-def _filename_is_T_variant(name: str) -> bool:
-    """True when `name` looks like a tail file (`mania-noteNT.png`).
-    Used to skip the auto-flip on real T-variant assets."""
-    if "." not in name:
-        return False
-    stem, _ext = name.rsplit(".", 1)
-    # Match common T-variants: `mania-note1T`, `mania-noteST`, etc.
-    return stem.endswith("T") and any(c.isdigit() or c in "SLR" for c in stem[-3:-1])
+def _legacy_named_images(override, conventional, *, animatable, skin_dir, beatmap_dir):
+    """Explicit name across all sources, then conventional across all sources.
+
+    At equal source priority LoadAll selects animation first. A more specific
+    static texture beats a less specific animation; frames never mix tiers.
+    """
+    for ref in (override, conventional):
+        if not ref:
+            continue
+        filename = ref.replace("\\", "/").strip()
+        if not filename:
+            continue
+        if "." not in filename.rsplit("/", 1)[-1]:
+            filename += ".png"
+        for directory, source in ((beatmap_dir, "beatmap"), (skin_dir, "user"),
+                                  (CLASSIC_MANIA_DIR, "classic")):
+            if directory is None:
+                continue
+            if animatable:
+                frames = _try_animation_frames(directory, (filename,))
+                if frames:
+                    return frames, source
+            image = _try_skin_file(directory, filename)
+            if image is not None:
+                return [image], source
+    return None, "missing"
 
 
 def _global_section_override(section: ManiaSection, slot: str) -> str | None:

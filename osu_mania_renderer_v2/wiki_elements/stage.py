@@ -24,6 +24,10 @@ def background(*, element, skin, assets, variables, ctx) -> None:
 
 
 def stage_decorations(*, element, skin, assets, variables, ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        ctx.fr._draw_stage_decorations(ctx.scene)
+        return
+
     """stage_left/right/bottom/hint + the side/column background dims.
     Ported from FrameRenderer._draw_stage_decorations: atlas image truth +
     precomputed playfield geometry; no skin.ini variables read here (dims
@@ -91,7 +95,7 @@ def stage_foreground(ctx) -> None:
     notes and keys so it covers the lower portion of tall key images (that's
     why lazer's keys look short). Native sprite px × (height/768), centred on
     the playfield, anchored to the bottom edge."""
-    if ctx.fr._has_split_legacy_stages():
+    if not is_argon_default(ctx, 0):
         ctx.fr._draw_split_stage_foreground()
         return
     atlas = ctx.atlas
@@ -114,6 +118,10 @@ def stage_foreground(ctx) -> None:
 
 
 def columns(*, element, skin, assets, variables, ctx) -> None:
+    if not is_argon_default(ctx, 0):
+        ctx.fr._draw_legacy_stage_managers(ctx.scene)
+        return
+
     """Per-column lane backgrounds + dividers. Ported from
     FrameRenderer._draw_columns: per-column Colour{N} from the parsed
     [Mania] section (the resolved skin.ini) else the default alternating
@@ -212,3 +220,13 @@ def columns(*, element, skin, assets, variables, ctx) -> None:
             ctx.draw_sprite("column_bg", x_centre - lw // 2, 0, lw, h, line_tint)
     # (mania-stage-left/right are drawn in stage_decorations as background
     # panels — see there. The same rule covers thin borders and full panels.)
+
+
+def legacy_health(*, element, skin, assets, variables, ctx) -> None:
+    if ctx.fr._uses_legacy_mania_health():
+        ctx.fr._draw_hp_bar(ctx.scene)
+
+
+def legacy_stage_targets(*, element, skin, assets, variables, ctx) -> None:
+    # Shared legacy stage manager draws targets together with its columns.
+    return

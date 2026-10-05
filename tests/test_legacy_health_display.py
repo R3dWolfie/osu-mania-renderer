@@ -329,7 +329,7 @@ def test_equal_design_size_scorebars_match_at_1x_and_2x(tmp_path):
     ("fill_source", "marker_source", "expected"),
     [
         ("user", "user", True),
-        ("user", "beatmap", True),
+        ("user", "beatmap", False),
         ("user", "missing", False),
         ("user", "bundle", False),
         ("bundle", "missing", True),
@@ -629,46 +629,29 @@ def test_mania_and_standard_fills_receive_selected_animation_frame():
         *_standard_composite(), new_default=True,
     )
     _draw_with_seeded_display(standard, 0.5, t_ms=500)
-    standard_fill = standard.clipped_draws[0][1]
+    standard_fill = next(k for a,k in standard.clipped_draws if a[0] == "scorebar_colour")
 
     assert mania_fill["frame_index"] == 1
     assert mania_fill["rotation_deg"] == 90
     assert standard_fill["frame_index"] == 2
-    assert standard_fill["rotation_deg"] == 0
+    assert standard_fill["rotation_deg"] == 90
 
 
 def test_wiki_custom_health_uses_shared_display_hp_and_animation_frame():
-    renderer = SimpleNamespace(
-        _legacy_display_hp_for_scene=lambda scene: 0.4,
-        _legacy_scorebar_frame_for_scene=lambda scene: 2,
-    )
-    atlas = _Atlas(scorebar_frames=3)
-    direct_draws = []
-    ctx = SimpleNamespace(
-        fr=renderer,
-        scene=SimpleNamespace(hp=0.9, t_ms=250),
-        options=SimpleNamespace(show_hp_bar=True),
-        atlas=atlas,
-        mania_section=object(),
-        key_count=4,
-        persistent={},
-        height=720,
-        draw_direct=lambda *args, **kwargs: direct_draws.append(
-            (args, kwargs),
-        ),
-        draw_sprite=lambda *_args, **_kwargs: None,
-    )
-
-    draw_wiki_hp_bar(
-        element=None, skin=None, assets=None, variables=None, ctx=ctx,
-    )
-
-    fill_args, fill_kwargs = next(
-        draw for draw in direct_draws if draw[0][0] == "scorebar_colour"
-    )
-    assert fill_args[3] == int(695 * (720 / 768) * 0.4)
-    assert fill_kwargs["frame_index"] == 2
-    assert ctx.scene.hp == 0.9
+    from osu_mania_renderer_v2.wiki_elements.stage import legacy_health
+    renderer = _renderer(scorebar_frames=3, animation_framerate=8)
+    scene = SimpleNamespace(hp=0.9, t_ms=250)
+    renderer._legacy_display_hp_for_scene = lambda _: 0.4
+    ctx = SimpleNamespace(fr=renderer, scene=scene)
+    legacy_health(element=None, skin=None, assets=None, variables=None, ctx=ctx)
+    fill = next(k for a,k in renderer.clipped_draws if a[0] == "scorebar_colour")
+    assert fill["visible_fraction"] == 0.4
+    assert fill["frame_index"] == 2
+    assert fill["rotation_deg"] == 90
+    before = list(renderer.clipped_draws)
+    draw_wiki_hp_bar(element=None, skin=None, assets=None, variables=None, ctx=ctx)
+    assert renderer.clipped_draws == before  # no late/duplicate top-left bar
+    assert scene.hp == 0.9
 
 
 def test_mania_draw_uses_only_neutral_authored_background_and_fill():
@@ -695,33 +678,16 @@ def test_mania_draw_uses_only_neutral_authored_background_and_fill():
     assert fill["frame_index"] == 0
 
 
-def test_standard_composite_draws_horizontal_top_left_assets_and_marker():
+def test_standard_composite_also_uses_stable_mania_side_gauge():
     renderer = _renderer()
     renderer._legacy_scorebar_classification = classify_legacy_scorebar(
         *_standard_composite(), new_default=True,
     )
-
     _draw_with_seeded_display(renderer, 0.5)
-
-    assert [args[0] for args, _ in renderer.direct_draws] == [
-        "scorebar_bg",
-        "scorebar_marker",
-    ]
-    background = renderer.direct_draws[0]
-    assert background[0][1] == 0
-    assert background[1] == {"tint": (1.0, 1.0, 1.0, 1.0)}
-    assert len(renderer.clipped_draws) == 1
-    fill_args, fill_draw = renderer.clipped_draws[0]
-    assert fill_args == ("scorebar_colour",)
-    assert fill_draw["visible_fraction"] == 0.5
-    assert fill_draw["frame_index"] == 0
-    assert fill_draw["rotation_deg"] == 0
-    assert fill_draw["tint"] == (1.0, 1.0, 1.0, 1.0)
-    assert renderer.sprite_draws == []
-    assert renderer.rc.ctx.blend_func == (
-        moderngl.SRC_ALPHA,
-        moderngl.ONE_MINUS_SRC_ALPHA,
-    )
+    assert renderer.direct_draws == []  # no marker or top-left HUD bar
+    assert [a[0] for a,k in renderer.clipped_draws] == ["scorebar_bg", "scorebar_colour"]
+    assert all(k["rotation_deg"] == 90 for a,k in renderer.clipped_draws)
+    assert renderer.clipped_draws[-1][1]["visible_fraction"] == 0.5
 
 
 def test_uncertain_classification_keeps_rotated_mania_side_policy():
@@ -767,8 +733,8 @@ def test_missing_or_mismatched_custom_scorebar_keeps_procedural_fallback(sources
 
     FrameRenderer._draw_hp_bar(renderer, SimpleNamespace(hp=0.5))
 
-    assert len(renderer.sprite_draws) == 2
-    assert renderer.clipped_draws == []
+    assert renderer.sprite_draws == []
+    assert all(k["rotation_deg"] == 90 for a,k in renderer.clipped_draws)
 
 
 def test_hidden_hp_option_draws_nothing():

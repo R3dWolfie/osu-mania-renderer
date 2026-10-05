@@ -926,6 +926,8 @@ def build_frame_state(
         t_ms=scene.t_ms, visible_notes=scene.visible_notes,
         keys_held=scene.keys_held, visual_mods=scene.visual_mods,
         active_judgments=active,
+        hold_light_press_age_ms=scene.hold_light_press_age_ms,
+        hold_light_release_age_ms=scene.hold_light_release_age_ms,
         score=(plan.score_final
                if (results_opacity > 0 and plan.score_final is not None)
                else score_so_far),
@@ -1008,7 +1010,7 @@ async def render_mania(
             )
             fr = FrameRenderer(
                 rc, options, skin_dir=skin_dir,
-                beatmap_dir=beatmap_dir,
+                beatmap_dir=beatmap_dir if plan.modded.source_mode == 3 else None,
                 first_note_ms=plan.first_note_ms,
                 # bg dim envelope inputs (dim.py): modded-time note starts +
                 # break periods, and the scroll-speed-scaled approach window.
@@ -1017,6 +1019,7 @@ async def render_mania(
                 approach_ms=plan.effective_approach_ms,
                 # break overlay clock: real/video time -> map time
                 rate=plan.audio_rate,
+                timing_points=plan.timing_points,
             )
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)

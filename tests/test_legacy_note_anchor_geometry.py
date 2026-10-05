@@ -25,9 +25,9 @@ from osu_mania_renderer_v2.wiki_elements.notes import _draw_notes_body
     ("upside_down", "is_tail", "expected"),
     [
         (False, False, 400),
-        (False, True, 360),
+        (False, True, 400),
         (True, False, 360),
-        (True, True, 400),
+        (True, True, 360),
     ],
     ids=("down-tap-head", "down-tail", "up-tap-head", "up-tail"),
 )
@@ -43,9 +43,9 @@ def test_legacy_note_draw_y_uses_lazer_edge_anchors(
     ("upside_down", "is_tail", "expected"),
     [
         (False, False, 400),
-        (False, True, 361),
+        (False, True, 400),
         (True, False, 361),
-        (True, True, 400),
+        (True, True, 361),
     ],
 )
 def test_legacy_note_draw_y_truncates_non_integer_geometry_deterministically(
@@ -66,8 +66,8 @@ def test_legacy_note_draw_y_truncates_non_integer_geometry_deterministically(
         "expected_body_h",
     ),
     [
-        (False, 450, 400, 410, 420, 10),
-        (True, 200, 360, 200, 220, 160),
+        (False, 450, 400, 450, 420, 50),
+        (True, 200, 360, 160, 180, 200),
     ],
     ids=("downscroll", "upscroll"),
 )
@@ -177,6 +177,8 @@ def _record_legacy_draws(
     if render_path == "monolithic":
         renderer = object.__new__(FrameRenderer)
         renderer.rc = SimpleNamespace(width=800, height=500, key_count=1)
+        renderer.pf_x, renderer.pf_w, renderer.col_w_uniform = 100, 80, 80
+        renderer._is_argon_default = lambda: False
         renderer.pf_x = 100
         renderer.pf_w = 80
         renderer.col_w_uniform = 80
@@ -198,6 +200,8 @@ def _record_legacy_draws(
             lambda *args, **_kwargs: indexed_draws.append(args)
         )
         renderer.rc = SimpleNamespace(width=800, height=500, key_count=1)
+        renderer.pf_x, renderer.pf_w, renderer.col_w_uniform = 100, 80, 80
+        renderer._is_argon_default = lambda: False
         for name, value in common.items():
             if name not in {"height", "key_count"}:
                 setattr(renderer, name, value)
@@ -219,8 +223,8 @@ def _record_legacy_draws(
 @pytest.mark.parametrize(
     ("upside_down", "expected_y"),
     [
-        (False, [420, 410, 400]),
-        (True, [380, 370, 360]),
+        (False, [400]),
+        (True, [360]),
     ],
     ids=("downscroll", "upscroll"),
 )
@@ -239,7 +243,7 @@ def test_legacy_tap_and_ghost_draws_use_their_edge_anchors(
         render_path, note, upside_down=upside_down,
     )
 
-    assert [draw[0] for draw in indexed_draws] == [10, 10, 10]
+    assert [draw[0] for draw in indexed_draws] == [10]
     assert [draw[2] for draw in indexed_draws] == expected_y
     assert named_draws == []
 
@@ -265,8 +269,8 @@ def test_legacy_tap_and_ghost_draws_use_their_edge_anchors(
         "expected_body_h",
     ),
     [
-        (False, 450, 400, 410, 420, 10),
-        (True, 200, 360, 200, 220, 160),
+        (False, 450, 400, 450, 420, 50),
+        (True, 200, 360, 160, 180, 200),
     ],
     ids=("downscroll", "upscroll"),
 )

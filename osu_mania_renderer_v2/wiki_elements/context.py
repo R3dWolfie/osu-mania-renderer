@@ -98,6 +98,7 @@ class FrameContext:
     def begin_frame(self) -> None:
         """Clear the FBO and set the standard alpha blend — mirrors the head
         of FrameRenderer.draw()."""
+        self.fr._stage_clock_ms = self.scene.t_ms
         self.fbo.use()
         self.fbo.clear(0.03, 0.03, 0.05, 1.0)
         self.gl.enable(moderngl.BLEND)

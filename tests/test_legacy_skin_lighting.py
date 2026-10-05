@@ -70,6 +70,8 @@ def _scene(*, held=False, press_age=120, hit_age=9999, judgment=""):
     return SimpleNamespace(
         keys_held=(held,),
         key_press_age_ms=(press_age,),
+        hold_light_press_age_ms=(press_age if held else -1,),
+        hold_light_release_age_ms=(-1,),
         hit_light_age_ms=(hit_age,),
         hit_light_judgment=(judgment,),
     )
@@ -160,7 +162,7 @@ def test_custom_hold_lighting_uses_width_native_aspect_and_fades_in():
     )
 
     assert renderer.additive_draws == [
-        (30, 133, 35, 38, 75, (1.0, 1.0, 1.0, 0.5)),
+        (30, 133.5, 35, 38, 75, (1.0, 1.0, 1.0, 0.5)),
     ]
 
 
@@ -182,7 +184,7 @@ def test_custom_hit_lighting_keeps_fixed_native_aspect_during_fade():
     )
     second = renderer.additive_draws[-1]
 
-    assert first[1:5] == (110, 51, 84, 42)
+    assert first[1:5] == (110.5, 51, 84, 42)
     assert second[1:5] == first[1:5]
     assert first[-1] == (1.0, 1.0, 1.0, 0.5)
     assert second[-1] == (1.0, 1.0, 1.0, 0.5)

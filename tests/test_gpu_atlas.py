@@ -154,7 +154,7 @@ def test_resolve_column_falls_back_to_skin_then_bundle(tmp_path):
         kind="note_tap", col=0, key_count=4,
         skin_dir=tmp_path / "nonexistent", beatmap_dir=None, section=None,
     )
-    assert src == "bundle"
+    assert src == "classic"
     assert len(frames) == 1
 
 
@@ -327,7 +327,7 @@ def test_static_scorebar_colour_retains_one_direct_frame(tmp_path):
 
 
 def test_resolve_global_lighting_n_layered_fallback(tmp_path):
-    """lighting_n tries mania-lightingN → lightingN → lighting."""
+    """Stable LightingN uses lightingN; unrelated lighting.png is ignored."""
     from PIL import Image
     skin = tmp_path / "skin"
     skin.mkdir()
@@ -336,9 +336,10 @@ def test_resolve_global_lighting_n_layered_fallback(tmp_path):
     frames, src = SpriteAtlas._resolve_global(
         "lighting_n", skin_dir=skin, beatmap_dir=None, section=None,
     )
-    assert src == "user"
+    assert src == "classic"
     assert len(frames) == 1
-    assert frames[0].getpixel((0, 0)) == (5, 5, 5, 255)
+    assert frames[0].getbbox() is not None
+    assert frames[0].getpixel((0, 0)) != (5, 5, 5, 255)
 
 
 def test_explicit_blank_lighting_overrides_resolve_as_user_assets(tmp_path):
@@ -445,9 +446,9 @@ def test_resolve_column_tail_auto_flip(tmp_path):
         skin_dir=skin, beatmap_dir=None, section=None,
     )
     assert len(frames) == 1
-    # After Y-flip, the top half should be black (was bottom).
-    assert frames[0].getpixel((0, 0)) == (0, 0, 0, 255)
-    assert frames[0].getpixel((0, 3)) == (255, 255, 255, 255)
+    # Source art is unchanged; stable flips the rear at draw time.
+    assert frames[0].getpixel((0, 0)) == (255, 255, 255, 255)
+    assert frames[0].getpixel((0, 3)) == (0, 0, 0, 255)
 
 
 def test_resolve_column_tail_flipped_for_downscroll(tmp_path):
@@ -468,9 +469,9 @@ def test_resolve_column_tail_flipped_for_downscroll(tmp_path):
         skin_dir=skin, beatmap_dir=None, section=None,
     )
     assert len(frames) == 1
-    # After the vertical flip the white half is now at the BOTTOM.
-    assert frames[0].getpixel((0, 0)) == (0, 0, 0, 255)
-    assert frames[0].getpixel((0, 3)) == (255, 255, 255, 255)
+    # Conventional and explicit tail art obey the same draw-time contract.
+    assert frames[0].getpixel((0, 0)) == (255, 255, 255, 255)
+    assert frames[0].getpixel((0, 3)) == (0, 0, 0, 255)
 
 
 def test_resolve_column_receptors_not_animated(tmp_path):

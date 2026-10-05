@@ -32,7 +32,7 @@ from osu_mania_renderer_v2.wiki_elements.context import FrameContext
         (4, (4,), ()),
         (7, (7,), (3,)),
         (9, (9,), (4,)),
-        (10, (10,), ()),
+        (10, (5, 5), (2, 7)),
         (11, (6, 5), (8,)),
         (12, (6, 6), ()),
         (13, (7, 6), (3,)),
@@ -97,7 +97,7 @@ def test_keycoop_split_and_global_mapping_remain_unchanged(keys, counts):
 
 @pytest.mark.parametrize("style,specials", [(0, ()), (1, (0,)), (2, (9,))])
 def test_default_10k_special_style_uses_one_stage(style, specials):
-    layout = legacy_stage_topology(10, ManiaSection(10, special_style=style))
+    layout = legacy_stage_topology(10, ManiaSection(10, special_style=style, split_stages=False))
     assert tuple(s.column_count for s in layout.stages) == (10,)
     assert tuple(c for c in range(10) if layout.column_kind(c) == "S") == specials
 
@@ -220,11 +220,11 @@ def test_fit_uses_stable_ceiling_of_screen_reference_width():
 def test_single_stage_renderer_geometry_stays_unchanged(keys):
     fr = object.__new__(FrameRenderer)
     fr.rc = SimpleNamespace(width=1280, height=720, key_count=keys)
-    fr.mania_section = ManiaSection(keys, column_start=267, column_width=(30,))
+    fr.mania_section = ManiaSection(keys, column_start=267, column_width=(30,), split_stages=False)
     fr._is_argon_default = lambda: False
     fr._compute_playfield_geometry()
     assert fr.col_w == (45,) * keys  # preserve existing singleton shorthand
-    assert fr.col_x == tuple(round((1280 - 45 * keys) / 2) + c * 45 for c in range(keys))
+    assert fr.col_x == tuple(267 * 1.5 + c * 45 for c in range(keys))
     assert len(fr.stage_layout.stages) == 1
 
 
@@ -310,6 +310,8 @@ def _skin(tmp_path):
         ("mania-key2", (10, 60), (0, 255, 0, 255)),
         ("mania-note1", (10, 10), (0, 255, 255, 255)),
         ("mania-note2", (10, 10), (0, 255, 255, 255)),
+        ("mania-note1H", (10, 10), (0, 255, 255, 255)),
+        ("mania-note2H", (10, 10), (0, 255, 255, 255)),
     ):
         Image.new("RGBA", size, colour).save(tmp_path / f"{name}.png")
 
@@ -349,7 +351,7 @@ def test_split_gl_chrome_gap_note_key_alignment_and_path_parity(tmp_path):
                 stage.stage_foreground(ctx)
             else:
                 fr._draw_stage_decorations(scene)
-                fr._draw_columns(scene)
+                fr._draw_legacy_stage_managers(scene)
                 fr._draw_notes(scene)
                 fr._draw_receptors(scene)
                 fr._draw_legacy_stage_foreground()
@@ -379,7 +381,7 @@ def test_split_boundary_holds_and_global_hit_light_order_gl(tmp_path):
     for kind in ("1", "2"):
         Image.new("RGBA", (10, 20), (100, 0, 0, 255)).save(tmp_path / f"mania-note{kind}L.png")
         Image.new("RGBA", (10, 10), (0, 0, 255, 255)).save(tmp_path / f"mania-note{kind}T.png")
-    Image.new("RGBA", (36, 600), (100, 0, 0, 255)).save(tmp_path / "mania-lightingN.png")
+    Image.new("RGBA", (36, 600), (100, 0, 0, 255)).save(tmp_path / "lightingN.png")
     scene = SceneState(
         1000,
         tuple(VisibleNote(c, True, 0.7, 0.7, 0.4) for c in (5, 6)),
@@ -412,7 +414,7 @@ def test_split_boundary_holds_and_global_hit_light_order_gl(tmp_path):
                 center = int(fr.col_x[c] + fr.col_w[c] / 2)
                 assert np.array_equal(pixels[206, center], (0, 255, 255))  # head over body
                 assert np.array_equal(pixels[250, center], (100, 0, 0))
-                assert np.array_equal(pixels[315, center], (0, 0, 255))  # rear over body
+                assert np.array_equal(pixels[325, center], (0, 0, 255))  # rear over body
                 assert pixels[30, center, 0] > 20 and pixels[30, center, 1] == 255  # light over key
             assert np.count_nonzero(pixels[:, 175:185]) == 0
         assert np.array_equal(*outputs)

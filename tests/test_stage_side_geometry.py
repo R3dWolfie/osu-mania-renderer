@@ -71,6 +71,10 @@ class _Atlas:
 def test_stage_decorations_draw_correct_full_resolution_asset_on_each_side():
     renderer = object.__new__(FrameRenderer)
     renderer.rc = SimpleNamespace(width=1280, height=720)
+    from osu_mania_renderer_v2.gpu.legacy_stage_geometry import LegacyStage, LegacyStageLayout
+    renderer.mania_section = None
+    renderer._is_argon_default = lambda: False
+    renderer.stage_layout = LegacyStageLayout((LegacyStage(0, 0, 4, x=430, width=420),))
     renderer.pf_x = 430
     renderer.pf_w = 420
     renderer.col_w_uniform = 105
@@ -89,8 +93,8 @@ def test_stage_decorations_draw_correct_full_resolution_asset_on_each_side():
     FrameRenderer._draw_stage_decorations(renderer)
 
     assert renderer.direct_draws == [
-        (("stage_left", -320, 0, 750, 720), {"tint": (1, 1, 1, 1)}),
-        (("stage_right", 850, 0, 750, 720), {"tint": (1, 1, 1, 1)}),
+        (("stage_left", -319.925, 0, 750, 720), {"tint": (1, 1, 1, 1)}),
+        (("stage_right", 850.075, 0, 750, 720), {"tint": (1, 1, 1, 1)}),
     ]
     assert all(
         args[0] not in ("stage_left", "stage_right")

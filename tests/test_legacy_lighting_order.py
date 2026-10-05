@@ -1,6 +1,8 @@
 """Layer regressions for additive legacy effects crossing neighbouring keys."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import os
 from types import SimpleNamespace
 
@@ -20,7 +22,7 @@ from osu_mania_renderer_v2.wiki_renderer import ELEMENTS, RENDER_ORDER
 
 
 _FIELD_ELEMENTS = {
-    "stage_lights", "receptors_under", "notes", "combo_and_judgment",
+    "columns", "stage_lights", "receptors_under", "notes", "combo_and_judgment",
     "receptors_over", "legacy_hit_lighting", "legacy_combo_and_judgment",
 }
 
@@ -29,6 +31,8 @@ def _scene(*, held=(True, True), hit_ages=(80, 80)):
     return SceneState(
         t_ms=1000, visible_notes=(), keys_held=held, visual_mods=VisualMods(),
         key_press_age_ms=(120, 120), hit_light_age_ms=hit_ages,
+        hold_light_press_age_ms=tuple(120 if h else -1 for h in held),
+        hold_light_release_age_ms=(-1, -1),
         hit_light_judgment=("300", "300"),
     )
 
@@ -41,11 +45,13 @@ def _quiet_frame(fr, events):
         show_hit_error_meter=False,
     )
     for name in ("_draw_background", "_draw_stage_decorations", "_draw_columns",
-                 "_draw_hud", "_draw_top_chrome", "draw_logo_splash"):
+                 "_draw_hud", "_draw_top_chrome", "draw_logo_splash",
+                 "_draw_legacy_stage_targets"):
         setattr(fr, name, lambda *args: None)
     fr._draw_notes = lambda scene: events.append("notes")
     fr._draw_stage_lights = lambda scene: events.append("stage_light")
-    fr._draw_combo_and_judgment = lambda scene: events.append("judgment")
+    fr._draw_combo_and_judgment = lambda scene, **kw: events.append("judgment")
+    fr._draw_custom_legacy_combo = lambda *a, **kw: None
     fr._draw_legacy_stage_foreground = lambda: events.append("foreground")
     fr._selected_legacy_scorebar_layout = lambda: None
     fr._legacy_timing_overlay_visibility = lambda: (False, False)
@@ -62,6 +68,7 @@ def _probe(*, keys_under=None, argon=False):
     )
     fr.col_x, fr.col_w = (100, 205), (105, 105)
     fr.col_w_uniform = 105
+    fr.pf_x, fr.pf_w = 100, 210
     fr.receptor_centre_y_gl = 72
     fr.upside_down = False
     fr.mania_section = ManiaSection(
@@ -108,7 +115,7 @@ def _wiki_field(fr, scene, monkeypatch, events, *, argon=False):
     if argon:
         monkeypatch.setattr(notes, "_receptors", lambda ctx: events.append("argon_keys"))
     for name in RENDER_ORDER:
-        if name in _FIELD_ELEMENTS:
+        if name in _FIELD_ELEMENTS and (name != "columns" or not argon):
             ELEMENTS[name].render_fn(
                 element=name, skin=None, assets=None, variables=None, ctx=ctx,
             )
@@ -183,6 +190,7 @@ def test_gl_neighbouring_opaque_key_cannot_paint_over_additive_light(
             skin_dir=tmp_path,
         )
         fr.col_x, fr.col_w = (16, 80), (64, 64)
+        fr.stage_layout = replace(fr.stage_layout, width_scale=1.0)
         fr.col_w_uniform = 64
         fr.receptor_centre_y_gl = 40
         events = []

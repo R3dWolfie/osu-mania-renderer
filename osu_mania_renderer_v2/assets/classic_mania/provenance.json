@@ -1,0 +1,349 @@
+{
+  "authority": "Local readable osu!stable source archive; same-name SkinSource.Osu defaults. No tail or stage-bottom resources exist in this archive.",
+  "files": {
+    "lightingL-0.png": {
+      "source": "osu-master/Resources/lightingL-0.png",
+      "sha256": "fbcd04b5a1d38f1809f9e22013160e2404c7554458eff161c8cbd8660ff1d7d1"
+    },
+    "lightingL-1.png": {
+      "source": "osu-master/Resources/lightingL-1.png",
+      "sha256": "f1eb282cc11df6fa2af75cefd31181b181335824275446824c8c4ce5286f8874"
+    },
+    "lightingL-2.png": {
+      "source": "osu-master/Resources/lightingL-2.png",
+      "sha256": "fbcd04b5a1d38f1809f9e22013160e2404c7554458eff161c8cbd8660ff1d7d1"
+    },
+    "lightingL-3.png": {
+      "source": "osu-master/Resources/lightingL-3.png",
+      "sha256": "f1eb282cc11df6fa2af75cefd31181b181335824275446824c8c4ce5286f8874"
+    },
+    "lightingL-4.png": {
+      "source": "osu-master/Resources/lightingL-4.png",
+      "sha256": "fbcd04b5a1d38f1809f9e22013160e2404c7554458eff161c8cbd8660ff1d7d1"
+    },
+    "lightingL-5.png": {
+      "source": "osu-master/Resources/lightingL-5.png",
+      "sha256": "f1eb282cc11df6fa2af75cefd31181b181335824275446824c8c4ce5286f8874"
+    },
+    "lightingN.png": {
+      "source": "osu-master/Resources/lightingN.png",
+      "sha256": "6bb27fa34f262819322286fe4b06b992ab6e2d813da433594d6220c6659d98f2"
+    },
+    "mania-key1.png": {
+      "source": "osu-master/Resources/mania-key1.png",
+      "sha256": "68741a8f41593f7583ed6408c8501ef4914e92334c99ed898c337a363e1bee7a"
+    },
+    "mania-key1D.png": {
+      "source": "osu-master/Resources/mania-key1D.png",
+      "sha256": "9aa07483ef7779cddf5b74e9527458f775c2800e1c46f79f6cd3dd38af355938"
+    },
+    "mania-key2.png": {
+      "source": "osu-master/Resources/mania-key2.png",
+      "sha256": "702fd8f42cd054bb81f5d3ff0ed2c15c600f3afb42fa1a6d17306710c12547b0"
+    },
+    "mania-key2D.png": {
+      "source": "osu-master/Resources/mania-key2D.png",
+      "sha256": "8ab9fe3db2d4fdf3ec93868061536d196b070f27ae628eee9cce85df698ef285"
+    },
+    "mania-keyS.png": {
+      "source": "osu-master/Resources/mania-keyS.png",
+      "sha256": "e4313d8b0d464504727fe8a3fb6335e89c459196cbb59cad98c962e26680d498"
+    },
+    "mania-keySD.png": {
+      "source": "osu-master/Resources/mania-keySD.png",
+      "sha256": "cd83161f4a6c2aca911f96aac970efdf711c08f51a34f828593a0de7d1b6250c"
+    },
+    "mania-note1L-0.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-0.png",
+      "sha256": "8e369812c05e021d8b7290bb50782c36fa946fe09cad0255f4b32a4797cc013c"
+    },
+    "mania-note1L-1.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-1.png",
+      "sha256": "0a32763f6629c892f276f21a4b57e764aa5194f1ea2741b82338530728924d65"
+    },
+    "mania-note1L-2.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-2.png",
+      "sha256": "06e41baf38afd797e24ebcb39459787101486eacadcd7215be665844231a7843"
+    },
+    "mania-note1L-3.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-3.png",
+      "sha256": "4f7ae9593bf93b6d94be1631896cc3b4485f5bf974b9dfb9b8949ae877a28968"
+    },
+    "mania-note1L-4.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-4.png",
+      "sha256": "06e41baf38afd797e24ebcb39459787101486eacadcd7215be665844231a7843"
+    },
+    "mania-note1L-5.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-5.png",
+      "sha256": "0a32763f6629c892f276f21a4b57e764aa5194f1ea2741b82338530728924d65"
+    },
+    "mania-note2.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2.png",
+      "sha256": "81e9ac4a16a8badfd570a4bb3d7c3c7040f853fb29f1554045c373bc414c8bc2"
+    },
+    "mania-note2H.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2H.png",
+      "sha256": "81e9ac4a16a8badfd570a4bb3d7c3c7040f853fb29f1554045c373bc414c8bc2"
+    },
+    "mania-note2L-0.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-0.png",
+      "sha256": "4d4a553cb4fb8d4e837626a28b28c5523d45719b7a06203295b08d234f2bafee"
+    },
+    "mania-note2L-1.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-1.png",
+      "sha256": "3edc976155e2ef518952f586faf0463685a83d3687796dc75285ca4abd7104f5"
+    },
+    "mania-note2L-2.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-2.png",
+      "sha256": "9cf8534bd7a824856fbea7e547eba879a057ed29bc9a0ac26f1fe0a6841246b6"
+    },
+    "mania-note2L-3.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-3.png",
+      "sha256": "151c42aba904d28b76ecdf2d6e8d730409335a5e34ade63e91f2aade29128b6b"
+    },
+    "mania-note2L-4.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-4.png",
+      "sha256": "9cf8534bd7a824856fbea7e547eba879a057ed29bc9a0ac26f1fe0a6841246b6"
+    },
+    "mania-note2L-5.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-5.png",
+      "sha256": "3edc976155e2ef518952f586faf0463685a83d3687796dc75285ca4abd7104f5"
+    },
+    "mania-noteS.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteS.png",
+      "sha256": "9d0fcca33cc225e3cd8464ead0de99e3e6f1be3bb5745be9380b969774c0aaba"
+    },
+    "mania-noteSH.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSH.png",
+      "sha256": "9d0fcca33cc225e3cd8464ead0de99e3e6f1be3bb5745be9380b969774c0aaba"
+    },
+    "mania-noteSL-0.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-0.png",
+      "sha256": "e110a199da4a8b67d396de00bdf8545328607f4a34095ecdc25fbd53202a049e"
+    },
+    "mania-noteSL-1.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-1.png",
+      "sha256": "a61c9aff44801ec97de67e9fccb68128871a596afe034e7e18965e5265cc9bc8"
+    },
+    "mania-noteSL-2.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-2.png",
+      "sha256": "b7032f3d33c67ce87e26d68201bc1ba3132c1dfbe9069f555c6068af044fcfbf"
+    },
+    "mania-noteSL-3.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-3.png",
+      "sha256": "164700849bf7f1105fae835c4e40d6cb786854fc002e86294dbf4dd5b5677a06"
+    },
+    "mania-noteSL-4.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-4.png",
+      "sha256": "46c6b17e6da6b55d247a6ffe3b6219a704f735b8f499c8395fda18fa84f139b1"
+    },
+    "mania-noteSL-5.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-5.png",
+      "sha256": "f74ae03941d8bba85f874f50db5f3d38d62d4c953ecae86829b96ff4ea34359e"
+    },
+    "mania-stage-hint.png": {
+      "source": "osu-master/Resources/mania-stage-hint.png",
+      "sha256": "65cdcabe8bdc27275aa924787061707aee6080386c95baaf8153095cb2d68fbe"
+    },
+    "mania-hit0.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit0.png",
+      "sha256": "bc7891d1816df0346de41ab05c655d560fbcf5dddc99a2d1fc5af37847f57b28"
+    },
+    "mania-hit0@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit0@2x.png",
+      "sha256": "8c88df4495241db77185317a7a36935982f3c2301710ae25b09e677636649fb3"
+    },
+    "mania-hit100.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit100.png",
+      "sha256": "7f792dca325c444f17bce0b10b45c1bfe69efa6d9e31920cabc6efaf5fe0acba"
+    },
+    "mania-hit100@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit100@2x.png",
+      "sha256": "09086444edc7209b8d908210127c68113608aceb59f1532b0af97a8399b5f4a2"
+    },
+    "mania-hit200.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit200.png",
+      "sha256": "32c2b89dda5b641c873fc9dcd6da8cbe7dc9fa9163cc29d5c5eaa23817cb3a27"
+    },
+    "mania-hit200@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit200@2x.png",
+      "sha256": "b0089a744c43d87d666ba82d2a6ce9fe686dfffe050738113c1201b15a88b613"
+    },
+    "mania-hit300.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit300.png",
+      "sha256": "fe6a14866a2d900378d00e43f218ece907f9a1f2045dc387c75ded7462496560"
+    },
+    "mania-hit300@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit300@2x.png",
+      "sha256": "58efab32386ec7e208c7e49ef13f9b270af58f162b791678da6bd30d74086611"
+    },
+    "mania-hit300g-0.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit300g-0.png",
+      "sha256": "2723a287244d76d93e2959259a4ff135c69949a7145faa279de6771c1a0b390e"
+    },
+    "mania-hit300g-0@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit300g-0@2x.png",
+      "sha256": "d5d087f62dd2f7570d3eaae478477a45b0e9c7e34181a03fe9bff6a6cdda93ee"
+    },
+    "mania-hit300g-1.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit300g-1.png",
+      "sha256": "8f2cef9826e35e756c9a975228130229c130a6fad86f491d91a8cd73daa612f8"
+    },
+    "mania-hit300g-1@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit300g-1@2x.png",
+      "sha256": "9907978f58ee631c0659a707b69a656974a8a69218f5e2e36a7249cd56a5bf52"
+    },
+    "mania-hit50.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit50.png",
+      "sha256": "6c9c54812d8d54ec9b8938c2b788cd5ee139987735dc896d506d33f66971cff3"
+    },
+    "mania-hit50@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-hit50@2x.png",
+      "sha256": "494b25bb1e6c2c7e55081008cdf4d5a371226bcb4eadccf338af002988315ad3"
+    },
+    "mania-note1.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1.png",
+      "sha256": "671d9240dba8dff222dcbc2056e3eaec12e9661c67331e67bca16f1c9a496821"
+    },
+    "mania-note1@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1@2x.png",
+      "sha256": "dfbf9db6c5dbc531390566907f97dc5e3aab246d57441e2697b472ee21cf1f40"
+    },
+    "mania-note1H.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1H.png",
+      "sha256": "8754bcca557d64b6a72e9aa71e00991dc7c9d69664d99a0a8661d89f6e0deea1"
+    },
+    "mania-note1H@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1H@2x.png",
+      "sha256": "d46ca32246599f4df58d2191e7658d67a46dd09b6f4a5106cd3ad1b2acdd3f4d"
+    },
+    "mania-note1L-0@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-0@2x.png",
+      "sha256": "dab756a7ee043ee2a34e6c2ff4f8a7464b1e0ed997e26e742a487fa118b3509b"
+    },
+    "mania-note1L-1@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-1@2x.png",
+      "sha256": "114bddb5432ba0aa52f42661201ddc307811fce60ba2edf0a00e0d2b7dce5994"
+    },
+    "mania-note1L-2@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-2@2x.png",
+      "sha256": "7df8519052ca12ec3422e3437371016908b5a6c8be56539292001377120b5426"
+    },
+    "mania-note1L-3@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-3@2x.png",
+      "sha256": "e4c33f00146fb96927d8cd2c4ce265ff968091c8374be980fd843afac9ebd10e"
+    },
+    "mania-note1L-4@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-4@2x.png",
+      "sha256": "7df8519052ca12ec3422e3437371016908b5a6c8be56539292001377120b5426"
+    },
+    "mania-note1L-5@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note1L-5@2x.png",
+      "sha256": "114bddb5432ba0aa52f42661201ddc307811fce60ba2edf0a00e0d2b7dce5994"
+    },
+    "mania-note2@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2@2x.png",
+      "sha256": "639b116b28d289fb80891de41c750cf42ebed87074d0c97252699d37610f27ef"
+    },
+    "mania-note2H@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2H@2x.png",
+      "sha256": "639b116b28d289fb80891de41c750cf42ebed87074d0c97252699d37610f27ef"
+    },
+    "mania-note2L-0@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-0@2x.png",
+      "sha256": "a288c5b0aba037efd126a27a0358f03dfa593cad3867bde63a65c3f39f9c2759"
+    },
+    "mania-note2L-1@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-1@2x.png",
+      "sha256": "8b140178c67da32553de15ec7a086bb7a3efbd15d3dd088d025ce05d315d5661"
+    },
+    "mania-note2L-2@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-2@2x.png",
+      "sha256": "adc7ad149c7e7be1e0939db91e620486d8e8d923e49f81066c6a44515973076c"
+    },
+    "mania-note2L-3@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-3@2x.png",
+      "sha256": "eabf812f4f234090990e8ad3dd717ba5842e11819db8769b0e56b2b71f348ad8"
+    },
+    "mania-note2L-4@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-4@2x.png",
+      "sha256": "adc7ad149c7e7be1e0939db91e620486d8e8d923e49f81066c6a44515973076c"
+    },
+    "mania-note2L-5@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-note2L-5@2x.png",
+      "sha256": "8b140178c67da32553de15ec7a086bb7a3efbd15d3dd088d025ce05d315d5661"
+    },
+    "mania-noteS@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteS@2x.png",
+      "sha256": "63b89e333a51a241a718be5f5138567644bed6b9e0f385542c5cd5399e531148"
+    },
+    "mania-noteSH@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSH@2x.png",
+      "sha256": "63b89e333a51a241a718be5f5138567644bed6b9e0f385542c5cd5399e531148"
+    },
+    "mania-noteSL-0@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-0@2x.png",
+      "sha256": "7b5414773f4345f975bd9b35c19f40aa60e1c69649df49158f410b80e912e912"
+    },
+    "mania-noteSL-1@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-1@2x.png",
+      "sha256": "6d1fac5441aaae18313aecfb3b6cd66d8e6cdb66b1ca6f6b0153dd2dcda0f6e0"
+    },
+    "mania-noteSL-2@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-2@2x.png",
+      "sha256": "e9eba56627ac2b36edafc5282f50c70ff76a4438622aa1bcb69fc0fb2a3ca15d"
+    },
+    "mania-noteSL-3@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-3@2x.png",
+      "sha256": "92bfca2be1509807217ae3bc6a3fdc664d94663de4a9953b79d94bac244117ba"
+    },
+    "mania-noteSL-4@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-4@2x.png",
+      "sha256": "e9eba56627ac2b36edafc5282f50c70ff76a4438622aa1bcb69fc0fb2a3ca15d"
+    },
+    "mania-noteSL-5@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-noteSL-5@2x.png",
+      "sha256": "6d1fac5441aaae18313aecfb3b6cd66d8e6cdb66b1ca6f6b0153dd2dcda0f6e0"
+    },
+    "mania-stage-left.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-stage-left.png",
+      "sha256": "da4dd61929bc66d5e71d45d7924e897dab5317b390a79907dd153de5f8cb870d"
+    },
+    "mania-stage-left@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-stage-left@2x.png",
+      "sha256": "fbea1fc71466b89c56b0a74062020b72433d2f70d857bda4da9cf969fd633a08"
+    },
+    "mania-stage-right.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-stage-right.png",
+      "sha256": "7b4080107176178bff2e22604b1445e5e20ff7b23d2be2ac7b99d3794bfec0b1"
+    },
+    "mania-stage-right@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/mania-stage-right@2x.png",
+      "sha256": "c0a5df600bc1c85bbbd117750cc61e24a78bb77016e9b7c66229efb501d40b0c"
+    },
+    "scorebar-bg.png": {
+      "source": "osu-master/osu!gameplay/Resources/scorebar-bg.png",
+      "sha256": "e00654daa07eaa8be65cd60f19e210b898323f2b460ae8dfa7736c0db9e82cfc"
+    },
+    "scorebar-bg@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/scorebar-bg@2x.png",
+      "sha256": "4aa50042178fcc74b0e5463ceced6e12ae811beefa18bd5704ee8547b3053999"
+    },
+    "scorebar-colour.png": {
+      "source": "osu-master/osu!gameplay/Resources/scorebar-colour.png",
+      "sha256": "a643c51e9f63de3823b7c514ee0c257dfabff03c5701f7c2c7aca08a57a42e07"
+    },
+    "scorebar-colour@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/scorebar-colour@2x.png",
+      "sha256": "d40da65e910bc7d7959e15a15322574b20bb618a755b7cb21c8d4679a5e9e645"
+    },
+    "scorebar-marker.png": {
+      "source": "osu-master/osu!gameplay/Resources/scorebar-marker.png",
+      "sha256": "119db373da317ca6b916a0a51dee222975e2f4041536c41f73234c9592bcd7e7"
+    },
+    "scorebar-marker@2x.png": {
+      "source": "osu-master/osu!gameplay/Resources/scorebar-marker@2x.png",
+      "sha256": "7c052a6e62ffd4833a2bc191b86bd7487db8e3e1f924251b4af667741ca0d30f"
+    }
+  }
+}

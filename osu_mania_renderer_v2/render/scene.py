@@ -71,6 +71,41 @@ def build_hold_visual_states(
     return states
 
 
+_HOLD_LIGHT_INTERVALS_CACHE: tuple | None = None
+
+
+def _hold_light_clocks(states, t_ms, key_count):
+    """Presentation intervals from scored hold facts; no key-only activation."""
+    global _HOLD_LIGHT_INTERVALS_CACHE
+    if (_HOLD_LIGHT_INTERVALS_CACHE is None
+            or _HOLD_LIGHT_INTERVALS_CACHE[0] is not states
+            or _HOLD_LIGHT_INTERVALS_CACHE[1] != key_count):
+        columns = [[] for _ in range(key_count)]
+        for (column, note_time), state in states.items():
+            if 0 <= column < key_count:
+                start = max(note_time, state.head_hit_time_ms)
+                stop = state.drop_time_ms if state.drop_time_ms is not None else state.finish_time_ms
+                columns[column].append((start, float("inf") if stop is None else stop))
+        merged = []
+        for intervals in columns:
+            result = []
+            for start, stop in sorted(intervals):
+                if result and start <= result[-1][1]:
+                    result[-1] = (result[-1][0], max(stop, result[-1][1]))
+                else:
+                    result.append((start, stop))
+            merged.append((tuple(v[0] for v in result), tuple(result)))
+        _HOLD_LIGHT_INTERVALS_CACHE = (states, key_count, merged)
+    presses, releases = [-1] * key_count, [-1] * key_count
+    for column, (starts, intervals) in enumerate(_HOLD_LIGHT_INTERVALS_CACHE[2]):
+        index = bisect_right(starts, t_ms) - 1
+        if index >= 0:
+            start, stop = intervals[index]
+            presses[column] = int(t_ms - start)
+            releases[column] = int(t_ms - stop) if t_ms >= stop else -1
+    return presses, releases
+
+
 @dataclass(frozen=True)
 class VisibleNote:
     column: int
@@ -90,6 +125,8 @@ class VisibleNote:
     # Stable masks body + tail at this head's centre; the head is unmasked.
     # After a drop this position moves with the released head.
     hold_clip_head_y_fraction: float | None = None
+    # Presentation clock only: pauses at a factual drop, independent of keys.
+    hold_animation_elapsed_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +239,10 @@ class SceneState:
     # means no release has occurred. Stage-light release presentation uses
     # this exact event-derived age rather than renderer-frame transitions.
     key_release_age_ms: tuple[int, ...] = ()
+    # Factual hold activation/drop clocks for stable LightingL, distinct from
+    # replay key edges (a held empty lane does not light a long note).
+    hold_light_press_age_ms: tuple[int, ...] = ()
+    hold_light_release_age_ms: tuple[int, ...] = ()
     # Per-column cumulative key-press count up to t_ms (rising edges). Drives
     # the bottom-right key counter (lazer's KeyCounterDisplay).
     key_press_counts: tuple[int, ...] = ()
@@ -350,6 +391,11 @@ def snapshot(
                 hold_head_hit=head_hit, hold_active=active,
                 body_head_y_fraction=body_head_y,
                 hold_clip_head_y_fraction=clip_head_y,
+                hold_animation_elapsed_ms=(
+                    max(0.0, min(t_ms, state.drop_time_ms if state.drop_time_ms is not None
+                                  else t_ms) - max(n.time_ms, state.head_hit_time_ms))
+                    if head_hit else 0.0
+                ),
             ))
         else:
             attempt_t = consumed.get((n.column, n.time_ms))
@@ -377,12 +423,15 @@ def snapshot(
                 time_ms=n.time_ms,
             ))
 
+    hold_presses, hold_releases = _hold_light_clocks(hold_states, t_ms, key_count)
     keys_held = _keys_held_at(key_events, t_ms, key_count)
     return SceneState(
         t_ms=t_ms,
         visible_notes=tuple(visible),
         keys_held=keys_held,
         visual_mods=visual_mods,
+        hold_light_press_age_ms=tuple(hold_presses),
+        hold_light_release_age_ms=tuple(hold_releases),
     )
 
 

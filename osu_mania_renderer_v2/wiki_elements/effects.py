@@ -6,6 +6,8 @@ from __future__ import annotations
 
 
 def stage_lights(*, element, skin, assets, variables, ctx) -> None:
+    if not ctx.fr._is_argon_default():
+        return
     if not ctx.options.show_key_overlay:
         return
     # The shared renderer consumes exact replay-derived release ages, keeping
@@ -15,7 +17,8 @@ def stage_lights(*, element, skin, assets, variables, ctx) -> None:
 
 def legacy_hit_lighting(*, element, skin, assets, variables, ctx) -> None:
     """Stable hit effects: all keys/foreground below, legacy judgement above."""
-    ctx.fr._draw_legacy_hit_lighting(ctx.scene)
+    # Drawn by the shared per-stage legacy gameplay compositor.
+    return
 
 
 def flashlight(*, element, skin, assets, variables, ctx) -> None:

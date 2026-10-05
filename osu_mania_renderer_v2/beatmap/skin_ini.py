@@ -36,9 +36,8 @@ Coverage (Phase A — the keys that make a skin "actually take effect"):
     Hit0 / Hit50 / Hit100     → judgement-popup path overrides
     Hit200 / Hit300 / Hit300g
 
-Both 0-indexed and 1-indexed NoteImage{N} / KeyImage{N} are accepted
-(real-world skins disagree with the spec text); 0-indexed wins when
-both are present (matches osu-stable behaviour).
+Image, flip and body-style indices are zero-based; colour indices are one-based,
+as defined by SkinMania. Out-of-range entries are retained but never aliased.
 
 `ColumnColour` from the previous parser was non-standard — dropped.
 
@@ -56,10 +55,10 @@ from pathlib import Path
 # osu-stable's hard-coded fallbacks. Used when a skin.ini omits a key
 # OR when a `Keys: N` block doesn't exist for the chart's keycount.
 DEFAULT_COLOUR              = (0, 0, 0, 255)
-DEFAULT_COLOUR_LIGHT        = (55, 255, 255)
+DEFAULT_COLOUR_LIGHT        = (255, 255, 255)
 DEFAULT_COLOUR_COLUMN_LINE  = (255, 255, 255, 255)
 DEFAULT_COLOUR_BARLINE      = (255, 255, 255, 255)
-DEFAULT_COLOUR_HOLD         = (255, 191, 51, 255)
+DEFAULT_COLOUR_HOLD         = (255, 199, 51, 255)
 DEFAULT_COLOUR_BREAK        = (255, 0, 0)
 LATEST_LEGACY_SKIN_VERSION  = 2.7
 
@@ -81,7 +80,7 @@ class ManiaSection:
     colour_column_line: tuple[int, int, int, int] | None = None
     colour_barline:     tuple[int, int, int, int] | None = None
     colour_hold:        tuple[int, int, int, int] | None = None
-    colour_break:       tuple[int, int, int]      | None = None
+    colour_break:       tuple[int, int, int, int] | None = None
 
     # Per-column sprite overrides. Each maps column-index → relative path
     # (relative to the skin dir). `part` is "head"/"body"/"tail" for the
@@ -130,7 +129,7 @@ class ManiaSection:
     keys_under_notes: bool | None = None      # default 0
     upside_down:      bool | None = None      # default 0
 
-    # Current lazer StageLight FPS: missing => 60, positive => authored value,
+    # Stable StageLight FPS: missing => 60, positive => authored value,
     # and an explicitly zero or negative value => 24.
     light_frame_per_second: int | None = None
 
@@ -156,10 +155,19 @@ class ManiaSection:
     # A non-positive or absent value selects the smallest column width.
     width_for_note_height_scale: float | None = None
 
-    # Stable presentation topology; absent SplitStages selects >10/KC auto.
+    # Stable presentation topology; absent SplitStages selects >=10/KC auto.
     split_stages: bool | None = None
     stage_separation: float | None = None
     separate_score: bool | None = None
+    judgement_line: bool | None = None
+    colour_judgement_line: tuple[int, int, int, int] | None = None
+    colour_key_warning: tuple[int, int, int, int] | None = None
+    # Stable's nullable flip dictionary. Note parts are independent, except
+    # that H defaults to the already-resolved tap flip (HitCircleManiaLong).
+    key_flip_when_upside_down: bool | None = None
+    key_flip_by_column: dict[int, bool] = field(default_factory=dict)
+    note_flip_when_upside_down: dict[str, bool] = field(default_factory=dict)
+    note_flip_by_column: dict[tuple[int, str], bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -210,6 +218,7 @@ _KEY_IMAGE_RE  = re.compile(r"^KeyImage(\d+)(D)?$",      re.IGNORECASE)
 _COLOUR_N_RE   = re.compile(r"^Colour(\d+)$",            re.IGNORECASE)
 _COLOUR_LIGHT_RE = re.compile(r"^ColourLight(\d+)$",     re.IGNORECASE)
 _NOTE_BODY_STYLE_RE = re.compile(r"^NoteBodyStyle(\d+)$", re.IGNORECASE)
+_FLIP_RE = re.compile(r"^(Key|Note)FlipWhenUpsideDown(\d+)?([HLT])?$", re.IGNORECASE)
 _HIT_RE        = re.compile(r"^Hit(0|50|100|200|300|300g)$", re.IGNORECASE)
 
 
@@ -356,7 +365,7 @@ class _ManiaBuilder:
         self.colour_column_line: tuple[int, int, int, int] | None = None
         self.colour_barline:     tuple[int, int, int, int] | None = None
         self.colour_hold:        tuple[int, int, int, int] | None = None
-        self.colour_break:       tuple[int, int, int]      | None = None
+        self.colour_break:       tuple[int, int, int, int] | None = None
 
         self.note_image:   dict[int, str] = {}
         self.note_image_h: dict[int, str] = {}
@@ -404,14 +413,46 @@ class _ManiaBuilder:
         self.split_stages: bool | None = None
         self.stage_separation: float | None = None
         self.separate_score: bool | None = None
+        self.judgement_line: bool | None = None
+        self.colour_judgement_line = None
+        self.colour_key_warning = None
+        self.key_flip_when_upside_down = None
+        self.key_flip_by_column = {}
+        self.note_flip_when_upside_down = {}
+        self.note_flip_by_column = {}
 
     def consume(self, key: str, value: str) -> None:
         lk = key.lower()
         if lk == "keys":
             try:
-                self.keys = int(value)
+                self.keys = int(value) if 0 <= int(value) <= 18 else 0
             except ValueError:
                 pass
+            return
+
+        m = _FLIP_RE.fullmatch(key)
+        if m:
+            kind, number, part = m.groups()
+            part = (part or "").upper()
+            parsed = _parse_bool(value)
+            if parsed is not None:
+                if kind.lower() == "key" and not part:
+                    if number is None:
+                        self.key_flip_when_upside_down = parsed
+                    else:
+                        self.key_flip_by_column[int(number)] = parsed
+                elif kind.lower() == "note":
+                    if number is None:
+                        self.note_flip_when_upside_down[part] = parsed
+                    else:
+                        self.note_flip_by_column[(int(number), part)] = parsed
+            return
+        if lk == "judgementline":
+            self.judgement_line = _parse_bool(value)
+            return
+        if lk in ("colourjudgementline", "colourkeywarning"):
+            setattr(self, "colour_judgement_line" if lk == "colourjudgementline"
+                    else "colour_key_warning", _parse_rgba(value))
             return
 
         # Per-column sprite overrides.
@@ -465,7 +506,7 @@ class _ManiaBuilder:
             self.colour_hold = _parse_rgba(value)
             return
         if lk == "colourbreak":
-            self.colour_break = _parse_rgb(value)
+            self.colour_break = _parse_rgba(value)
             return
 
         # Judgement popups.
@@ -545,7 +586,7 @@ class _ManiaBuilder:
             self.combo_position = _parse_int(value)
             return
         if lk == "specialstyle":
-            self.special_style = _parse_int(value)
+            self.special_style = {"none": 0, "left": 1, "right": 2}.get(value.lower(), _parse_int(value))
             return
         if lk == "keysundernotes":
             self.keys_under_notes = _parse_bool(value)
@@ -617,6 +658,13 @@ class _ManiaBuilder:
             split_stages=self.split_stages,
             stage_separation=self.stage_separation,
             separate_score=self.separate_score,
+            judgement_line=self.judgement_line,
+            colour_judgement_line=self.colour_judgement_line,
+            colour_key_warning=self.colour_key_warning,
+            key_flip_when_upside_down=self.key_flip_when_upside_down,
+            key_flip_by_column=dict(self.key_flip_by_column),
+            note_flip_when_upside_down=dict(self.note_flip_when_upside_down),
+            note_flip_by_column=dict(self.note_flip_by_column),
         )
 
 
@@ -624,21 +672,7 @@ class _ManiaBuilder:
 
 
 def _normalize_column_index(raw: int) -> int:
-    """osu!'s `Colour#` is documented as 1-indexed, but `KeyImage#` and
-    `NoteImage#` in real skins are commonly 0-indexed. osu-stable
-    accepts both. We always store 0-indexed internally.
-
-    Per spec text: if a skin has both `Colour0` and `Colour1` we treat
-    them as the same column, with the lower value (0-indexed) winning.
-    The renderer's consumers should fall back to defaults for any
-    missing column anyway, so the only effective difference is whether
-    `Colour1` means "first column" or "second column".
-
-    Pragmatic rule: any index `>= keys` is normalised down by 1 (treat
-    as 1-indexed); anything `< keys` stays as-is (treat as 0-indexed).
-    Since we don't yet know `keys` at parse time, we keep the raw value
-    and let the consumer handle indexing — this function is a no-op for
-    now but reserved for the consumer-side normalisation pass."""
+    """Preserve the authored index; each field has its own stable base."""
     return int(raw)
 
 
@@ -659,16 +693,17 @@ def _parse_rgb(value: str) -> tuple[int, int, int] | None:
 def _parse_rgba(value: str) -> tuple[int, int, int, int] | None:
     """Parse `r,g,b` (alpha defaults to 255) or `r,g,b,a`."""
     parts = [p.strip() for p in value.split(",")]
-    if len(parts) < 3:
+    if len(parts) not in (3, 4):
         return None
     try:
         r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
-        a = int(parts[3]) if len(parts) >= 4 else 255
+        a = int(parts[3]) if len(parts) == 4 else 255
     except ValueError:
         return None
-    if not all(0 <= c <= 255 for c in (r, g, b, a)):
+    # Section.ConvertString converts Int32 then casts to byte (unchecked).
+    if not all(-(2 ** 31) <= c < 2 ** 31 for c in (r, g, b, a)):
         return None
-    return r, g, b, a
+    return tuple(c & 255 for c in (r, g, b, a))
 
 
 def _parse_int(value: str) -> int | None:
@@ -689,11 +724,12 @@ def _parse_bool(value: str) -> bool | None:
     """Parse osu!'s 0/1 booleans. Returns None on bad input so consumers
     can distinguish `unset` from `explicitly false`."""
     v = value.strip().lower()
-    if v in ("1", "true", "yes"):
+    if v == "true":
         return True
-    if v in ("0", "false", "no"):
+    if v == "false":
         return False
-    return None
+    number = _parse_int(v)
+    return bool(number) if number is not None else None
 
 
 def _parse_csv_ints(value: str) -> tuple[int, ...]:

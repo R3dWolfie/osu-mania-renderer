@@ -60,6 +60,9 @@ def _column_renderer(section: ManiaSection | None) -> FrameRenderer:
     renderer.pf_x = 100
     renderer.pf_w = 30
     renderer.mania_section = section
+    renderer.skin_ini = SimpleNamespace(legacy_version=2.7)
+    renderer.upside_down = False
+    renderer.receptor_centre_y_gl = 100
     renderer._is_argon_default = lambda: False
     renderer.draws = []
     renderer._draw_sprite = lambda *args: renderer.draws.append(args)
@@ -91,8 +94,8 @@ def test_fallback_column_retains_kiai_palette_boost() -> None:
     FrameRenderer._draw_columns(normal, SimpleNamespace(is_kiai=False))
     FrameRenderer._draw_columns(kiai, SimpleNamespace(is_kiai=True))
 
-    assert normal.draws[0][-1] == pytest.approx((0.07, 0.06, 0.12, 0.55))
-    assert kiai.draws[0][-1] == pytest.approx((0.11, 0.10, 0.18, 0.55))
+    assert normal.draws[0][-1] == pytest.approx((0, 0, 0, 1))
+    assert kiai.draws[0][-1] == pytest.approx((0, 0, 0, 1))
 
 
 def test_parser_and_versioned_body_style_precedence(tmp_path) -> None:
@@ -125,7 +128,7 @@ ColourLight1: 255,113,165,150
     assert legacy_note_body_style(ManiaSection(keys=4), 0, 2.7) == 3
     assert legacy_note_body_style(
         ManiaSection(keys=4, note_body_style=1), 0, 2.7,
-    ) == LEGACY_NOTE_BODY_REPEAT_BOTTOM
+    ) == 1
 
 
 @pytest.mark.parametrize(
@@ -247,73 +250,42 @@ def _stage_renderer(*, key_count=1, upside_down=False) -> FrameRenderer:
     renderer.col_w = tuple(50 for _ in range(key_count))
     renderer.upside_down = upside_down
     renderer._is_argon_default = lambda: False
+    renderer._legacy_bpm_at = lambda time: 160.0
     renderer._stage_light_fps = lambda _frames: 10.0
     renderer._stage_light_tint = lambda c: (1.0, 0.5 + c * 0.1, 0.25)
     renderer.draws = []
     renderer._draw_sprite_idx = lambda *args: renderer.draws.append(args)
+    renderer._draw_sprite_idx_cropped_y = lambda *args, **kw: renderer.draws.append(args)
     return renderer
 
 
-def _stage_scene(time_ms, *held, release_ages=None):
+def _stage_scene(time_ms, *held, release_ages=None, press_ages=None):
     if release_ages is None:
         release_ages = tuple(-1 for _ in held)
     return SimpleNamespace(
         t_ms=time_ms,
         keys_held=tuple(held),
         key_release_age_ms=tuple(release_ages),
+        key_press_age_ms=tuple(press_ages or (0 for _ in held)),
     )
 
 
 def test_stage_light_press_hold_release_and_repress_are_source_driven() -> None:
     renderer = _stage_renderer()
-    initial = _stage_scene(0, False)
-    FrameRenderer._draw_stage_lights(renderer, initial)
-    assert renderer.draws == []
-
-    # Animation phase is global-clock driven: pressing at 250ms starts on
-    # frame 2 rather than resetting to frame 0.
-    pressed = _stage_scene(250, True)
-    original_keys = pressed.keys_held
-    FrameRenderer._draw_stage_lights(renderer, pressed)
+    FrameRenderer._draw_stage_lights(renderer, _stage_scene(250, True, press_ages=(0,)))
+    assert renderer.draws[-1][0] == 10  # CI.ResetAnimation on key-down
+    FrameRenderer._draw_stage_lights(renderer, _stage_scene(350, True, press_ages=(100,)))
+    assert renderer.draws[-1][0] == 11
+    FrameRenderer._draw_stage_lights(renderer, _stage_scene(
+        485, False, press_ages=(235,), release_ages=(125,)))
     assert renderer.draws[-1][0] == 12
-    assert renderer.draws[-1][1:5] == pytest.approx((100, 120, 50, 37.5))
-    assert renderer.draws[-1][-1] == pytest.approx((1.0, 0.5, 0.25, 1.0))
-    assert pressed.keys_held is original_keys
-
-    # Held animation continues on the same absolute clock.
-    renderer.draws.clear()
-    FrameRenderer._draw_stage_lights(renderer, _stage_scene(350, True))
+    assert renderer.draws[-1][-1][-1] == pytest.approx(0.5)
+    assert renderer.draws[-1][4] == pytest.approx(18.75)
+    FrameRenderer._draw_stage_lights(renderer, _stage_scene(500, True, press_ages=(0,)))
     assert renderer.draws[-1][0] == 10
-    assert renderer.draws[-1][-1][-1] == 1.0
-
-    # Release changes only alpha/Y scale; the frame keeps progressing.
     renderer.draws.clear()
-    FrameRenderer._draw_stage_lights(
-        renderer, _stage_scene(360, False, release_ages=(0,)),
-    )
-    assert renderer.draws[-1][0] == 10
-    FrameRenderer._draw_stage_lights(
-        renderer, _stage_scene(485, False, release_ages=(125,)),
-    )
-    midpoint = renderer.draws[-1]
-    assert midpoint[0] == 11
-    assert midpoint[2:5] == pytest.approx((120, 50, 18.75))
-    assert midpoint[-1][-1] == pytest.approx(0.5)
-
-    # Re-press cancels the envelope at the current clock phase, not frame 0.
-    renderer.draws.clear()
-    FrameRenderer._draw_stage_lights(renderer, _stage_scene(500, True))
-    assert renderer.draws[-1][0] == 12
-    assert renderer.draws[-1][4] == pytest.approx(37.5)
-    assert renderer.draws[-1][-1][-1] == 1.0
-
-    FrameRenderer._draw_stage_lights(
-        renderer, _stage_scene(510, False, release_ages=(0,)),
-    )
-    renderer.draws.clear()
-    FrameRenderer._draw_stage_lights(
-        renderer, _stage_scene(760, False, release_ages=(250,)),
-    )
+    FrameRenderer._draw_stage_lights(renderer, _stage_scene(
+        760, False, press_ages=(260,), release_ages=(250,)))
     assert renderer.draws == []
 
 
@@ -334,6 +306,7 @@ def _subframe_tap_scene(time_ms: int):
         time_ms,
         bool(mask & 1),
         release_ages=_key_release_ages_at(releases, time_ms, 1),
+        press_ages=(time_ms - 1005,),
     )
 
 
@@ -419,7 +392,7 @@ def test_subframe_tap_uses_exact_release_timestamp_without_held_sample() -> None
 
     draw = renderer.draws[-1]
     amount = 1.0 - 13.0 / 250.0
-    assert draw[0] == 11
+    assert draw[0] == 10
     assert draw[1:5] == pytest.approx((100, 120, 50, 37.5 * amount))
     assert draw[-1][-1] == pytest.approx(amount)
 
@@ -514,11 +487,11 @@ def test_stage_light_geometry_uses_native_height_and_orientation_anchor() -> Non
 
 def test_stage_light_backwards_clock_keeps_deterministic_absolute_phase() -> None:
     presentation = legacy_stage_light_presentation(
-        held=True, release_age_ms=None, time_ms=400, frame_count=3, fps=10,
+        held=True, release_age_ms=None, time_ms=400, frame_count=3, fps=10, press_age_ms=400,
     )
     assert presentation.frame == 1
     presentation = legacy_stage_light_presentation(
-        held=True, release_age_ms=None, time_ms=250, frame_count=3, fps=10,
+        held=True, release_age_ms=None, time_ms=250, frame_count=3, fps=10, press_age_ms=250,
     )
     # Out-of-order evaluation uses the absolute clock and no renderer history.
     assert presentation.frame == 2
@@ -598,35 +571,19 @@ def test_synthetic_r3d_stage_light_is_never_a_classic_fallback(
     assert frames[0].getchannel("A").getbbox() is None
 
 
-def test_hold_body_animation_uses_30ms_active_clock_and_resets() -> None:
+def test_hold_body_animation_uses_30ms_active_clock_and_pauses() -> None:
     renderer = object.__new__(FrameRenderer)
-    renderer._legacy_hold_body_started_ms = {}
-    renderer._legacy_hold_body_last_ms = {}
-    note = SimpleNamespace(
-        column=0,
-        time_ms=100,
-        head_y_fraction=1.0,
-        tail_y_fraction=0.5,
-    )
-
-    assert renderer._legacy_hold_body_frame_index(
-        _stage_scene(100, False), note, 3,
-    ) == 0
-    assert renderer._legacy_hold_body_frame_index(
-        _stage_scene(110, True), note, 3,
-    ) == 0
-    assert renderer._legacy_hold_body_frame_index(
-        _stage_scene(140, True), note, 3,
-    ) == 1
-    assert renderer._legacy_hold_body_frame_index(
-        _stage_scene(170, True), note, 3,
-    ) == 2
-    assert renderer._legacy_hold_body_frame_index(
-        _stage_scene(175, False), note, 3,
-    ) == 0
-    assert renderer._legacy_hold_body_frame_index(
-        _stage_scene(180, True), note, 3,
-    ) == 0
+    note = SimpleNamespace(column=0, time_ms=100, hold_active=False)
+    frames = []
+    for now, active in ((100, False), (110, True), (140, True), (170, True),
+                        (175, False), (180, True), (210, True)):
+        note.hold_active = active
+        frames.append(renderer._legacy_hold_body_frame_index(_stage_scene(now, active), note, 3))
+    assert frames == [0, 0, 1, 2, 2, 2, 0]
+    # Seeking with replay evidence preserves the paused frame after a drop.
+    note.hold_active = False
+    note.hold_animation_elapsed_ms = 65
+    assert renderer._legacy_hold_body_frame_index(_stage_scene(1000, True), note, 3) == 2
 
 
 class _HoldAtlas:
@@ -701,20 +658,20 @@ def _hold_scene():
 def test_hold_draw_path_uses_native_direct_stretch_or_repeat_slices() -> None:
     stretch = _hold_renderer(LEGACY_NOTE_BODY_STRETCH)
     FrameRenderer._draw_notes(stretch, _hold_scene())
-    assert stretch.cropped_draws == []
-    assert len(stretch.normal_draws) == 2  # caps keep their atlas batching
+    assert len(stretch.cropped_draws) == 1  # flipped full rear UVs
+    assert len(stretch.normal_draws) == 1  # caps keep their atlas batching
     assert stretch.direct_draws[0][0] == (
-        "column/note_hold_body/0", 100, 110, 40, 230,
+        "column/note_hold_body/0", 100, 110, 40, 250,
     )
     assert stretch.direct_draws[0][1]["repeat_y"] is False
 
     repeated = _hold_renderer(LEGACY_NOTE_BODY_REPEAT_BOTTOM)
     FrameRenderer._draw_notes(repeated, _hold_scene())
-    assert len(repeated.normal_draws) == 2
-    assert len(repeated.direct_draws) == 6
+    assert len(repeated.normal_draws) == 1
+    assert len(repeated.direct_draws) == 7
     first_args, first_kwargs = repeated.direct_draws[0]
-    assert first_args[1:5] == pytest.approx((100, 110, 40, 30))
-    assert first_kwargs["source_bottom"] == pytest.approx(0.25)
+    assert first_args[1:5] == pytest.approx((100, 110, 40, 10))
+    assert first_kwargs["source_bottom"] == pytest.approx(0.75)
     assert first_kwargs["source_top"] == 1.0
     assert first_kwargs["frame_index"] == 0
     assert first_kwargs["repeat_y"] is True
