@@ -30,6 +30,11 @@ ppy Pty Ltd — official osu! default resources
       https://github.com/ppy/osu-resources/blob/master/LICENCE.md
       https://creativecommons.org/licenses/by-nc/4.0/
 
+    osu_mania_renderer_v2/assets/default_hitsounds/combobreak.mp3 is the
+    unmodified official default combo-break sample from the same archive.
+    Its source and hash are in assets/default_hitsounds/provenance.json.
+    It retains the same separate upstream resource terms above.
+
     osu_mania_renderer_v2/assets/sprites/classic_stage_light@2x.png is an
     unmodified copy of osu.Game.Resources/Skins/Legacy/mania-stage-light@2x.png
     from github.com/ppy/osu-resources (commit 5150ba1a343997ecb77662125bd2622d0600c039).

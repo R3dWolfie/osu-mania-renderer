@@ -65,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hitsound-volume", type=int, default=None,
                    help="hitsound volume 0-100 (default: 100)")
     p.add_argument("--combo-break-threshold", type=int, default=None,
-                   help="combo at which 'break' SFX plays on miss (default: 20)")
+                   help="play break SFX when old combo exceeds N (default: 20; lazer also plays its first break)")
     p.add_argument("--audio-fade-out-ms", type=int, default=None,
                    help="end-of-song audio fade duration (default: 600)")
     p.add_argument("--no-hp-bar",       action="store_true", help="hide HP bar")

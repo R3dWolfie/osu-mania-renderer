@@ -1,0 +1,11 @@
+{
+  "authority": "Official osu! default combo-break audio, unmodified bytes from readable stable archive.",
+  "license": "CC BY-NC 4.0 (ppy osu-resources)",
+  "files": {
+    "combobreak.mp3": {
+      "source": "osu-master/osu!gameplay/Resources/combobreak.mp3",
+      "source_revision": "6f28dcad010f2f0174c4a6b3624f9929611cb266",
+      "sha256": "6399731b7eac8bf80de4121e0257f1e4416e871b3ed9c3523da236dbbe8ffddc"
+    }
+  }
+}

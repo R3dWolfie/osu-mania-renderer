@@ -20,8 +20,7 @@ from osu_mania_renderer_v2.errors import RendererError
 
 log = logging.getLogger("osu_mania_renderer_v2.render.hitsounds")
 
-COMBO_BREAK_THRESHOLD = 20
-COMBO_BREAK_GAIN = 0.26  # Existing R3D combo-break mix preference.
+COMBO_BREAK_GAIN = 1.0  # AudioEngine.PlaySample / lazer SampleInfo default volume.
 _SET_NAMES = {1: "normal", 2: "soft", 3: "drum"}
 _ADDITIONS = ((2, "whistle"), (4, "finish"), (8, "clap"))
 _DEFAULT_HITSOUND_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_hitsounds"
@@ -143,7 +142,7 @@ def _sample_gain(volume: int, type_name: str, *, is_lazer_replay: bool) -> float
 def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
                               *, is_lazer_replay: bool = False) -> list[SampleLayer]:
     sample = note.hit_sample
-    tp = _active_timing_point(beatmap.timing_points, note.time_ms)
+    tp = _active_timing_point(beatmap.timing_points, note.time_ms + (0 if is_lazer_replay else 2))
     effective_set = sample.normal_set or (tp.sample_set if tp else 0)
     effective_index = sample.index or (tp.custom_index if tp else 0)
     set_name = _SET_NAMES.get(effective_set, beatmap.default_sample_set.lower())
@@ -217,9 +216,41 @@ def _stable_sound_events(judgments_events, notes, audio_rate: float):
                 heads.get((event.column, event.time_ms)), silent_node=event.is_tail)
 
 
-def _find_combobreak_sample(beatmap_dir: Path, skin_dirs: tuple[Path, ...]) -> Path | None:
-    for directory in (beatmap_dir, *skin_dirs):
-        for ext in ("wav", "ogg"):
+def _stable_source_sound_events(facts, notes, audio_rate):
+    parents = {(n.column, n.time_ms / audio_rate): n for n in notes}
+    for fact in facts:
+        note = parents.get((fact.column, fact.object_time_ms))
+        if fact.source == "final" and isinstance(note, HoldNote):
+            # Converted stable long notes have an audible end by default;
+            # this is independent of lazer's optional/empty tail node.
+            note = Note(note.column, note.end_time_ms,
+                        note.tail_hit_sound if note.tail_hit_sample is not None else note.hit_sound,
+                        note.tail_hit_sample or note.hit_sample)
+        yield ReplaySoundEvent(fact.time_ms, "sound", note)
+
+
+def _combo_break_times(facts, *, is_lazer_replay, threshold=20, mods=0):
+    """Only real combo transitions reset/play; repeated zero resets are silent."""
+    combo = 0
+    first_break = True
+    disabled = not is_lazer_replay and mods & ((1 << 7) | (1 << 13))  # Relax / Autopilot
+    for fact in facts:
+        if fact.kind == "increment":
+            combo += 1
+        elif fact.kind == "reset":
+            old_combo, combo = combo, 0
+            if old_combo == 0:
+                continue
+            play = old_combo > max(0, threshold) or (is_lazer_replay and first_break)
+            first_break = False
+            if play and not disabled:
+                yield fact.time_ms
+
+
+def _find_combobreak_sample(beatmap_dir: Path | None, skin_dirs: tuple[Path, ...]) -> Path | None:
+    directories = ((beatmap_dir,) if beatmap_dir is not None else ()) + skin_dirs + (_DEFAULT_HITSOUND_DIR,)
+    for directory in directories:
+        for ext in ("wav", "ogg", "mp3"):
             path = directory / f"combobreak.{ext}"
             if path.is_file():
                 return path
@@ -268,10 +299,12 @@ def _mix_blocks(placements, total_samples: int, chunk_frames: int):
 
 def build_hitsound_track(
     *, judgments_events=(), lazer_facts=None, is_lazer_replay: bool = False,
+    stable_sound_facts=None, combo_facts=None, combo_break_sound: bool = True,
+    combo_break_threshold: int = 20, mods: int = 0,
     sample_notes=None, beatmap, beatmap_dir: Path, output_wav: Path, duration_ms: int,
     target_sample_rate: int = 44100, audio_rate: float = 1.0,
-    skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True,
-    miss_hitsound: bool = True, nightcore: bool = False, nc_mod: bool = False,
+    skin_dirs: tuple[Path, ...] = (), overlay_skin_dirs: tuple[Path, ...] | None = None,
+    beatmap_hitsounds: bool = True, miss_hitsound: bool = True, nightcore: bool = False, nc_mod: bool = False,
     gameplay_end_ms: float | None = None, chunk_frames: int = 16384,
 ) -> Path:
     """Stream gameplay and overlay samples into an atomic stereo PCM WAV.
@@ -287,27 +320,26 @@ def build_hitsound_track(
         raise RendererError("Lazer replay hitsounds require source-factual gameplay events.")
     notes = beatmap.notes if sample_notes is None else sample_notes
     events = (_lazer_sound_events(lazer_facts, notes, audio_rate) if is_lazer_replay
+              else _stable_source_sound_events(stable_sound_facts, notes, audio_rate)
+              if stable_sound_facts is not None
               else _stable_sound_events(judgments_events, notes, audio_rate))
     # The old stable compatibility carrier is in scheduled-note order.
     events = sorted(events, key=lambda event: event.time_ms)
     total_samples = int(duration_ms / 1000 * target_sample_rate)
-    cb_path = _find_combobreak_sample(beatmap_dir, skin_dirs) if miss_hitsound else None
+    combo_events = (combo_facts if combo_facts is not None else lazer_facts if is_lazer_replay else events)
+    cb_path = (_find_combobreak_sample(beatmap_dir if beatmap_hitsounds else None, skin_dirs)
+               if miss_hitsound and combo_break_sound else None)
     cb_sample = cache.get(cb_path) if cb_path is not None else None
     counts = dict(eligible_hit_events=0, resolved_hit_events=0, resolved_sample_layers=0,
                   unresolved_hit_events=0, mixed_sample_layers=0, combo_break_layers=0,
                   silent_node_events=0, zero_gain_hit_events=0, nightcore_beats=0, nc_mod_beats=0)
 
     def gameplay_layers():
-        combo = 0
         for event in events:
             start = int(event.time_ms / 1000 * target_sample_rate)
             in_range = 0 <= start < total_samples
             if event.kind == "reset":
-                if in_range and cb_sample is not None and combo >= COMBO_BREAK_THRESHOLD:
-                    yield SamplePlacement(start, cb_sample, COMBO_BREAK_GAIN, "combo_break")
-                combo = 0
                 continue
-            combo += 1
             if not in_range:
                 continue
             if event.silent_node:
@@ -326,17 +358,27 @@ def build_hitsound_track(
             for layer in layers:
                 yield SamplePlacement(start, layer.samples, layer.gain)
 
-    overlays = (_nightcore_layers(beatmap.timing_points, cache, skin_dirs,
+    def combo_layers():
+        if cb_sample is None:
+            return
+        for time_ms in _combo_break_times(combo_events, is_lazer_replay=is_lazer_replay,
+                                          threshold=combo_break_threshold, mods=mods):
+            start = int(time_ms / 1000 * target_sample_rate)
+            if 0 <= start < total_samples:
+                yield SamplePlacement(start, cb_sample, COMBO_BREAK_GAIN, "combo_break")
+
+    overlay_dirs = skin_dirs if overlay_skin_dirs is None else overlay_skin_dirs
+    overlays = (_nightcore_layers(beatmap.timing_points, cache, overlay_dirs,
         target_sample_rate, duration_ms, gameplay_end_ms=gameplay_end_ms)
         if nightcore and not nc_mod else ())
-    nc_layers = (_nightcore_mod_layers(beatmap.timing_points, cache, skin_dirs,
+    nc_layers = (_nightcore_mod_layers(beatmap.timing_points, cache, overlay_dirs,
         target_sample_rate, duration_ms, audio_rate, play_hats=True,
         gameplay_end_ms=gameplay_end_ms) if nc_mod else ())
 
     def counted_placements():
         count_key = {"gameplay": "mixed_sample_layers", "combo_break": "combo_break_layers",
                      "nightcore": "nightcore_beats", "nc_mod": "nc_mod_beats"}
-        for placement in merge(gameplay_layers(), overlays, nc_layers, key=lambda p: p.start):
+        for placement in merge(gameplay_layers(), combo_layers(), overlays, nc_layers, key=lambda p: p.start):
             counts[count_key[placement.kind]] += 1
             yield placement
 

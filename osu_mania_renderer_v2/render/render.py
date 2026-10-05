@@ -122,17 +122,6 @@ def mods_score_multiplier(mods: int) -> float:
 _SD_ACC_WEIGHT: dict[str, int] = {"300": 300, "katu": 200, "100": 100,
                                   "50": 50, "miss": 0}
 
-# Default skin location on the host (Night05 lives here, including a
-# combobreak.wav). The renderer treats it as a fallback for samples
-# missing in the beatmap dir.
-_DEFAULT_SKIN_DIRS = (
-    Path("/var/mnt/Synology-Reddie/Mania ORDR Bot/skins/_default/_default-source"),
-    Path("/var/mnt/Synology-Reddie/Mania ORDR Bot/skins/_default-source"),
-    Path("/var/mnt/ASUStor-Samsung/R3DManiaORDRBot/skins/_default/_default-source"),
-    Path("/var/mnt/ASUStor-Samsung/R3DManiaORDRBot/skins/_default"),
-)
-
-
 @dataclass
 class RenderPlan:
     """Everything computed once per render, before the per-frame loop.
@@ -271,6 +260,7 @@ async def build_render_plan(
         od=beatmap.overall_difficulty, source_mode=beatmap.source_mode,
         mods=replay.mods, rate=mod_res.audio_rate,
         include_combo=not replay.is_lazer_replay and mod_res.audio_rate == 1,
+        include_audio=not replay.is_lazer_replay,
     )
     if not replay.is_lazer_replay and mod_res.audio_rate != 1:
         # Reuse the SAME source state machine in original integer audio time.
@@ -282,11 +272,15 @@ async def build_render_plan(
         audio_evidence = build_legacy_mania_presentation(
             audio_notes, audio_key_events, modded.key_count,
             od=beatmap.overall_difficulty, source_mode=beatmap.source_mode,
-            mods=replay.mods, rate=mod_res.audio_rate, timeline_rate=1, include_combo=True,
+            mods=replay.mods, rate=mod_res.audio_rate, timeline_rate=1, include_combo=True, include_audio=True,
         )
         legacy_presentation = _dc_replace(legacy_presentation, stable_combo_facts=tuple(
             _dc_replace(fact, time_ms=fact.time_ms / mod_res.audio_rate)
             for fact in audio_evidence.stable_combo_facts
+        ), sound_facts=tuple(
+            _dc_replace(fact, time_ms=fact.time_ms / mod_res.audio_rate,
+                        object_time_ms=fact.object_time_ms / mod_res.audio_rate)
+            for fact in audio_evidence.sound_facts
         ))
     stable_combo_timeline = (None if replay.is_lazer_replay else
                              StableComboTimeline.build(legacy_presentation.stable_combo_facts))
@@ -516,17 +510,25 @@ async def build_render_plan(
         require_hitsound_runtime()
     if audio_path is not None and audio_features_requested:
         skin_dirs: list[Path] = []
+        overlay_skin_dirs: list[Path] = []
         # NC-mod samples come from the SKIN, so include the user skin whenever
         # the NC overlay is active even if skin hitsounds are otherwise off.
         if ((options.use_skin_hitsounds or _nc_mod)
                 and skin_dir is not None and skin_dir.is_dir()):
-            skin_dirs.append(skin_dir)
-        skin_dirs.extend(p for p in _DEFAULT_SKIN_DIRS if p.is_dir())
+            overlay_skin_dirs.append(skin_dir)
+            if options.use_skin_hitsounds:
+                skin_dirs.append(skin_dir)
         hitsound_wav = build_hitsound_track(
             judgments_events=judgments.events if options.use_replay_hitsounds else (),
             lazer_facts=(lazer_combo_timeline.facts if options.use_replay_hitsounds else ())
                 if lazer_combo_timeline is not None else None,
             is_lazer_replay=replay.is_lazer_replay,
+            stable_sound_facts=legacy_presentation.sound_facts if options.use_replay_hitsounds else (),
+            combo_facts=((lazer_combo_timeline or stable_combo_timeline).facts
+                         if options.use_replay_hitsounds else ()),
+            combo_break_sound=options.combo_break_sound,
+            combo_break_threshold=options.combo_break_threshold,
+            mods=replay.mods,
             sample_notes=tuple(_dc_replace(raw, column=display.column)
                                for raw, display in zip(beatmap.notes, modded.notes)),
             beatmap=modded,
@@ -535,6 +537,7 @@ async def build_render_plan(
             duration_ms=total_video_ms,
             audio_rate=mod_res.audio_rate,
             skin_dirs=tuple(skin_dirs),
+            overlay_skin_dirs=tuple(overlay_skin_dirs),
             beatmap_hitsounds=options.beatmap_hitsounds,
             miss_hitsound=options.miss_hitsound,
             nightcore=options.nightcore_hitsounds,

@@ -61,7 +61,7 @@ def test_long_actual_builder_streams_and_cleans_partial_output(tmp_path, oracle,
     monkeypatch.setattr(sf,'SoundFile',Sink)
     with pytest.raises(RendererError,match='stress sink stop'):
         hs.build_hitsound_track(beatmap=beatmap,beatmap_dir=tmp_path,lazer_facts=(fact(100,100),),
-            is_lazer_replay=True,output_wav=tmp_path/'long.wav',duration_ms=6*3600*1000)
+            is_lazer_replay=True,output_wav=tmp_path/'long.wav',duration_ms=6*3600*1000,miss_hitsound=False)
     assert not list(tmp_path.glob('long.wav*'))
 
 

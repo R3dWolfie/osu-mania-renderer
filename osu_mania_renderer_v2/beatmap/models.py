@@ -248,6 +248,8 @@ class RenderOptions:
     # Audio toggles
     normalize_loudness: bool = True
     audio_fade_out_ms: int = 600
+    # Both this and miss_hitsound must be enabled. Threshold is strict >;
+    # lazer also plays its first nonzero-to-zero combo transition.
     combo_break_sound: bool = True
     combo_break_threshold: int = 20
     # When False, skips the per-note hitsound dub entirely (just the song).
@@ -264,7 +266,7 @@ class RenderOptions:
     # samples play instead.
     beatmap_hitsounds: bool = True
     # Miss / combo-break hitsound (default on): off silences the
-    # combobreak.wav that plays on a break of >= 20 combo.
+    # combobreak sample (compatibility alias for combo_break_sound).
     miss_hitsound: bool = True
     # Combo color source for note tints when an .osk is loaded.
     #   "beatmap" — use Beatmap.colours

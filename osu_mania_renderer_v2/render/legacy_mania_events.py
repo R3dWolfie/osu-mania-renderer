@@ -51,6 +51,16 @@ class LegacyHitLightFact:
 
 
 @dataclass(frozen=True)
+class StableSoundFact:
+    """An actual PlaySound/SoundStart call, before score/header reconciliation."""
+
+    time_ms: float
+    column: int
+    object_time_ms: float  # parent start, including final LN calls
+    source: str  # tap / head / final
+
+
+@dataclass(frozen=True)
 class LegacyLongLightState:
     animation_age_ms: float = -1
     alpha: float = 0
@@ -77,6 +87,7 @@ class LegacyManiaPresentation:
     sliding_intervals: tuple[tuple[float, float], ...] = ()
     rate: float = 1
     stable_combo_facts: tuple[StableComboFact, ...] = ()
+    sound_facts: tuple[StableSoundFact, ...] = ()
 
     def long_lights_at(self, t_ms: float):
         result = []
@@ -145,7 +156,7 @@ class _NoteLifecycle:
 def build_legacy_mania_presentation(
     notes: tuple[Note | HoldNote, ...], key_events: tuple[KeyEvent, ...], key_count: int,
     *, od: float = 5, source_mode: int = 3, mods: int = 0, rate: float = 1,
-    include_combo: bool = False,
+    include_combo: bool = False, include_audio: bool = False,
     timeline_rate: float | None = None,
 ) -> LegacyManiaPresentation:
     """Replay stable's input branches and automatic gates once, in source order.
@@ -178,6 +189,7 @@ def build_legacy_mania_presentation(
     next_note = 0
     active = []
     combo_facts = []
+    sound_facts = []
     pending = list(ticks)
     # Presentation update times are unchanged. Extra logical Holding updates
     # only advance the combo clock; they cannot mutate Round 3.5 presentation.
@@ -217,6 +229,15 @@ def build_legacy_mania_presentation(
     def hit(state, now):
         tier = state.hit(now, windows)
         positive = tier in ("geki", "300", "katu", "100", "50")
+        if include_audio:
+            note = state.note
+            # HitCircleMania plays whenever Pressed, even for a consuming Miss.
+            # Converted HitCircleManiaLong plays a positive final result. Native
+            # HitCircleManiaHold.SoundStart disables SoundAtEnd instead.
+            if not isinstance(note, HoldNote) and state.pressed:
+                sound_facts.append(StableSoundFact(now, note.column, note.time_ms, 'tap'))
+            elif isinstance(note, HoldNote) and positive and source_mode != 3:
+                sound_facts.append(StableSoundFact(now, note.column, note.time_ms, 'final'))
         positive = positive and not (mods & Mod.PF and tier not in ("geki", "300"))
         if include_combo and tier is not None:
             source = ('ln-break' if tier == 'hold-break' else 'ln-final'
@@ -285,6 +306,8 @@ def build_legacy_mania_presentation(
                     elif not state.pressed:
                         state.pressed, state.time_press = True, now
                         state.last_score_time = now
+                        if include_audio:
+                            sound_facts.append(StableSoundFact(now, column, note.time_ms, 'head'))
                         hitted[column] = sliding = True
                         set_long_light(column, True, now)
                         schedule_holding(state, now)
@@ -311,4 +334,4 @@ def build_legacy_mania_presentation(
     changes = tuple(tuple(column) for column in lights)
     return LegacyManiaPresentation(tuple(facts), tuple(fact.time_ms for fact in facts), changes,
                                    tuple(tuple(change.time_ms for change in column) for column in changes),
-                                   tuple(intervals), input_rate, tuple(combo_facts))
+                                   tuple(intervals), input_rate, tuple(combo_facts), tuple(sound_facts))
