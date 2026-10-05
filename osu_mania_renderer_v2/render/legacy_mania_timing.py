@@ -63,6 +63,11 @@ class LegacyManiaTiming:
             start = 0 if p is points[0] else offset
             primary[p.beat_length_ms] = primary.get(p.beat_length_ms, 0) + int(last_time - start)
             last_time = offset
+        if not primary:
+            # No tempo intersects the supplied chart span (also possible in
+            # a compositor preview with no note times). Use the caller's
+            # untimed fallback, as with absent timing, instead of max({}).
+            return None
         primary_length = max(primary, key=primary.get)
         primary_bpm = max(1, round(60000 / primary_length))
         # In video time, rate cancels between RelativeSpeed's EffectiveBPM

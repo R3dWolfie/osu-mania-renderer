@@ -67,6 +67,11 @@ def test_measure_spacing_red_changes_and_fractional_metadata():
     assert t.distance_at(3000)-t.distance_at(2500) > t.distance_at(1500)-t.distance_at(1000)
 
 
+@pytest.mark.parametrize('last', [0, 500])
+def test_tempo_after_entire_chart_span_uses_untimed_fallback(last):
+    assert timing('1000,500,4,1,0,100,1,0', first=0, last=last) is None
+
+
 @pytest.mark.parametrize("first,expected", [(3000,(2000,1000,0)), (0,(-1000,-2000,-3000)), (-2500,(-3500,))])
 def test_warning_count_stops_at_source_prestart(first, expected):
     assert timing(first=first).warning_times == expected
