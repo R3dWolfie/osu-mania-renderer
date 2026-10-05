@@ -236,10 +236,9 @@ def test_zero_layers_or_silent_gameplay_is_systemic_even_with_nc_overlay(tmp_pat
         monkeypatch.setattr(hs._SampleCache,'get',lambda *_: None)
     else:
         wave(tmp_path / 'normal-hitnormal.wav', 0)
-    def overlay(track,*args,**kwargs):
-        track[0:10] += .5
-        return 1
-    monkeypatch.setattr(hs,'_layer_nightcore',overlay)
+    def overlay(*args,**kwargs):
+        yield hs.SamplePlacement(0, np.full((10,2),.5,dtype=np.float32), 1, 'nightcore')
+    monkeypatch.setattr(hs,'_nightcore_layers',overlay)
     caplog.set_level('INFO', logger=hs.log.name)
     with pytest.raises(RendererError, match='no audible gameplay samples'):
         build(tmp_path, beatmap, (fact(100,100),), nightcore=True)

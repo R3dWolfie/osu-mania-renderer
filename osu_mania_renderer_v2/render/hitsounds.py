@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import importlib
 import logging
+import tempfile
+from collections import OrderedDict
+from heapq import merge
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,14 +77,22 @@ class _SampleCache:
         self.use_beatmap = beatmap_hitsounds
         self.sample_dirs = ((beatmap_dir,) if beatmap_hitsounds else ()) + skin_dirs + (
             _DEFAULT_HITSOUND_DIR,)
-        self._cache: dict[str, np.ndarray | None] = {}
+        self._cache = OrderedDict()
+        self._cache_bytes = 0
+        self._missing = set()
+        self.max_cache_bytes = 32 * 1024 * 1024
 
     def get(self, path: Path) -> np.ndarray | None:
         key = str(path)
         if key in self._cache:
+            self._cache.move_to_end(key)
             return self._cache[key]
+        if key in self._missing:
+            return None
         if not path.is_file():
-            self._cache[key] = None
+            if len(self._missing) >= 4096:
+                self._missing.clear()
+            self._missing.add(key)
             return None
         try:
             data, rate = self.soundfile.read(str(path), dtype="float32", always_2d=True)
@@ -98,10 +109,15 @@ class _SampleCache:
                 data = data[idx]
         except (OSError, ValueError, self.soundfile.SoundFileError) as exc:
             log.warning("hitsound_load_failed", extra={"path": str(path), "err": str(exc)})
-            self._cache[key] = None
             return None
-        self._cache[key] = data.astype(np.float32, copy=False)
-        return self._cache[key]
+        data = data.astype(np.float32, copy=False)
+        while self._cache and self._cache_bytes + data.nbytes > self.max_cache_bytes:
+            _, previous = self._cache.popitem(last=False)
+            self._cache_bytes -= previous.nbytes
+        if data.nbytes <= self.max_cache_bytes:
+            self._cache[key] = data
+            self._cache_bytes += data.nbytes
+        return data
 
 
 @dataclass(frozen=True)
@@ -210,20 +226,61 @@ def _find_combobreak_sample(beatmap_dir: Path, skin_dirs: tuple[Path, ...]) -> P
     return None
 
 
+@dataclass(frozen=True)
+class SamplePlacement:
+    start: int
+    samples: np.ndarray
+    gain: float
+    kind: str = "gameplay"
+
+
+def _mix_blocks(placements, total_samples: int, chunk_frames: int):
+    """One chunk plus active sample tails; never allocate duration-sized PCM.
+
+    Gameplay, combo breaks, then overlays retain the previous accumulation
+    order within each output frame. Chunk boundaries cannot change rounding.
+    """
+    pending = iter(enumerate(placements))
+    upcoming = next(pending, None)
+    active = []
+    priority = {"gameplay": 0, "combo_break": 1, "nightcore": 2, "nc_mod": 3}
+    for offset in range(0, total_samples, chunk_frames):
+        end = min(offset + chunk_frames, total_samples)
+        active = [(index, p) for index, p in active if p.start + len(p.samples) > offset]
+        while upcoming is not None and upcoming[1].start < end:
+            active.append(upcoming)
+            upcoming = next(pending, None)
+        active.sort(key=lambda item: (priority[item[1].kind], item[0]))
+        block = np.zeros((end - offset, 2), dtype=np.float32)
+        gameplay_peak = 0.0
+        for gameplay in (True, False):
+            for _, p in active:
+                if (p.kind == "gameplay") != gameplay:
+                    continue
+                start, stop = max(offset, p.start), min(end, p.start + len(p.samples))
+                if stop > start:
+                    block[start-offset:stop-offset] += p.samples[start-p.start:stop-p.start] * p.gain
+            if gameplay and block.size:
+                gameplay_peak = float(np.max(np.abs(np.floor(block * 32768)))) / 32768
+        np.clip(block, -1.0, 1.0, out=block)
+        yield block, gameplay_peak
+
+
 def build_hitsound_track(
     *, judgments_events=(), lazer_facts=None, is_lazer_replay: bool = False,
     sample_notes=None, beatmap, beatmap_dir: Path, output_wav: Path, duration_ms: int,
     target_sample_rate: int = 44100, audio_rate: float = 1.0,
     skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True,
     miss_hitsound: bool = True, nightcore: bool = False, nc_mod: bool = False,
-    gameplay_end_ms: float | None = None,
+    gameplay_end_ms: float | None = None, chunk_frames: int = 16384,
 ) -> Path:
-    """Mix requested gameplay/overlay audio, or raise an actionable RendererError.
+    """Stream gameplay and overlay samples into an atomic stereo PCM WAV.
 
-    sample_notes carries original map-time metadata with resolved mod columns.
-    Eligible counts concern successful audio-bearing events inside this track.
-    Silent native hold tails are tracked separately, never unresolved hits.
+    PCM memory is bounded by chunk_frames, active tails and the 32 MiB decode
+    cache, independent of video duration. Source facts stay immutable.
     """
+    if chunk_frames <= 0:
+        raise RendererError("Hitsound chunk size must be positive.")
     cache = _SampleCache(target_sample_rate, beatmap_dir=beatmap_dir,
                          skin_dirs=skin_dirs, beatmap_hitsounds=beatmap_hitsounds)
     if is_lazer_replay and lazer_facts is None:
@@ -231,81 +288,87 @@ def build_hitsound_track(
     notes = beatmap.notes if sample_notes is None else sample_notes
     events = (_lazer_sound_events(lazer_facts, notes, audio_rate) if is_lazer_replay
               else _stable_sound_events(judgments_events, notes, audio_rate))
+    # The old stable compatibility carrier is in scheduled-note order.
+    events = sorted(events, key=lambda event: event.time_ms)
     total_samples = int(duration_ms / 1000 * target_sample_rate)
-    track = np.zeros((total_samples, 2), dtype=np.float32)
     cb_path = _find_combobreak_sample(beatmap_dir, skin_dirs) if miss_hitsound else None
     cb_sample = cache.get(cb_path) if cb_path is not None else None
     counts = dict(eligible_hit_events=0, resolved_hit_events=0, resolved_sample_layers=0,
                   unresolved_hit_events=0, mixed_sample_layers=0, combo_break_layers=0,
-                  silent_node_events=0, zero_gain_hit_events=0)
-    combo = 0
-    combo_break_starts = []
+                  silent_node_events=0, zero_gain_hit_events=0, nightcore_beats=0, nc_mod_beats=0)
 
-    def mix(arr, gain, start):
-        length = min(len(arr), total_samples - start)
-        if length <= 0:
-            return False
-        track[start:start + length] += arr[:length] * gain
-        return True
+    def gameplay_layers():
+        combo = 0
+        for event in events:
+            start = int(event.time_ms / 1000 * target_sample_rate)
+            in_range = 0 <= start < total_samples
+            if event.kind == "reset":
+                if in_range and cb_sample is not None and combo >= COMBO_BREAK_THRESHOLD:
+                    yield SamplePlacement(start, cb_sample, COMBO_BREAK_GAIN, "combo_break")
+                combo = 0
+                continue
+            combo += 1
+            if not in_range:
+                continue
+            if event.silent_node:
+                counts["silent_node_events"] += 1
+                continue
+            counts["eligible_hit_events"] += 1
+            layers = (_resolve_samples_for_note(event.note, beatmap, cache,
+                        is_lazer_replay=is_lazer_replay) if event.note is not None else [])
+            if not layers:
+                counts["unresolved_hit_events"] += 1
+                continue
+            counts["resolved_hit_events"] += 1
+            counts["resolved_sample_layers"] += len(layers)
+            if all(layer.gain == 0 for layer in layers):
+                counts["zero_gain_hit_events"] += 1
+            for layer in layers:
+                yield SamplePlacement(start, layer.samples, layer.gain)
 
-    for event in events:
-        start = int(event.time_ms / 1000 * target_sample_rate)
-        in_range = 0 <= start < total_samples
-        if event.kind == "reset":
-            if in_range and cb_sample is not None and combo >= COMBO_BREAK_THRESHOLD:
-                combo_break_starts.append(start)
-            combo = 0
-            continue
-        combo += 1
-        if not in_range:
-            continue
-        if event.silent_node:
-            counts["silent_node_events"] += 1
-            continue
-        counts["eligible_hit_events"] += 1
-        layers = (_resolve_samples_for_note(event.note, beatmap, cache,
-                    is_lazer_replay=is_lazer_replay) if event.note is not None else [])
-        if not layers:
-            counts["unresolved_hit_events"] += 1
-            continue
-        counts["resolved_hit_events"] += 1
-        counts["resolved_sample_layers"] += len(layers)
-        if all(layer.gain == 0 for layer in layers):
-            # Stable direct custom samples can intentionally have volume zero.
-            counts["zero_gain_hit_events"] += 1
-        for layer in layers:
-            counts["mixed_sample_layers"] += int(mix(layer.samples, layer.gain, start))
-
-    # Inspect gameplay PCM before overlays: other sounds cannot disguise
-    # silent/missing note samples. PCM_16 uses floor quantisation.
-    gameplay_peak = (float(np.max(np.abs(np.floor(track * 32768)))) / 32768
-                     if track.size else 0.0)
-    for start in combo_break_starts:
-        counts["combo_break_layers"] += int(mix(cb_sample, COMBO_BREAK_GAIN, start))
-    nc_layered = (_layer_nightcore(track, beatmap.timing_points, cache, skin_dirs,
+    overlays = (_nightcore_layers(beatmap.timing_points, cache, skin_dirs,
         target_sample_rate, duration_ms, gameplay_end_ms=gameplay_end_ms)
-        if nightcore and not nc_mod else 0)
-    nc_mod_layered = (_layer_nightcore_mod(track, beatmap.timing_points, cache, skin_dirs,
+        if nightcore and not nc_mod else ())
+    nc_layers = (_nightcore_mod_layers(beatmap.timing_points, cache, skin_dirs,
         target_sample_rate, duration_ms, audio_rate, play_hats=True,
-        gameplay_end_ms=gameplay_end_ms) if nc_mod else 0)
-    np.clip(track, -1.0, 1.0, out=track)
-    # Match PCM_16 quantisation when diagnosing numerical silence.
-    pcm = np.floor(track * 32768).clip(-32768, 32767) / 32768
-    peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
-    rms = float(np.sqrt(np.mean(pcm * pcm, dtype=np.float64))) if pcm.size else 0.0
-    diagnostics = {"path": str(output_wav), **counts, "nightcore_beats": nc_layered,
-                   "nc_mod_beats": nc_mod_layered, "peak": peak, "rms": rms}
-    expected_audible_events = counts["eligible_hit_events"] - counts["zero_gain_hit_events"]
-    if expected_audible_events and (not counts["resolved_sample_layers"]
-                                   or gameplay_peak == 0 or peak == 0):
-        log.error("hitsound_track_unusable", extra=diagnostics)
-        raise RendererError("Replay hitsounds resolved no audible gameplay samples. Check the "
-                            "bundled default_hitsounds assets and sample decoding; see hitsound diagnostics.")
+        gameplay_end_ms=gameplay_end_ms) if nc_mod else ())
+
+    def counted_placements():
+        count_key = {"gameplay": "mixed_sample_layers", "combo_break": "combo_break_layers",
+                     "nightcore": "nightcore_beats", "nc_mod": "nc_mod_beats"}
+        for placement in merge(gameplay_layers(), overlays, nc_layers, key=lambda p: p.start):
+            counts[count_key[placement.kind]] += 1
+            yield placement
+
+    temporary = None
+    peak = gameplay_peak = sum_squares = 0.0
     try:
         output_wav.parent.mkdir(parents=True, exist_ok=True)
-        cache.soundfile.write(str(output_wav), track, target_sample_rate, subtype="PCM_16")
+        with tempfile.NamedTemporaryFile(dir=output_wav.parent, prefix=output_wav.name + ".",
+                                         suffix=".tmp", delete=False) as file:
+            temporary = Path(file.name)
+        with cache.soundfile.SoundFile(temporary, mode="w", samplerate=target_sample_rate,
+                                      channels=2, format="WAV", subtype="PCM_16") as writer:
+            for block, hit_peak in _mix_blocks(counted_placements(), total_samples, chunk_frames):
+                gameplay_peak = max(gameplay_peak, hit_peak)
+                pcm = np.floor(block * 32768).clip(-32768, 32767) / 32768
+                peak = max(peak, float(np.max(np.abs(pcm))))
+                sum_squares += float(np.sum(pcm * pcm, dtype=np.float64))
+                writer.write(block)
+        rms = (sum_squares / (total_samples * 2)) ** .5 if total_samples else 0.0
+        diagnostics = {"path": str(output_wav), **counts, "peak": peak, "rms": rms,
+                       "chunk_frames": chunk_frames}
+        expected_audible = counts["eligible_hit_events"] - counts["zero_gain_hit_events"]
+        if expected_audible and (not counts["resolved_sample_layers"] or gameplay_peak == 0 or peak == 0):
+            log.error("hitsound_track_unusable", extra=diagnostics)
+            raise RendererError("Replay hitsounds resolved no audible gameplay samples. Check the "
+                                "bundled default_hitsounds assets and sample decoding; see hitsound diagnostics.")
+        temporary.replace(output_wav)
     except (OSError, ValueError, cache.soundfile.SoundFileError) as exc:
         raise RendererError(f"Cannot write replay hitsound WAV {output_wav}: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     log.info("hitsound_track_built", extra=diagnostics)
     return output_wav
 
@@ -313,11 +376,11 @@ def build_hitsound_track(
 _NIGHTCORE_GAIN = 0.14      # lower than per-note hits so it doesn't dominate
 
 
-def _layer_nightcore(
-    track: np.ndarray, timing_points: tuple, cache: "_SampleCache",
+def _nightcore_layers(
+    timing_points: tuple, cache: "_SampleCache",
     skin_dirs: tuple[Path, ...], sample_rate: int, duration_ms: int,
     gameplay_end_ms=None,
-) -> int:
+):
     """Layer NC-mod-style claps + finishes on each beat across the song.
     Mirrors lazer's mania NC behaviour: clap on every beat, with a finish
     cymbal on beat 1 of each measure (assumed 4/4)."""
@@ -334,7 +397,6 @@ def _layer_nightcore(
     if not red_tps:
         return 0
 
-    laid = 0
     # Beat overlay stops at gameplay end, not into the results outro the
     # video appends (taiko fix ac73af2). horizon is in the same (video-ms)
     # base as duration_ms.
@@ -348,13 +410,11 @@ def _layer_nightcore(
             sample = finish if (beat_idx_in_measure == 0 and finish is not None) else clap
             if sample is not None:
                 start = int(t_ms / 1000 * sample_rate)
-                if 0 <= start < track.shape[0]:
-                    end = min(start + sample.shape[0], track.shape[0])
-                    track[start:end] += sample[:end - start] * _NIGHTCORE_GAIN
-                    laid += 1
+                if 0 <= start < int(duration_ms / 1000 * sample_rate):
+                    yield SamplePlacement(start, sample, _NIGHTCORE_GAIN, "nightcore")
             t_ms += beat_ms
             beat_idx_in_measure = (beat_idx_in_measure + 1) % 4
-    return laid
+    return
 
 
 def _find_skin_sample(
@@ -378,11 +438,11 @@ def _find_skin_sample(
 _NC_MOD_GAIN = 0.20      # nightcore-kick/clap/hat/finish drums
 
 
-def _layer_nightcore_mod(
-    track: np.ndarray, timing_points: tuple, cache: "_SampleCache",
+def _nightcore_mod_layers(
+    timing_points: tuple, cache: "_SampleCache",
     skin_dirs: tuple[Path, ...], sample_rate: int, duration_ms: int,
     audio_rate: float, *, play_hats: bool = True, gameplay_end_ms=None,
-) -> int:
+):
     """osu! ModNightcore beat overlay — the drum pattern osu! plays on each
     beat AUTOMATICALLY while the Nightcore mod is active. NOT the general
     metronome (_layer_nightcore) above; both can lay. Half-beat grid
@@ -416,7 +476,6 @@ def _layer_nightcore_mod(
     dur = duration_ms if gameplay_end_ms is None else min(duration_ms, float(gameplay_end_ms))
     horizon_map = dur * rate                    # video horizon back to map time
     seg_len = 4 * 8                            # 4/4: beatsPerBar(4) * 2 * 4 bars
-    laid = 0
     for i, tp in enumerate(red_tps):
         beat_ms = max(60.0, tp.beat_length_ms)   # cap <60ms (>1000 BPM) sanity
         half = beat_ms / 2.0
@@ -437,13 +496,11 @@ def _layer_nightcore_mod(
             if bseg == 0:
                 names.append("finish")
             start = int((t_map / rate) / 1000.0 * sample_rate)
-            if 0 <= start < track.shape[0]:
+            if 0 <= start < int(duration_ms / 1000 * sample_rate):
                 for name in names:
                     sample = samples.get(name)
                     if sample is not None:
-                        end = min(start + sample.shape[0], track.shape[0])
-                        track[start:end] += sample[:end - start] * _NC_MOD_GAIN
-                        laid += 1
+                        yield SamplePlacement(start, sample, _NC_MOD_GAIN, "nc_mod")
             k += 1
             t_map = tp.time_ms + k * half
-    return laid
+    return
