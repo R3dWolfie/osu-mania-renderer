@@ -8,6 +8,8 @@ results and a failed body affect combo. There are no stable hold ticks.
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
+from collections import defaultdict
 from dataclasses import dataclass
 
 from osu_mania_renderer_v2.beatmap.judgments import _difficulty_range
@@ -65,6 +67,7 @@ class LazerManiaWindows:
 @dataclass
 class _Object:
     note: Note | HoldNote
+    index: int = 0
     head: str | None = None
     tail: str | None = None
     body: str | None = None
@@ -93,7 +96,11 @@ def build_lazer_combo_timeline(
     windows = LazerManiaWindows.build(od, mods, rate)
     columns: list[list[_Object]] = [[] for _ in range(key_count)]
     for note in sorted(notes, key=lambda n: n.time_ms):
-        columns[note.column].append(_Object(note))
+        column = columns[note.column]
+        column.append(_Object(note, index=len(column)))
+    starts = [[obj.note.time_ms for obj in column] for column in columns]
+    force_indices = [0] * key_count
+    holding = [dict() for _ in range(key_count)]
     facts: list[LazerComboFact] = []
 
     def emit(obj, source, result, now, cause, frame):
@@ -104,21 +111,27 @@ def build_lazer_combo_timeline(
     def force_earlier(column, target, now, frame):
         # OrderedHitPolicy.enumerateHitObjectsUpTo stops at the FIRST parent
         # whose END >= the successful object's start (including overlapping LN).
-        for earlier in column:
+        col = column[0].note.column
+        index = force_indices[col]
+        while index < len(column):
+            earlier = column[index]
             if earlier.end >= target:
                 break
+            index += 1
             if earlier.head is None:
                 earlier.head = 'miss'
                 emit(earlier, 'head' if isinstance(earlier.note, HoldNote) else 'tap',
                      'miss', now, 'ordered-force-miss', frame)
             if isinstance(earlier.note, HoldNote):
                 earlier.holding = False
+                holding[col].pop(earlier.index, None)
                 if earlier.tail is None:
                     earlier.tail = 'miss'
                     emit(earlier, 'tail', 'miss', now, 'ordered-force-miss', frame)
                 if earlier.body is None:
                     earlier.body = 'combo-break'
                     emit(earlier, 'body', 'combo-break', now, 'ordered-force-miss', frame)
+        force_indices[col] = index
 
     def head_result(column, obj, result, now, cause, frame):
         obj.head = result
@@ -141,25 +154,36 @@ def build_lazer_combo_timeline(
             if obj.body == 'combo-break':
                 emit(obj, 'body', obj.body, now, cause, frame)
         obj.holding = False
+        holding[obj.note.column].pop(obj.index, None)
+
+    due = defaultdict(list)
+    for col, column in enumerate(columns):
+        for obj in column:
+            due[math.floor(obj.note.time_ms + windows.meh) + 1].append((col, obj.index))
+            if isinstance(obj.note, HoldNote):
+                due[math.floor(obj.end + windows.meh * 1.5) + 1].append((col, obj.index))
+    deadlines = sorted(due)
+    expiry_index = 0
 
     def expire(now):
-        for column in columns:
-            for obj in column:
-                if obj.note.time_ms > now:
-                    break
-                if obj.head is None and now - obj.note.time_ms > windows.meh:
-                    head_result(column, obj, 'miss', now, 'timeout', None)
-                if isinstance(obj.note, HoldNote) and obj.tail is None and (now - obj.end) / 1.5 > windows.meh:
-                    tail_result(column, obj, 'miss', now, 'timeout', None)
-                    finish_body(obj, now, 'tail-finalisation', None)
+        nonlocal expiry_index
+        ready = set()
+        while expiry_index < len(deadlines) and deadlines[expiry_index] <= now:
+            ready.update(due[deadlines[expiry_index]])
+            expiry_index += 1
+        # The old scan's column/object order remains authoritative on ties.
+        for col, index in sorted(ready):
+            column = columns[col]
+            obj = column[index]
+            if obj.head is None and now - obj.note.time_ms > windows.meh:
+                head_result(column, obj, 'miss', now, 'timeout', None)
+            if isinstance(obj.note, HoldNote) and obj.tail is None and (now - obj.end) / 1.5 > windows.meh:
+                tail_result(column, obj, 'miss', now, 'timeout', None)
+                finish_body(obj, now, 'tail-finalisation', None)
 
     held = 0
     ordered_inputs = sorted(enumerate(inputs), key=lambda pair: pair[1].time_ms)
-    # First integer audio-time update strictly after CanBeHit becomes false.
-    # These updates must occur even when no replay input arrives near a miss.
-    deadlines = sorted({math.floor(obj.note.time_ms + windows.meh) + 1 for column in columns for obj in column}
-                       | {math.floor(obj.end + windows.meh * 1.5) + 1 for column in columns
-                          for obj in column if isinstance(obj.note, HoldNote)})
+    # Deadline work is indexed once; completed prefixes are never rescanned.
     deadline_index = 0
     for frame, event in ordered_inputs:
         now = event.time_ms
@@ -169,8 +193,9 @@ def build_lazer_combo_timeline(
         released, pressed = held & ~event.keys_held, event.keys_held & ~held
         for col, column in enumerate(columns):
             if released & (1 << col):
-                for obj in column:
-                    if isinstance(obj.note, HoldNote) and not obj.finished and obj.holding:
+                for index in sorted(holding[col]):
+                    obj = holding[col].get(index)
+                    if obj is not None and not obj.finished and obj.holding:
                         result = windows.result_for((now - obj.end) / 1.5)
                         if obj.tail is None and result is not None:
                             tail_result(column, obj, result, now, 'release', frame)
@@ -178,7 +203,12 @@ def build_lazer_combo_timeline(
         for col, column in enumerate(columns):
             if not pressed & (1 << col):
                 continue
-            for index, obj in enumerate(column):
+            # Every older parent is blocked by the next parent's start.
+            # Future objects outside the Miss window cannot consume/resume.
+            first = max(0, bisect_right(starts[col], now) - 1)
+            stop = bisect_right(starts[col], now + windows.miss)
+            for index in range(first, stop):
+                obj = column[index]
                 if obj.finished:
                     continue
                 # CheckHittable applies to the top-level note/hold, not its
@@ -190,6 +220,7 @@ def build_lazer_combo_timeline(
                         continue  # cannot resume during late tail lenience
                     if now - obj.note.time_ms >= -windows.miss:
                         obj.holding = True
+                        holding[col][index] = obj
                 if obj.head is not None:
                     continue  # hold resume does not consume this press
                 result = windows.result_for(now - obj.note.time_ms)

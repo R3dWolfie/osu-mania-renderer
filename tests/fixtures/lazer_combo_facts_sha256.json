@@ -1,0 +1,152 @@
+{
+  "0": {
+    "sha256": "827d8048ef6dd26efae1573a974420781c1d45f421447e3a0d1175ee4b884c9a",
+    "facts": 152,
+    "max_combo": 3
+  },
+  "1": {
+    "sha256": "37aea3ef1cac765974f7116006fbb4fe34ec8adc6703aec9513473964d5c3c1e",
+    "facts": 144,
+    "max_combo": 4
+  },
+  "2": {
+    "sha256": "61e966f4b7e7e15a7dd6b95848104678193cc637454362f744ea2d9aad3cc189",
+    "facts": 134,
+    "max_combo": 6
+  },
+  "3": {
+    "sha256": "6425d4b7627581b3051a4f9d6799b9d2dad5d4d5d34357312f7bfd9b379010ee",
+    "facts": 139,
+    "max_combo": 5
+  },
+  "4": {
+    "sha256": "9c5c13970ae2ccb907a7eaf7b767066198d12e26505ff3eaacc8259da08edf9d",
+    "facts": 128,
+    "max_combo": 8
+  },
+  "5": {
+    "sha256": "e462ea90c5c57c39535331de2c23cf1f6c228bb265f7983b75538817e12a3ac5",
+    "facts": 152,
+    "max_combo": 5
+  },
+  "6": {
+    "sha256": "ab7cd3a00f2887a4bd297b68d91791b130137e8f555649746a04a4efb99a9467",
+    "facts": 128,
+    "max_combo": 4
+  },
+  "7": {
+    "sha256": "89a878a5ed41e5f97050afeb05c177c126945ab0939102228ae41b11fa855d62",
+    "facts": 146,
+    "max_combo": 3
+  },
+  "8": {
+    "sha256": "148d5f43c453f89a185c9c543b2c4cf84a9e0ff5da4c7c62eedcbb605cd153a9",
+    "facts": 134,
+    "max_combo": 6
+  },
+  "9": {
+    "sha256": "5cdb582f2edbe452e9c5b037c5f471ad2223ee879d96df992eae2f021b5e3160",
+    "facts": 145,
+    "max_combo": 5
+  },
+  "10": {
+    "sha256": "a9799c45f9b0aa358236a194f3e4f4de6ee85bafa294734ac39284a71972f1bf",
+    "facts": 146,
+    "max_combo": 4
+  },
+  "11": {
+    "sha256": "3491c6d1f52275a844c1192fe84947440938831b2586cc99b461fdaf3c975ab7",
+    "facts": 145,
+    "max_combo": 5
+  },
+  "12": {
+    "sha256": "823ca51328fa2f1c374873324bd282909d3bf18d93c0654c07e6635b10f16ca1",
+    "facts": 155,
+    "max_combo": 4
+  },
+  "13": {
+    "sha256": "fb9456dc7272446d2544c61fba32d45fb7b59a3d149f35c3ce1382560f80a628",
+    "facts": 165,
+    "max_combo": 3
+  },
+  "14": {
+    "sha256": "9be2a84337bc4875d1043c75b5c77585c156594d77c216336f72cde7e2905ed7",
+    "facts": 152,
+    "max_combo": 7
+  },
+  "15": {
+    "sha256": "dc666c836c305e55e11669ca0ed19d85f8fd445f8b6abb0df79812b4e9be215b",
+    "facts": 141,
+    "max_combo": 8
+  },
+  "16": {
+    "sha256": "5cd985ecf8d8d36228033df829d27129851b30faee7b88b5588a67a3706e9b45",
+    "facts": 146,
+    "max_combo": 5
+  },
+  "17": {
+    "sha256": "db5168e71ca0bacd0a1ab8955a7838799d34726c1ccc0f1dbe19457cbfbeb91f",
+    "facts": 131,
+    "max_combo": 3
+  },
+  "18": {
+    "sha256": "6d29ef802b40c7928d6c4bd41ac4cc9491e98bf44a20e4372bff437b5999079f",
+    "facts": 144,
+    "max_combo": 3
+  },
+  "19": {
+    "sha256": "110d740184042121f2642888258aa46fcb7d0b77a3216722965cec8743a87b28",
+    "facts": 150,
+    "max_combo": 4
+  },
+  "20": {
+    "sha256": "0e1a5d5d24faa8435c717eeb6b74c855a54118d87d149488822636a2aea93889",
+    "facts": 140,
+    "max_combo": 9
+  },
+  "21": {
+    "sha256": "00126d4e0f7c063206c3d0b1c431687ec373b2ec5c9bac3b3a24a81ea062ac8e",
+    "facts": 147,
+    "max_combo": 4
+  },
+  "22": {
+    "sha256": "8522bfec0160e7376ae88388a1491dbcc4c8ab821a477fd47c7e572352c06be7",
+    "facts": 166,
+    "max_combo": 4
+  },
+  "23": {
+    "sha256": "b34ea739bfcf46a98ada8aac3d89680104d45dd113e57e136624929e338a945a",
+    "facts": 157,
+    "max_combo": 7
+  },
+  "24": {
+    "sha256": "d0f9d05bd86baac6b94b64a87a7c37f383d5461b116294a1df4e116a2d93bae5",
+    "facts": 149,
+    "max_combo": 4
+  },
+  "25": {
+    "sha256": "005df6c9a408ca00c97fca71de410b0bf807eccb2eeac4549ad22e9c39ac2099",
+    "facts": 147,
+    "max_combo": 3
+  },
+  "26": {
+    "sha256": "8ec12b0d68059654f0ebb3a4119ad35ee159072a770c5c370ad5684b490cd698",
+    "facts": 160,
+    "max_combo": 2
+  },
+  "27": {
+    "sha256": "d4885386df1c26ccc85d7227f3f78500c35e3b0eac813f1000b9fffad725064d",
+    "facts": 151,
+    "max_combo": 4
+  },
+  "28": {
+    "sha256": "14f679e772cbc7703a79ee4f347c237c4f9dbbb899583da3953b89d9028ea50c",
+    "facts": 156,
+    "max_combo": 4
+  },
+  "29": {
+    "sha256": "37210e23104073538aa778be1e43b163786b91b5aca660d414fe7df30f5e00bd",
+    "facts": 164,
+    "max_combo": 6
+  }
+}
