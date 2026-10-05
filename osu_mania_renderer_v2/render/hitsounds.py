@@ -1,7 +1,7 @@
 """Resolve replay samples and mix a stereo PCM track before ffmpeg's song mix.
 
-Samples fall back from beatmap to skin to bundled defaults. Lazer triggers
-come from immutable gameplay facts; stable retains its existing event timing.
+Samples fall back from beatmap to skin to bundled defaults. Production stable
+and lazer triggers come from their separate immutable gameplay facts.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _DEFAULT_NC_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_n
 
 
 def require_hitsound_runtime():
-    # Import before allocating the whole-song buffer. A broken libsndfile
+    # Check before resolving samples or opening the output. A broken libsndfile
     # installation is just as systemic as an absent Python package.
     try:
         return importlib.import_module("soundfile")
@@ -66,7 +66,7 @@ def _candidate_paths(dirs, set_name: str, type_name: str, index: int) -> list[Pa
 
 
 class _SampleCache:
-    """Decode each file once; individual invalid files allow the next fallback."""
+    """Bound decoded sample reuse; invalid files allow the next fallback."""
 
     def __init__(self, target_rate: int, *, beatmap_dir: Path = Path("."),
                  skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True):
@@ -210,8 +210,8 @@ def _stable_sound_events(judgments_events, notes, audio_rate: float):
         if event.judgment == "miss":
             yield ReplaySoundEvent(event.time_ms, "reset")
         elif event.hit_offset_ms is not None:
-            # Keep stable's existing head/tap trigger timing. Its HitStart and
-            # SoundAtEnd contract needs a separate carrier, not lazer tails.
+            # Compatibility for direct callers without source sound facts.
+            # Production uses _stable_source_sound_events and its LN lifecycle.
             yield ReplaySoundEvent(event.time_ms + event.hit_offset_ms, "increment",
                 heads.get((event.column, event.time_ms)), silent_node=event.is_tail)
 
