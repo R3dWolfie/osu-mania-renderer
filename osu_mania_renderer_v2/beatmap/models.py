@@ -31,6 +31,10 @@ class HoldNote:
     end_time_ms: int
     hit_sound: int = 0
     hit_sample: HitSample = HitSample()
+    # Native legacy Mania defaults to an empty lazer tail node. A converted
+    # or explicitly supplied node may carry its own sample metadata.
+    tail_hit_sample: HitSample | None = None
+    tail_hit_sound: int = 0
 
     @property
     def duration_ms(self) -> int:

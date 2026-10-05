@@ -52,7 +52,7 @@ from osu_mania_renderer_v2.beatmap.judgments import (
 )
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
 from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
-from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track
+from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track, require_hitsound_runtime
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
 from osu_mania_renderer_v2.render.legacy_mania_events import (
@@ -506,13 +506,15 @@ async def build_render_plan(
     total_video_ms = results_start_ms + RESULTS_DURATION_MS
     total_frames = math.ceil(total_video_ms / 1000 * options.fps)
 
-    # Hitsound track — a temp WAV pre-mixed with one sample at every non-miss
-    # judgment's press time. Failure → song only.
+    # Hitsound track from gameplay events, mixed separately from the song.
+    # Requested audio dependency/build failures propagate to the caller.
     hitsound_wav: Path | None = None
     # ModNightcore beat overlay is AUTOMATIC when the NC mod (bit 1<<9) is on.
     _nc_mod = bool(int(getattr(replay, "mods", 0) or 0) & (1 << 9))
-    if audio_path is not None and (options.use_replay_hitsounds
-                                   or options.nightcore_hitsounds or _nc_mod):
+    audio_features_requested = options.use_replay_hitsounds or options.nightcore_hitsounds or _nc_mod
+    if audio_features_requested:
+        require_hitsound_runtime()
+    if audio_path is not None and audio_features_requested:
         skin_dirs: list[Path] = []
         # NC-mod samples come from the SKIN, so include the user skin whenever
         # the NC overlay is active even if skin hitsounds are otherwise off.
@@ -520,25 +522,26 @@ async def build_render_plan(
                 and skin_dir is not None and skin_dir.is_dir()):
             skin_dirs.append(skin_dir)
         skin_dirs.extend(p for p in _DEFAULT_SKIN_DIRS if p.is_dir())
-        try:
-            hitsound_wav = build_hitsound_track(
-                judgments_events=judgments.events if options.use_replay_hitsounds else (),
-                beatmap=modded,
-                beatmap_dir=beatmap_dir,
-                output_wav=output_path.with_suffix(".hits.wav"),
-                duration_ms=total_video_ms,
-                audio_rate=mod_res.audio_rate,
-                skin_dirs=tuple(skin_dirs),
-                beatmap_hitsounds=options.beatmap_hitsounds,
-                miss_hitsound=options.miss_hitsound,
-                nightcore=options.nightcore_hitsounds,
-                nc_mod=_nc_mod,
-                # beat overlays stop at gameplay end, not into results (taiko ac73af2)
-                gameplay_end_ms=float(gameplay_end_ms),
-            )
-        except Exception as e:  # noqa: BLE001
-            log.warning("hitsound_build_failed", extra={"err": str(e)})
-            hitsound_wav = None
+        hitsound_wav = build_hitsound_track(
+            judgments_events=judgments.events if options.use_replay_hitsounds else (),
+            lazer_facts=(lazer_combo_timeline.facts if options.use_replay_hitsounds else ())
+                if lazer_combo_timeline is not None else None,
+            is_lazer_replay=replay.is_lazer_replay,
+            sample_notes=tuple(_dc_replace(raw, column=display.column)
+                               for raw, display in zip(beatmap.notes, modded.notes)),
+            beatmap=modded,
+            beatmap_dir=beatmap_dir,
+            output_wav=output_path.with_suffix(".hits.wav"),
+            duration_ms=total_video_ms,
+            audio_rate=mod_res.audio_rate,
+            skin_dirs=tuple(skin_dirs),
+            beatmap_hitsounds=options.beatmap_hitsounds,
+            miss_hitsound=options.miss_hitsound,
+            nightcore=options.nightcore_hitsounds,
+            nc_mod=_nc_mod,
+            # beat overlays stop at gameplay end, not into results (taiko ac73af2)
+            gameplay_end_ms=float(gameplay_end_ms),
+        )
 
     # Host-ffmpeg FIFO path (toolbox). Otherwise plain stdin.
     fifo_path: Path | None = None

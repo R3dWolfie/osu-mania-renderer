@@ -9,6 +9,7 @@ dependencies = [
     "osrparse>=7.0",
     "Pillow>=10.0",
     "numpy>=2.0",
+    "soundfile>=0.12",
 ]
 
 [project.optional-dependencies]

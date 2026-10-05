@@ -1,62 +1,49 @@
-"""Pre-mix per-note hitsounds onto a single WAV that ffmpeg layers on the
-song.
+"""Resolve replay samples and mix a stereo PCM track before ffmpeg's song mix.
 
-Honours:
-  * per-timing-point sample set (Normal / Soft / Drum) + custom index
-  * per-timing-point volume
-  * per-note hit-sound bits (normal / whistle / clap / finish)
-  * per-note ``hitSample.filename`` override (the most common case in
-    detailed mania maps — the mapper supplies their own drum/cymbal WAVs)
-  * per-note volume override
-
-Resolution order for a sample's path:
-  1. ``note.hit_sample.filename`` → exact file in the beatmap directory
-  2. ``{set}-hit{type}{index}.wav|.ogg`` in the beatmap directory
-  3. ``{set}-hit{type}.wav|.ogg`` (index-0 fallback)
-  4. Skip (silent)
+Samples fall back from beatmap to skin to bundled defaults. Lazer triggers
+come from immutable gameplay facts; stable retains its existing event timing.
 """
 from __future__ import annotations
 
+import importlib
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from osu_mania_renderer_v2.beatmap.models import HoldNote, Note
+from osu_mania_renderer_v2.errors import RendererError
+
 log = logging.getLogger("osu_mania_renderer_v2.render.hitsounds")
 
-DEFAULT_HIT_GAIN = 0.22     # ceiling applied on top of per-note volume
-COMBO_BREAK_THRESHOLD = 20  # osu! stable: combobreak.wav only plays on a
-                            # combo ≥ 20 break.
-COMBO_BREAK_GAIN = 0.26     # slightly louder than normal hits so it cuts
-                            # through; matches the stable client.
-
-# Maps the osu! sample-set int → directory-prefix string.
-_SET_NAMES: dict[int, str] = {0: "soft", 1: "normal", 2: "soft", 3: "drum"}
-
-# Hit-sound bit → type name. Bit 0 (normal) is implicit; layered additions
-# come from the higher bits.
-_ADDITIONS: tuple[tuple[int, str], ...] = (
-    (2, "whistle"),
-    (4, "finish"),
-    (8, "clap"),
-)
-
-# Bundled osu! default hitsounds (soft/normal/drum x hitnormal/whistle/finish/
-# clap) from ppy/osu-resources — the LAST fallback so maps without custom
-# samples still sound, matching lazer's beatmap -> skin -> default lookup.
+COMBO_BREAK_THRESHOLD = 20
+COMBO_BREAK_GAIN = 0.26  # Existing R3D combo-break mix preference.
+_SET_NAMES = {1: "normal", 2: "soft", 3: "drum"}
+_ADDITIONS = ((2, "whistle"), (4, "finish"), (8, "clap"))
 _DEFAULT_HITSOUND_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_hitsounds"
-# Bundled osu! DEFAULT nightcore drums (ppy/osu-resources Legacy skin) — final
-# fallback for the NC-mod overlay when the skin OMITS a nightcore sample.
 _DEFAULT_NC_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_nightcore"
 
 
-def _active_timing_point(timing_points: tuple, time_ms: int):
-    """Last timing point whose time_ms <= ``time_ms`` (or None)."""
+def require_hitsound_runtime():
+    # Import before allocating the whole-song buffer. A broken libsndfile
+    # installation is just as systemic as an absent Python package.
+    try:
+        return importlib.import_module("soundfile")
+    except (ImportError, OSError) as exc:
+        raise RendererError(
+            "Replay/NC hitsounds require soundfile and libsndfile. Reinstall the renderer's "
+            "runtime dependencies (python -m pip install 'soundfile>=0.12'); "
+            "source installations may also need system libsndfile."
+        ) from exc
+
+
+def _active_timing_point(timing_points: tuple, time_ms: float):
     if not timing_points:
         return None
     lo, hi = 0, len(timing_points) - 1
     if timing_points[0].time_ms > time_ms:
-        return timing_points[0]   # before the first TP, use the first
+        return timing_points[0]
     while lo < hi:
         mid = (lo + hi + 1) // 2
         if timing_points[mid].time_ms <= time_ms:
@@ -66,30 +53,27 @@ def _active_timing_point(timing_points: tuple, time_ms: int):
     return timing_points[lo]
 
 
-def _candidate_paths(
-    dirs, set_name: str, type_name: str, index: int,
-) -> list[Path]:
-    """Sample-file candidates in fallback order, across a dir stack
-    (beatmap -> skin(s) -> bundled default), each with the osu! lookup order
-    {set}-hit{type}{index} -> {set}-hit{type} (matches lazer LookupNames)."""
-    out: list[Path] = []
-    suffixes = ("wav", "ogg")
-    for d in dirs:
+def _candidate_paths(dirs, set_name: str, type_name: str, index: int) -> list[Path]:
+    out = []
+    for directory in dirs:
         if index > 0:
-            for s in suffixes:
-                out.append(d / f"{set_name}-hit{type_name}{index}.{s}")
-        for s in suffixes:
-            out.append(d / f"{set_name}-hit{type_name}.{s}")
+            out.extend(directory / f"{set_name}-hit{type_name}{index}.{ext}"
+                       for ext in ("wav", "ogg"))
+        out.extend(directory / f"{set_name}-hit{type_name}.{ext}" for ext in ("wav", "ogg"))
     return out
 
 
 class _SampleCache:
-    """Lazy loader. Decodes each unique file once and stores the float32
-    stereo array; misses return None and are remembered so we don't probe
-    the filesystem repeatedly for a missing sample."""
+    """Decode each file once; individual invalid files allow the next fallback."""
 
-    def __init__(self, target_rate: int) -> None:
+    def __init__(self, target_rate: int, *, beatmap_dir: Path = Path("."),
+                 skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True):
         self.target_rate = target_rate
+        self.soundfile = require_hitsound_runtime()
+        self.beatmap_dir = beatmap_dir
+        self.use_beatmap = beatmap_hitsounds
+        self.sample_dirs = ((beatmap_dir,) if beatmap_hitsounds else ()) + skin_dirs + (
+            _DEFAULT_HITSOUND_DIR,)
         self._cache: dict[str, np.ndarray | None] = {}
 
     def get(self, path: Path) -> np.ndarray | None:
@@ -100,263 +84,229 @@ class _SampleCache:
             self._cache[key] = None
             return None
         try:
-            import soundfile
-            data, rate = soundfile.read(str(path), dtype="float32", always_2d=True)
-        except Exception as e:  # noqa: BLE001
-            log.warning("hitsound_load_failed",
-                        extra={"path": str(path), "err": str(e)})
+            data, rate = self.soundfile.read(str(path), dtype="float32", always_2d=True)
+            if not len(data) or not np.isfinite(data).all():
+                raise ValueError("empty or non-finite sample")
+            if data.shape[1] == 1:
+                data = np.repeat(data, 2, axis=1)
+            elif data.shape[1] != 2:
+                raise ValueError("hitsound sample must be mono or stereo")
+            if rate != self.target_rate:
+                ratio = self.target_rate / rate
+                new_len = max(1, int(len(data) * ratio))
+                idx = np.clip((np.arange(new_len) / ratio).astype(np.int64), 0, len(data) - 1)
+                data = data[idx]
+        except (OSError, ValueError, self.soundfile.SoundFileError) as exc:
+            log.warning("hitsound_load_failed", extra={"path": str(path), "err": str(exc)})
             self._cache[key] = None
             return None
-        if data.shape[1] == 1:
-            data = np.repeat(data, 2, axis=1)
-        if rate != self.target_rate:
-            ratio = self.target_rate / rate
-            new_len = int(data.shape[0] * ratio)
-            idx = (np.arange(new_len) / ratio).astype(np.int64)
-            idx = np.clip(idx, 0, data.shape[0] - 1)
-            data = data[idx]
         self._cache[key] = data.astype(np.float32, copy=False)
         return self._cache[key]
 
 
-def _resolve_samples_for_note(
-    note, beatmap, cache: _SampleCache,
-) -> list[tuple[np.ndarray, float]]:
-    """Return a list of (sample_array, gain) pairs to mix at the note's
-    press time. Each entry is one sound (normal + any addition bits)."""
-    beatmap_dir = cache  # type: ignore[assignment]  # only used for path lookups below
-    # (cache only ever sees Path inputs — its `.get(path)` is the loader.)
+@dataclass(frozen=True)
+class SampleLayer:
+    samples: np.ndarray
+    gain: float
+    path: Path
+    type_name: str
 
-    # Hit-sample-level overrides → timing-point state → general default.
-    sample = getattr(note, "hit_sample", None)
-    sample_filename = (sample.filename if sample else "") or ""
-    sample_volume = (sample.volume if sample else 0) or 0
 
+def _sample_gain(volume: int, type_name: str, *, is_lazer_replay: bool) -> float:
+    if is_lazer_replay:
+        # SkinnableSound + DrawableHitObject.MINIMUM_SAMPLE_VOLUME.
+        return max(volume, 5) / 100.0
+    if type_name == "custom":
+        # HitObject.PlaySound -> AudioEngine.PlaySample: no layered floor.
+        return volume / 100.0
+    coefficient = {"normal": .8, "finish": 1.0, "whistle": .85, "clap": .85}[type_name]
+    # AudioEngine.PlayHitSamples truncates the percentage to an integer.
+    return int(max(volume, 8) * coefficient) / 100.0
+
+
+def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
+                              *, is_lazer_replay: bool = False) -> list[SampleLayer]:
+    sample = note.hit_sample
     tp = _active_timing_point(beatmap.timing_points, note.time_ms)
-    tp_set = tp.sample_set if tp else 0
-    tp_index = tp.custom_index if tp else 0
-    tp_volume = tp.volume if tp else 100
+    effective_set = sample.normal_set or (tp.sample_set if tp else 0)
+    effective_index = sample.index or (tp.custom_index if tp else 0)
+    set_name = _SET_NAMES.get(effective_set, beatmap.default_sample_set.lower())
+    # A note's zero means inherit; a control point's zero is a real volume.
+    volume = sample.volume or (tp.volume if tp else 100)
+    layers = []
 
-    # Per-note hitSample's normal_set takes precedence over the timing point.
-    effective_set = (sample.normal_set if sample and sample.normal_set
-                     else tp_set)
-    effective_index = (sample.index if sample and sample.index
-                       else tp_index)
-
-    # Set name fallback chain: per-note → timing point → [General] default.
-    if effective_set in _SET_NAMES:
-        set_name = _SET_NAMES[effective_set]
-    else:
-        set_name = beatmap.default_sample_set.lower()
-
-    # Volume: per-note override (1-100) → timing point (1-100) → 100.
-    vol_pct = sample_volume or tp_volume or 100
-    gain = (vol_pct / 100.0) * DEFAULT_HIT_GAIN
-
-    samples: list[tuple[np.ndarray, float]] = []
-
-    def _load_first_existing(candidates: list[Path]) -> np.ndarray | None:
-        # The loader is `_SampleCache.get`. `cache` here is the cache obj.
-        for p in candidates:
-            data = _cache_get(cache, p)
+    def load(candidates, type_name):
+        for path in candidates:
+            data = cache.get(path)
             if data is not None:
-                return data
+                return SampleLayer(data, _sample_gain(volume, type_name,
+                    is_lazer_replay=is_lazer_replay), path, type_name)
         return None
 
-    # 1. Custom filename override (beatmap-specified exact file): only that
-    #    file plays. Skipped when beatmap hitsounds are disabled.
-    if sample_filename and getattr(cache, "_use_beatmap", True):
-        path = _bm_dir(beatmap, cache) / sample_filename
-        arr = _cache_get(cache, path)
-        if arr is not None:
-            samples.append((arr, gain))
-            return samples
-        # If the filename was set but the file is missing, fall through to
-        # the resolved default so the note still makes a sound.
-
-    # 2. Normal hitsound (always played for every non-miss note).
-    candidates = _candidate_paths(_sample_dirs(cache),
-                                  set_name, "normal", effective_index)
-    arr = _load_first_existing(candidates)
-    if arr is not None:
-        samples.append((arr, gain))
-
-    # 3. Layered additions (whistle / finish / clap) — only when set.
-    addition_set = (sample.addition_set if sample and sample.addition_set
-                    else effective_set)
-    add_set_name = _SET_NAMES.get(addition_set, set_name)
+    if sample.filename and cache.use_beatmap:
+        layer = load((cache.beatmap_dir / sample.filename,), "custom")
+        if layer is not None:
+            return [layer]
+    layer = load(_candidate_paths(cache.sample_dirs, set_name, "normal", effective_index), "normal")
+    if layer is not None:
+        layers.append(layer)
+    addition_set = _SET_NAMES.get(sample.addition_set, set_name)
     for bit, type_name in _ADDITIONS:
         if note.hit_sound & bit:
-            cands = _candidate_paths(_sample_dirs(cache),
-                                     add_set_name, type_name,
-                                     effective_index)
-            arr = _load_first_existing(cands)
-            if arr is not None:
-                samples.append((arr, gain))
-
-    return samples
+            layer = load(_candidate_paths(cache.sample_dirs, addition_set, type_name,
+                                           effective_index), type_name)
+            if layer is not None:
+                layers.append(layer)
+    return layers
 
 
-# Tiny wrappers because `cache` here doubles as a path-lookup carrier — we
-# also need the beatmap dir, which we stash on the cache attribute below.
-
-def _cache_get(cache: _SampleCache, path: Path) -> np.ndarray | None:
-    return cache.get(path)
-
-
-def _bm_dir(beatmap, cache: _SampleCache) -> Path:
-    return cache._beatmap_dir  # type: ignore[attr-defined]
+@dataclass(frozen=True)
+class ReplaySoundEvent:
+    time_ms: float
+    kind: str
+    note: Note | HoldNote | None = None
+    silent_node: bool = False
 
 
-def _sample_dirs(cache: _SampleCache) -> tuple:
-    return getattr(cache, "_sample_dirs", (cache._beatmap_dir,))  # type: ignore[attr-defined]
+def _lazer_sound_events(facts, notes, audio_rate: float):
+    # Use original audio-time metadata, with the SAME floating video keys as
+    # the combo simulator. Rounded display-note times must not drive lookup.
+    heads = {(n.column, n.time_ms / audio_rate): n for n in notes}
+    tails = {(n.column, n.end_time_ms / audio_rate): n
+             for n in notes if isinstance(n, HoldNote)}
+    for fact in facts:
+        if fact.kind == "reset":
+            yield ReplaySoundEvent(fact.time_ms, "reset")
+        elif fact.kind == "increment" and fact.source in ("tap", "head", "tail"):
+            key = (fact.column, fact.object_time_ms)
+            if fact.source == "tail":
+                parent = tails.get(key)
+                silent = parent is not None and parent.tail_hit_sample is None
+                node = (Note(parent.column, parent.end_time_ms, parent.tail_hit_sound,
+                             parent.tail_hit_sample) if parent is not None and not silent else None)
+                yield ReplaySoundEvent(fact.time_ms, "increment", node, silent)
+            else:
+                yield ReplaySoundEvent(fact.time_ms, "increment", heads.get(key))
 
 
-def _find_combobreak_sample(
-    beatmap_dir: Path, skin_dirs: tuple[Path, ...],
-) -> Path | None:
-    """Look up combobreak.wav: beatmap dir first (mapper override), then any
-    of the bot's configured skin directories (Night05, etc.)."""
-    candidates = [beatmap_dir / "combobreak.wav", beatmap_dir / "combobreak.ogg"]
-    for sd in skin_dirs:
-        candidates.append(sd / "combobreak.wav")
-        candidates.append(sd / "combobreak.ogg")
-    for p in candidates:
-        if p.is_file():
-            return p
+def _stable_sound_events(judgments_events, notes, audio_rate: float):
+    heads = {(n.column, int(n.time_ms / audio_rate)): n for n in notes}
+    for event in judgments_events:
+        if event.judgment == "miss":
+            yield ReplaySoundEvent(event.time_ms, "reset")
+        elif event.hit_offset_ms is not None:
+            # Keep stable's existing head/tap trigger timing. Its HitStart and
+            # SoundAtEnd contract needs a separate carrier, not lazer tails.
+            yield ReplaySoundEvent(event.time_ms + event.hit_offset_ms, "increment",
+                heads.get((event.column, event.time_ms)), silent_node=event.is_tail)
+
+
+def _find_combobreak_sample(beatmap_dir: Path, skin_dirs: tuple[Path, ...]) -> Path | None:
+    for directory in (beatmap_dir, *skin_dirs):
+        for ext in ("wav", "ogg"):
+            path = directory / f"combobreak.{ext}"
+            if path.is_file():
+                return path
     return None
 
 
 def build_hitsound_track(
-    *,
-    judgments_events,            # tuple[JudgmentEvent, ...]
-    beatmap,                     # BeatmapInfo
-    beatmap_dir: Path,
-    output_wav: Path,
-    duration_ms: int,
-    target_sample_rate: int = 44100,
-    audio_rate: float = 1.0,     # NC-mod overlay maps map-time beats → video time
-    skin_dirs: tuple[Path, ...] = (),
-    beatmap_hitsounds: bool = True,
-    miss_hitsound: bool = True,
-    nightcore: bool = False,
-    nc_mod: bool = False,
+    *, judgments_events=(), lazer_facts=None, is_lazer_replay: bool = False,
+    sample_notes=None, beatmap, beatmap_dir: Path, output_wav: Path, duration_ms: int,
+    target_sample_rate: int = 44100, audio_rate: float = 1.0,
+    skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True,
+    miss_hitsound: bool = True, nightcore: bool = False, nc_mod: bool = False,
     gameplay_end_ms: float | None = None,
-) -> Path | None:
-    """Mix each non-miss note's resolved hitsound(s) at its press time into
-    one stereo WAV at ``output_wav``. Returns the path or None on failure.
-    """
-    # OOM/waste guard (audit #52): the whole build needs soundfile — to
-    # decode samples AND to write the WAV. When it is not importable the
-    # build is a no-op that would still allocate a ~420MB whole-song
-    # float32 buffer (total_samples x 2 x 4B) and then fail the write, so
-    # skip early and render without replay hitsounds — identical outcome,
-    # minus the wasted allocation + long-map OOM risk.
-    import importlib.util
-    if importlib.util.find_spec("soundfile") is None:
-        log.warning("hitsound_skip_no_soundfile",
-                    extra={"output": str(output_wav)})
-        return None
-    cache = _SampleCache(target_sample_rate)
-    cache._beatmap_dir = beatmap_dir  # type: ignore[attr-defined]
-    # Sample lookup stack (osu!/lazer BeatmapHitsounds): the beatmap dir when
-    # the beatmap-hitsounds toggle is on, then any skin dirs, then the bundled
-    # default set. First existing file wins.
-    _dirs: list[Path] = []
-    if beatmap_hitsounds:
-        _dirs.append(beatmap_dir)
-    _dirs.extend(skin_dirs)
-    if _DEFAULT_HITSOUND_DIR.is_dir():
-        _dirs.append(_DEFAULT_HITSOUND_DIR)
-    cache._sample_dirs = tuple(_dirs)       # type: ignore[attr-defined]
-    cache._use_beatmap = beatmap_hitsounds  # type: ignore[attr-defined]
+) -> Path:
+    """Mix requested gameplay/overlay audio, or raise an actionable RendererError.
 
+    sample_notes carries original map-time metadata with resolved mod columns.
+    Eligible counts concern successful audio-bearing events inside this track.
+    Silent native hold tails are tracked separately, never unresolved hits.
+    """
+    cache = _SampleCache(target_sample_rate, beatmap_dir=beatmap_dir,
+                         skin_dirs=skin_dirs, beatmap_hitsounds=beatmap_hitsounds)
+    if is_lazer_replay and lazer_facts is None:
+        raise RendererError("Lazer replay hitsounds require source-factual gameplay events.")
+    notes = beatmap.notes if sample_notes is None else sample_notes
+    events = (_lazer_sound_events(lazer_facts, notes, audio_rate) if is_lazer_replay
+              else _stable_sound_events(judgments_events, notes, audio_rate))
     total_samples = int(duration_ms / 1000 * target_sample_rate)
     track = np.zeros((total_samples, 2), dtype=np.float32)
-
-    # Build a quick (time_ms → Note) index so we can pull each note's
-    # hitsound metadata for a judgment in O(1) average instead of scanning
-    # the notes list for every event.
-    notes_by_key = {}
-    for n in beatmap.notes:
-        notes_by_key.setdefault((n.column, n.time_ms), n)
-
-    # Combo-break sample (osu! plays it on any miss that breaks a combo of
-    # ≥ COMBO_BREAK_THRESHOLD). Found once up-front; None ⇒ no combobreak
-    # WAV available, just skip the miss audio path entirely.
-    cb_path = (_find_combobreak_sample(beatmap_dir, skin_dirs)
-               if miss_hitsound else None)
-    cb_sample: np.ndarray | None = None
-    if cb_path is not None:
-        cb_sample = cache.get(cb_path)
-
-    placed = 0
-    breaks = 0
-    skipped_unknown = 0
+    cb_path = _find_combobreak_sample(beatmap_dir, skin_dirs) if miss_hitsound else None
+    cb_sample = cache.get(cb_path) if cb_path is not None else None
+    counts = dict(eligible_hit_events=0, resolved_hit_events=0, resolved_sample_layers=0,
+                  unresolved_hit_events=0, mixed_sample_layers=0, combo_break_layers=0,
+                  silent_node_events=0, zero_gain_hit_events=0)
     combo = 0
-    for j in judgments_events:
-        if j.hit_offset_ms is not None and j.judgment != "miss":
-            note = notes_by_key.get((j.column, j.time_ms))
-            if note is None:
-                skipped_unknown += 1
-                combo += 1
-                continue
-            samples = _resolve_samples_for_note(note, beatmap, cache)
-            press_ms = j.time_ms + j.hit_offset_ms
-            start = int(press_ms / 1000 * target_sample_rate)
-            if 0 <= start < total_samples:
-                for arr, gain in samples:
-                    end = min(start + arr.shape[0], total_samples)
-                    length = end - start
-                    track[start:end] += arr[:length] * gain
-                placed += 1
-            combo += 1
-        elif j.judgment == "miss":
-            # Combo-break sound only fires if the broken combo was big
-            # enough — matches osu! stable's 20-hit threshold.
-            if cb_sample is not None and combo >= COMBO_BREAK_THRESHOLD:
-                # The miss happens at the note's scheduled time (no press
-                # to anchor on); place combobreak there.
-                start = int(j.time_ms / 1000 * target_sample_rate)
-                if 0 <= start < total_samples:
-                    end = min(start + cb_sample.shape[0], total_samples)
-                    length = end - start
-                    track[start:end] += cb_sample[:length] * COMBO_BREAK_GAIN
-                    breaks += 1
+    combo_break_starts = []
+
+    def mix(arr, gain, start):
+        length = min(len(arr), total_samples - start)
+        if length <= 0:
+            return False
+        track[start:start + length] += arr[:length] * gain
+        return True
+
+    for event in events:
+        start = int(event.time_ms / 1000 * target_sample_rate)
+        in_range = 0 <= start < total_samples
+        if event.kind == "reset":
+            if in_range and cb_sample is not None and combo >= COMBO_BREAK_THRESHOLD:
+                combo_break_starts.append(start)
             combo = 0
+            continue
+        combo += 1
+        if not in_range:
+            continue
+        if event.silent_node:
+            counts["silent_node_events"] += 1
+            continue
+        counts["eligible_hit_events"] += 1
+        layers = (_resolve_samples_for_note(event.note, beatmap, cache,
+                    is_lazer_replay=is_lazer_replay) if event.note is not None else [])
+        if not layers:
+            counts["unresolved_hit_events"] += 1
+            continue
+        counts["resolved_hit_events"] += 1
+        counts["resolved_sample_layers"] += len(layers)
+        if all(layer.gain == 0 for layer in layers):
+            # Stable direct custom samples can intentionally have volume zero.
+            counts["zero_gain_hit_events"] += 1
+        for layer in layers:
+            counts["mixed_sample_layers"] += int(mix(layer.samples, layer.gain, start))
 
-    # The general metronome is SUPPRESSED while NC is active (the NC drum
-    # overlay below plays instead — osu! never plays both on one render).
-    nc_layered = 0
-    if nightcore and not nc_mod:
-        nc_layered = _layer_nightcore(
-            track, beatmap.timing_points, cache, skin_dirs,
-            target_sample_rate, duration_ms,
-            gameplay_end_ms=gameplay_end_ms,
-        )
-
-    # ModNightcore beat overlay — AUTOMATIC when the NC mod is active,
-    # independent of the `nightcore` metronome toggle above (both may lay).
-    # Mania timing points are MAP time (apply_mods rescales notes, not TPs),
-    # so this pass maps map-time beats → video time via audio_rate.
-    nc_mod_layered = 0
-    if nc_mod:
-        nc_mod_layered = _layer_nightcore_mod(
-            track, beatmap.timing_points, cache, skin_dirs,
-            target_sample_rate, duration_ms, audio_rate, play_hats=True,
-            gameplay_end_ms=gameplay_end_ms,
-        )
-
+    # Inspect gameplay PCM before overlays: other sounds cannot disguise
+    # silent/missing note samples. PCM_16 uses floor quantisation.
+    gameplay_peak = (float(np.max(np.abs(np.floor(track * 32768)))) / 32768
+                     if track.size else 0.0)
+    for start in combo_break_starts:
+        counts["combo_break_layers"] += int(mix(cb_sample, COMBO_BREAK_GAIN, start))
+    nc_layered = (_layer_nightcore(track, beatmap.timing_points, cache, skin_dirs,
+        target_sample_rate, duration_ms, gameplay_end_ms=gameplay_end_ms)
+        if nightcore and not nc_mod else 0)
+    nc_mod_layered = (_layer_nightcore_mod(track, beatmap.timing_points, cache, skin_dirs,
+        target_sample_rate, duration_ms, audio_rate, play_hats=True,
+        gameplay_end_ms=gameplay_end_ms) if nc_mod else 0)
     np.clip(track, -1.0, 1.0, out=track)
-
-    output_wav.parent.mkdir(parents=True, exist_ok=True)
-    import soundfile
-    soundfile.write(str(output_wav), track, target_sample_rate, subtype="PCM_16")
-    log.info("hitsound_track_built",
-             extra={"path": str(output_wav), "hits": placed,
-                    "breaks": breaks, "skipped": skipped_unknown,
-                    "nightcore_beats": nc_layered,
-                    "nc_mod_beats": nc_mod_layered})
+    # Match PCM_16 quantisation when diagnosing numerical silence.
+    pcm = np.floor(track * 32768).clip(-32768, 32767) / 32768
+    peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
+    rms = float(np.sqrt(np.mean(pcm * pcm, dtype=np.float64))) if pcm.size else 0.0
+    diagnostics = {"path": str(output_wav), **counts, "nightcore_beats": nc_layered,
+                   "nc_mod_beats": nc_mod_layered, "peak": peak, "rms": rms}
+    expected_audible_events = counts["eligible_hit_events"] - counts["zero_gain_hit_events"]
+    if expected_audible_events and (not counts["resolved_sample_layers"]
+                                   or gameplay_peak == 0 or peak == 0):
+        log.error("hitsound_track_unusable", extra=diagnostics)
+        raise RendererError("Replay hitsounds resolved no audible gameplay samples. Check the "
+                            "bundled default_hitsounds assets and sample decoding; see hitsound diagnostics.")
+    try:
+        output_wav.parent.mkdir(parents=True, exist_ok=True)
+        cache.soundfile.write(str(output_wav), track, target_sample_rate, subtype="PCM_16")
+    except (OSError, ValueError, cache.soundfile.SoundFileError) as exc:
+        raise RendererError(f"Cannot write replay hitsound WAV {output_wav}: {exc}") from exc
+    log.info("hitsound_track_built", extra=diagnostics)
     return output_wav
 
 
