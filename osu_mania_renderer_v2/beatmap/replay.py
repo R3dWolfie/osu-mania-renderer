@@ -23,7 +23,8 @@ def parse_replay(path: Path) -> ReplayInfo:
     if mode != 3:
         raise NotAManiaError(mode)
 
-    events = _decode_key_events(r, path)
+    ordered_events = _decode_ordered_key_events(r, path)
+    events = _deduplicate_key_events(ordered_events)
 
     total = (
         r.count_300 + r.count_100 + r.count_50 + r.count_miss
@@ -49,8 +50,8 @@ def parse_replay(path: Path) -> ReplayInfo:
     #
     # Lazer detection via game_version (lazer writes 9-digit ≥30000000);
     # stable + the Score V2 mod (1<<29) also gets 305.
-    is_v2 = (int(getattr(r, "game_version", 0) or 0) >= 30000000
-             or bool(int(r.mods) & (1 << 29)))
+    is_lazer_replay = int(getattr(r, "game_version", 0) or 0) >= 30000000
+    is_v2 = is_lazer_replay or bool(int(r.mods) & (1 << 29))
     mw = 305 if is_v2 else 320
     aw = 305 if is_v2 else 300
     if total == 0:
@@ -81,6 +82,8 @@ def parse_replay(path: Path) -> ReplayInfo:
         grade=_grade(accuracy, r),
         mania_max_weight=mw,
         mania_acc_weight=aw,
+        is_lazer_replay=is_lazer_replay,
+        ordered_key_events=tuple(ordered_events),
     )
 
 
@@ -168,7 +171,7 @@ def _recover_leadin_offset(path: Path) -> int:
         return 0
 
 
-def _decode_key_events(r: Replay, path: Path) -> list[KeyEvent]:
+def _decode_ordered_key_events(r: Replay, path: Path) -> list[KeyEvent]:
     """Convert osrparse ReplayEventMania entries to absolute-time KeyEvents.
 
     Two .osr quirks must be handled or the whole press timeline desyncs:
@@ -198,11 +201,19 @@ def _decode_key_events(r: Replay, path: Path) -> list[KeyEvent]:
         # osrparse 7.x: ReplayEventMania.keys is the bitmask of held columns.
         keys = int(getattr(ev, "keys", 0))
         out.append(KeyEvent(time_ms=max(t, 0), keys_held=keys))
-    # Deduplicate same-time entries by keeping the latest.
+    return out
+
+
+def _deduplicate_key_events(out: list[KeyEvent]) -> list[KeyEvent]:
+    # Preserve the existing presentation/scoring contract separately.
     dedup: dict[int, KeyEvent] = {}
     for e in out:
         dedup[e.time_ms] = e
     return sorted(dedup.values(), key=lambda e: e.time_ms)
+
+
+def _decode_key_events(r: Replay, path: Path) -> list[KeyEvent]:
+    return _deduplicate_key_events(_decode_ordered_key_events(r, path))
 
 
 def _grade(accuracy: float, r: Replay) -> str:

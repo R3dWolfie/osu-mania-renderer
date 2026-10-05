@@ -58,6 +58,8 @@ from osu_mania_renderer_v2.beatmap.replay import parse_replay
 from osu_mania_renderer_v2.render.legacy_mania_events import (
     LegacyManiaPresentation, build_legacy_mania_presentation,
 )
+from osu_mania_renderer_v2.render.stable_mania_combo import StableComboTimeline
+from osu_mania_renderer_v2.render.lazer_mania_combo import LazerComboTimeline, build_lazer_combo_timeline
 from osu_mania_renderer_v2.render.scene import (
     HitErrorEvent, HoldVisualState, JudgmentPopup, build_hold_visual_states, snapshot,
     sliding_colour_mix, lighting_n_events_at,
@@ -202,6 +204,8 @@ class RenderPlan:
     hold_visual_states: dict[tuple[int, int], HoldVisualState] = field(default_factory=dict)
     legacy_timing: Any = None
     legacy_presentation: LegacyManiaPresentation = field(default_factory=LegacyManiaPresentation)
+    stable_combo_timeline: StableComboTimeline | None = None
+    lazer_combo_timeline: LazerComboTimeline | None = None
 
 
 async def build_render_plan(
@@ -246,6 +250,7 @@ async def build_render_plan(
     # unscaled: stable-mania windows are rate-independent in real time.
     # NOTE: parse_beatmap above must keep consuming the RAW events - the
     # std->mania convert recovery matches them against raw .osu times.
+    audio_key_events = replay.key_events
     if mod_res.audio_rate != 1.0:
         replay = _dc_replace(replay, key_events=tuple(
             KeyEvent(time_ms=int(e.time_ms / mod_res.audio_rate),
@@ -265,7 +270,51 @@ async def build_render_plan(
         modded.notes, replay.key_events, modded.key_count,
         od=beatmap.overall_difficulty, source_mode=beatmap.source_mode,
         mods=replay.mods, rate=mod_res.audio_rate,
+        include_combo=not replay.is_lazer_replay and mod_res.audio_rate == 1,
     )
+    if not replay.is_lazer_replay and mod_res.audio_rate != 1:
+        # Reuse the SAME source state machine in original integer audio time.
+        # apply_mods preserves note order; share its resolved columns while
+        # keeping raw start/end times. Video rounding must not reorder a due
+        # ComboAddition and a release. Scoring/presentation rescaling stays intact.
+        audio_notes = tuple(_dc_replace(raw, column=display.column)
+                            for raw, display in zip(beatmap.notes, modded.notes))
+        audio_evidence = build_legacy_mania_presentation(
+            audio_notes, audio_key_events, modded.key_count,
+            od=beatmap.overall_difficulty, source_mode=beatmap.source_mode,
+            mods=replay.mods, rate=mod_res.audio_rate, timeline_rate=1, include_combo=True,
+        )
+        legacy_presentation = _dc_replace(legacy_presentation, stable_combo_facts=tuple(
+            _dc_replace(fact, time_ms=fact.time_ms / mod_res.audio_rate)
+            for fact in audio_evidence.stable_combo_facts
+        ))
+    stable_combo_timeline = (None if replay.is_lazer_replay else
+                             StableComboTimeline.build(legacy_presentation.stable_combo_facts))
+    lazer_combo_timeline = None
+    if replay.is_lazer_replay:
+        audio_notes = tuple(_dc_replace(raw, column=display.column)
+                            for raw, display in zip(beatmap.notes, modded.notes))
+        lazer_combo_timeline = build_lazer_combo_timeline(
+            audio_notes, replay.ordered_key_events or audio_key_events, modded.key_count,
+            od=beatmap.overall_difficulty, mods=replay.mods, rate=mod_res.audio_rate,
+        )
+        reconstructed_max = lazer_combo_timeline.reconstructed_max_combo
+        log.log(logging.INFO if reconstructed_max == replay.max_combo else logging.WARNING,
+                "lazer_combo_diagnostic header_max_combo=%d reconstructed_max_combo=%d matches=%s",
+                replay.max_combo, reconstructed_max, reconstructed_max == replay.max_combo, extra={
+                    "header_max_combo": replay.max_combo,
+                    "reconstructed_max_combo": reconstructed_max,
+                    "max_combo_matches": reconstructed_max == replay.max_combo,
+                })
+    if stable_combo_timeline is not None:
+        reconstructed_max = stable_combo_timeline.reconstructed_max_combo
+        log.log(logging.INFO if reconstructed_max == replay.max_combo else logging.WARNING,
+                "stable_combo_diagnostic header_max_combo=%d reconstructed_max_combo=%d matches=%s",
+                replay.max_combo, reconstructed_max, reconstructed_max == replay.max_combo, extra={
+                    "header_max_combo": replay.max_combo,
+                    "reconstructed_max_combo": reconstructed_max,
+                    "max_combo_matches": reconstructed_max == replay.max_combo,
+                })
     modded_od = getattr(modded, "overall_difficulty", None)
     hit_error_windows = (
         windows_for_od(float(modded_od))
@@ -605,6 +654,8 @@ async def build_render_plan(
         hold_visual_states=hold_visual_states,
         legacy_timing=legacy_timing,
         legacy_presentation=legacy_presentation,
+        stable_combo_timeline=stable_combo_timeline,
+        lazer_combo_timeline=lazer_combo_timeline,
     )
 
 
@@ -849,6 +900,16 @@ def build_frame_state(
 
     combo_age_ms = t_ms - last_combo_change_t
     combo_break_age_ms = t_ms - last_combo_break_t
+    # This gameplay carrier is independent of skin choice and score combo.
+    # Keep the reconciled score fold; both clients have separate combo truth.
+    source_combo_timeline = (getattr(plan, "lazer_combo_timeline", None)
+                             or getattr(plan, "stable_combo_timeline", None))
+    source_combo_state = source_combo_timeline.at(t_ms) if source_combo_timeline is not None else None
+    if source_combo_state is not None:
+        combo_at_t = source_combo_state.combo
+        combo_age_ms = t_ms - source_combo_state.last_increment_ms
+        combo_break_previous = source_combo_state.break_previous_value
+        combo_break_age_ms = t_ms - source_combo_state.last_break_ms
 
     if gameplay_end_ms > 0:
         song_progress = min(1.0, max(0.0, t_ms / gameplay_end_ms))
@@ -879,6 +940,8 @@ def build_frame_state(
         if mt <= t_ms:
             miss_break_age = t_ms - mt
             break
+    if source_combo_state is not None:
+        miss_break_age = t_ms - source_combo_state.last_large_break_ms
 
     total_so_far = sum(running.values())
     if total_so_far == 0:
@@ -1000,6 +1063,7 @@ def build_frame_state(
         combo_age_ms=combo_age_ms,
         combo_break_previous_value=combo_break_previous,
         combo_break_age_ms=combo_break_age_ms,
+        reconstructed_max_combo=source_combo_state.running_max if source_combo_state is not None else None,
         score_smoothed=int(score_smoothed),
         accuracy_smoothed=accuracy_smoothed,
         song_progress=song_progress,

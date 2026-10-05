@@ -302,6 +302,8 @@ class SceneState:
     lighting_n_events: tuple[LightingNEvent, ...] | None = None
     legacy_hold_colour_mix: float = 0.0
     legacy_long_lights: tuple[LegacyLongLightState, ...] | None = None
+    # Source-factual running maximum; the results-screen max_combo stays header-backed.
+    reconstructed_max_combo: int | None = None
 
 
 def snapshot(

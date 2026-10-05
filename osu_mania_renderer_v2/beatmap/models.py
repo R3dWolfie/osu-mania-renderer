@@ -142,6 +142,12 @@ class ReplayInfo:
     # 305 for lazer / Score V2. Drives the HUD running acc, the results-screen
     # acc and the grade. Default 305 = lazer.
     mania_acc_weight: int = 305
+    # Client provenance is independent of score weights and the ScoreV2 mod.
+    # Production parsing sets this from the replay's game version.
+    is_lazer_replay: bool = False
+    # Original frame sequence, including transient same-timestamp transitions.
+    # key_events retains its historical last-mask-per-time presentation contract.
+    ordered_key_events: tuple[KeyEvent, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass
+from heapq import heapify, heappop, heappush
 
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, Note
 from osu_mania_renderer_v2.beatmap.mods import Mod
+from osu_mania_renderer_v2.render.stable_mania_combo import StableComboFact
 
 
 @dataclass(frozen=True)
@@ -24,7 +26,8 @@ class StableManiaWindows:
     early: float
 
     @classmethod
-    def build(cls, od: float, source_mode: int = 3, mods: int = 0, rate: float = 1):
+    def build(cls, od: float, source_mode: int = 3, mods: int = 0, rate: float = 1,
+              timeline_rate: float | None = None):
         # UpdateVariables uses original OD and fixed windows for converts;
         # VariablesCalcu truncates in audio time before conversion to video time.
         if source_mode == 3:
@@ -33,7 +36,8 @@ class StableManiaWindows:
         else:
             raw = (16, 34, 67, 97, 121, 158) if round(od) > 4 else (16, 47, 77, 97, 121, 158)
         factor = 1 / 1.4 if mods & Mod.HR else 1.4 if mods & Mod.EZ else 1
-        return cls(*(int(value * factor * rate) / rate for value in raw))
+        input_rate = rate if timeline_rate is None else timeline_rate
+        return cls(*(int(value * factor * rate) / input_rate for value in raw))
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,7 @@ class LegacyManiaPresentation:
     long_light_times: tuple[tuple[float, ...], ...] = ()
     sliding_intervals: tuple[tuple[float, float], ...] = ()
     rate: float = 1
+    stable_combo_facts: tuple[StableComboFact, ...] = ()
 
     def long_lights_at(self, t_ms: float):
         result = []
@@ -97,6 +102,7 @@ class _NoteLifecycle:
     finalised: bool = False
     missing: bool = False
     hold_break: bool = False
+    last_score_time: float | None = None
 
     def hit(self, now: float, windows: StableManiaWindows):
         note = self.note
@@ -108,14 +114,16 @@ class _NoteLifecycle:
                                         ("geki", "300", "katu", "100", "50")):
                     if diff <= window:
                         return tier
-            return None
+            return 'miss'
         # HitStart returns Ignore. Only Hit() can finalise or report a break.
+        self.last_score_time = None  # Hit() cancels Holding even when it returns Ignore.
         self.missing = not self.pressed and now > note.time_ms + windows.meh
         if now < note.time_ms + windows.meh and self.time_press == 0:
             return None
         if now < note.end_time_ms - windows.meh:
             if not self.pressed:
                 self.hold_break = True
+                return 'hold-break'
             return None
         if self.pressed and now < note.end_time_ms + windows.meh:
             return None
@@ -124,7 +132,7 @@ class _NoteLifecycle:
                  else note.time_ms + abs(self.time_press - note.time_ms))
         end = now if self.pressed else note.end_time_ms - abs(self.time_release - note.end_time_ms)
         if end < note.end_time_ms - windows.meh:
-            return None
+            return 'miss'
         diff_start = abs(start - note.time_ms)
         diff_total = diff_start + abs(end - note.end_time_ms)
         for window, tier in ((windows.geki * 1.2, "geki"), (windows.great * 1.1, "300"),
@@ -137,6 +145,8 @@ class _NoteLifecycle:
 def build_legacy_mania_presentation(
     notes: tuple[Note | HoldNote, ...], key_events: tuple[KeyEvent, ...], key_count: int,
     *, od: float = 5, source_mode: int = 3, mods: int = 0, rate: float = 1,
+    include_combo: bool = False,
+    timeline_rate: float | None = None,
 ) -> LegacyManiaPresentation:
     """Replay stable's input branches and automatic gates once, in source order.
 
@@ -144,7 +154,10 @@ def build_legacy_mania_presentation(
     Hit() never relies on a future replay release or a renderer's frame history.
     An active-note window keeps work proportional to input and nearby objects.
     """
-    windows = StableManiaWindows.build(od, source_mode, mods, rate)
+    # rate is the mod's audio speed; timeline_rate describes the supplied
+    # timestamps. Original audio timestamps use 1, video timestamps use rate.
+    input_rate = rate if timeline_rate is None else timeline_rate
+    windows = StableManiaWindows.build(od, source_mode, mods, rate, timeline_rate)
     ordered = sorted(notes, key=lambda note: note.time_ms)  # stable tie order
     ticks = {}
     for event in key_events:
@@ -154,7 +167,7 @@ def build_legacy_mania_presentation(
         for boundary in (note.time_ms - windows.early, note.time_ms, end + windows.ok):
             ticks.setdefault(boundary, [])
         if isinstance(note, HoldNote):
-            for boundary in (note.time_ms + windows.meh, note.time_ms + windows.meh + 1 / rate,
+            for boundary in (note.time_ms + windows.meh, note.time_ms + windows.meh + 1 / input_rate,
                              end + windows.meh):
                 ticks.setdefault(boundary, [])
     lights = [[] for _ in range(key_count)]
@@ -164,25 +177,84 @@ def build_legacy_mania_presentation(
     held = 0
     next_note = 0
     active = []
+    combo_facts = []
+    pending = list(ticks)
+    # Presentation update times are unchanged. Extra logical Holding updates
+    # only advance the combo clock; they cannot mutate Round 3.5 presentation.
+    heapify(pending)
+    queued = set(pending)
+    combo_interval = 100 / input_rate  # JudgementMania.ComboIntv uses Clocks.Audio.
+
+    def schedule_holding(state, now):
+        if not include_combo or state.last_score_time is None:
+            return
+        when = max(state.note.time_ms, state.last_score_time + combo_interval)
+        # Holding adds once per update. Catch up an overdue early-press clock
+        # on the next integer audio millisecond, never on a renderer frame.
+        if when <= now:
+            when = now + 1 / input_rate
+        if when <= state.note.end_time_ms and when not in queued:
+            heappush(pending, when)
+            queued.add(when)
+
+    def holding(state, now):
+        if (include_combo and state.last_score_time is not None
+                and state.note.time_ms <= now <= state.note.end_time_ms
+                and now >= state.last_score_time + combo_interval):
+            state.last_score_time += combo_interval
+            combo_facts.append(StableComboFact(now, 'increment', 'ln-hold', state.note.column))
+        schedule_holding(state, now)
 
     def set_long_light(column, value, now):
         if enabled[column] == value:
             return
         enabled[column] = value
         previous = lights[column][-1] if lights[column] else None
-        alpha = previous.alpha_at(now, rate) if previous else 0
+        alpha = previous.alpha_at(now, input_rate) if previous else 0
         animation_start = now if value else previous.animation_start_ms
         lights[column].append(_LongLightChange(now, animation_start, alpha, value))
 
     def hit(state, now):
         tier = state.hit(now, windows)
-        if tier is not None and not (mods & Mod.PF and tier not in ("geki", "300")):
+        positive = tier in ("geki", "300", "katu", "100", "50")
+        positive = positive and not (mods & Mod.PF and tier not in ("geki", "300"))
+        if include_combo and tier is not None:
+            source = ('ln-break' if tier == 'hold-break' else 'ln-final'
+                      if isinstance(state.note, HoldNote) else 'tap' if positive else 'miss')
+            combo_facts.append(StableComboFact(now, 'increment' if positive else 'reset',
+                                              source, state.note.column))
+        if positive:
             note = state.note
             facts.append(LegacyHitLightFact(now, note.column, tier,
                                           "ln-final" if isinstance(note, HoldNote) else "tap"))
             set_long_light(note.column, False, now)
 
-    for now, replay_masks in sorted(ticks.items()):
+    while pending:
+        now = heappop(pending)
+        if now not in ticks:
+            # No replay edge occurs here. Keep source object order, including
+            # negative Hit() calls on other lanes, before/after Holding().
+            # Presentation toggles still belong to the existing update stream.
+            hitted = [False] * key_count
+            for state in active:
+                note, column = state.note, state.note.column
+                if state.finalised:
+                    if note.time_ms > now:
+                        hitted[column] = True
+                    continue
+                if hitted[column]:
+                    continue
+                end = note.end_time_ms if isinstance(note, HoldNote) else note.time_ms
+                if now >= end + windows.ok:
+                    hit(state, now)
+                    continue
+                if isinstance(note, HoldNote) and state.pressed and held & (1 << column):
+                    hitted[column] = True
+                    holding(state, now)
+                elif isinstance(note, HoldNote) and not (held & (1 << column)) and not state.missing:
+                    hit(state, now)
+            continue
+        replay_masks = ticks[now]
         while next_note < len(ordered) and ordered[next_note].time_ms - windows.early <= now:
             active.append(_NoteLifecycle(ordered[next_note]))
             next_note += 1
@@ -212,11 +284,14 @@ def build_legacy_mania_presentation(
                         hit(state, now)
                     elif not state.pressed:
                         state.pressed, state.time_press = True, now
+                        state.last_score_time = now
                         hitted[column] = sliding = True
                         set_long_light(column, True, now)
+                        schedule_holding(state, now)
                 elif held & (1 << column):
                     if isinstance(note, HoldNote) and state.pressed:
                         hitted[column] = sliding = True
+                        holding(state, now)
                         set_long_light(column, True, now)
                 else:
                     if isinstance(note, HoldNote):
@@ -236,4 +311,4 @@ def build_legacy_mania_presentation(
     changes = tuple(tuple(column) for column in lights)
     return LegacyManiaPresentation(tuple(facts), tuple(fact.time_ms for fact in facts), changes,
                                    tuple(tuple(change.time_ms for change in column) for column in changes),
-                                   tuple(intervals), rate)
+                                   tuple(intervals), input_rate, tuple(combo_facts))
