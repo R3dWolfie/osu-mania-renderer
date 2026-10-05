@@ -3,7 +3,9 @@ name = "osu-mania-renderer-v2"
 version = "0.1.0"
 description = "Render osu! replays to MP4 (GPU + ffmpeg)"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COPYRIGHT"]
+readme = "README.md"
 dependencies = [
     "moderngl>=5.10",
     "osrparse>=7.0",
@@ -18,6 +20,7 @@ dev = [
     "pytest-asyncio>=0.24,<2",
     "pytest-mock>=3.14",
     "ruff>=0.7",
+    "build>=1.2",
 ]
 
 [project.scripts]
@@ -38,12 +41,16 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B"]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["osu_mania_renderer_v2", "osu_mania_renderer_v2.gpu"]
-include-package-data = true
+include-package-data = false  # Assets are declared explicitly below.
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["osu_mania_renderer_v2*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 osu_mania_renderer_v2 = ["assets/**/*"]

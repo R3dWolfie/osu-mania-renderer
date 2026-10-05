@@ -1,0 +1,5 @@
+include README.md LICENSE COPYRIGHT
+recursive-include osu_mania_renderer_v2/assets *
+recursive-include tests *.py
+recursive-include tests/fixtures *.osu *.osr *.json *.flac
+global-exclude *.py[cod] *.pre_recovery_bak

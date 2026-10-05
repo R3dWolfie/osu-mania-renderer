@@ -1,11 +1,95 @@
 {
-  "authority": "Official osu! default combo-break audio, unmodified bytes from readable stable archive.",
+  "authority": "Official default hitsounds: attributed ppy/osu-resources import, plus unmodified stable archive combo-break.",
   "license": "CC BY-NC 4.0 (ppy osu-resources)",
   "files": {
     "combobreak.mp3": {
       "source": "osu-master/osu!gameplay/Resources/combobreak.mp3",
       "source_revision": "6f28dcad010f2f0174c4a6b3624f9929611cb266",
       "sha256": "6399731b7eac8bf80de4121e0257f1e4416e871b3ed9c3523da236dbbe8ffddc"
+    },
+    "drum-hitclap.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "a59fbea9476ac4cec3d2f5199b9a61a55a95b91d4e405aaf6fdcdb0828675390"
+    },
+    "drum-hitfinish.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "ba686604a74bd3c8513c586b855976275e016423d790d276a1b8588f2596b316"
+    },
+    "drum-hitnormal.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "225250601325a4e4f1cddda8ccbd5c9546171a74d6ef1e6fcda67c62ae6e6e28"
+    },
+    "drum-hitwhistle.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "e2f82f16ec86847b69fd2faad3496af5cb2de71a89d8bf1afeb7baad5bbd5c04"
+    },
+    "normal-hitclap.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "db11fa8e0a404f5cc10d370e203c813a2feff93d574c6d62aecd311214f00560"
+    },
+    "normal-hitfinish.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "9e2beca4756ff1d5749719477ffcfc125f40b5c6500acb4e55381ac6f12661be"
+    },
+    "normal-hitnormal.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "f600fefe9e61f559278f05936559da10a45cc001413486e7d80786efca31b160"
+    },
+    "normal-hitwhistle.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "89f185f8065c33a2d43b32d02b8f8fb9a2397a8859ccf34e97f4d02ee9968017"
+    },
+    "soft-hitclap.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "fc904d98c245b94e9dd6617ffd44f6e987d40b967625c1bdea813bc7683eef2e"
+    },
+    "soft-hitfinish.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "76ff8261d86c532f8ba407e658fab21f409330deb3cbf2a5a82eef60863050a4"
+    },
+    "soft-hitnormal.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "03a758aadc95f8769539ead5083f1d724d01f88a4f7b9167aedd390a1e70d964"
+    },
+    "soft-hitwhistle.wav": {
+      "source_project": "ppy/osu-resources",
+      "import_commit": "a2a11346cb45aeba71eae2b0e7631062180fc26a",
+      "upstream_revision": null,
+      "verification": "Bytes unchanged from attributed repository import; upstream revision was not recorded.",
+      "sha256": "ae04af4b8a212de51d5d649d53f4d3c6754587766fea744a33f392f6d91c7e68"
     }
   }
 }

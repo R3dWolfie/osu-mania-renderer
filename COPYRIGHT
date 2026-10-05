@@ -33,7 +33,12 @@ ppy Pty Ltd — official osu! default resources
     osu_mania_renderer_v2/assets/default_hitsounds/combobreak.mp3 is the
     unmodified official default combo-break sample from the same archive.
     Its source and hash are in assets/default_hitsounds/provenance.json.
-    It retains the same separate upstream resource terms above.
+    It retains the same separate upstream resource terms above. The other
+    default_hitsounds WAVs were imported from ppy/osu-resources in a2a1134;
+    their hashes and the unrecorded upstream-revision limitation are included
+    in that manifest. assets/default_nightcore/ contains four unmodified
+    official default drums, independently verified against the stable archive;
+    its provenance.json records their hashes. All retain CC BY-NC 4.0.
 
     osu_mania_renderer_v2/assets/sprites/classic_stage_light@2x.png is an
     unmodified copy of osu.Game.Resources/Skins/Legacy/mania-stage-light@2x.png

@@ -1,0 +1,23 @@
+{
+  "authority": "Unmodified official default resources, verified against readable stable source archive.",
+  "source_revision": "6f28dcad010f2f0174c4a6b3624f9929611cb266",
+  "license": "CC BY-NC 4.0 (ppy osu-resources)",
+  "files": {
+    "nightcore-clap.wav": {
+      "source": "osu-master/osu!gameplay/Resources/nightcore-clap.wav",
+      "sha256": "0fb5bf211acd371407f7c7710a59ff6f5bdc82f439569dae5d8b597b158c0f72"
+    },
+    "nightcore-finish.wav": {
+      "source": "osu-master/osu!gameplay/Resources/nightcore-finish.wav",
+      "sha256": "950ed53537a558517e4df8f3b61768e92af7ba03177432e25545adcb6fef3a17"
+    },
+    "nightcore-hat.wav": {
+      "source": "osu-master/osu!gameplay/Resources/nightcore-hat.wav",
+      "sha256": "dde42e64a294eac9438a1e2568f449a2f499d1d913128bd1224a4d70f4c5b35b"
+    },
+    "nightcore-kick.wav": {
+      "source": "osu-master/osu!gameplay/Resources/nightcore-kick.wav",
+      "sha256": "28edb6cb632e2b62af40b0955a1e20bda58716d9918f66f77b0f8bbd618b250e"
+    }
+  }
+}

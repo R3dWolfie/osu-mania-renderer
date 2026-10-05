@@ -84,16 +84,37 @@ await render_mania(
 )
 ```
 
+## Replay audio
+
+Replay hitsounds are enabled by default and require the declared `soundfile`
+runtime dependency. Missing/broken audio dependencies fail clearly. Samples use
+beatmap files first, then the selected skin only with `--skin-hitsounds`, then
+bundled defaults. `--no-beatmap-hitsounds` removes beatmap files from this lookup.
+`--hitsound-volume` applies the final user gain. WAV output streams in bounded
+chunks, including overlapping samples and NC drums.
+
+Both `--no-combo-break` and its compatibility control `--no-miss-hitsound` disable
+combo-break SFX. `--combo-break-threshold N` plays them when old combo is strictly
+greater than N (default 20). Lazer also plays its first nonzero-to-zero break,
+following its default client setting; that first-break rule is independent of N.
+Stable Relax/Autopilot paths suppress combo-break audio. Visual combo effects are
+independent of these audio controls.
+
+Set `R3D_PREVIEW_INLINE=1` to write a 720p30 `.embed.mp4` alongside the master in
+the same ffmpeg process. The preview includes the final song/hits mix; the master
+keeps its existing audio and video behavior.
+
 ## Requirements
 
 - Python **>=3.12**
 - Runtime deps (`pyproject.toml`): `moderngl>=5.10`, `osrparse>=7.0`, `Pillow>=10.0`,
-  `numpy>=2.0`
+  `numpy>=2.0`, `soundfile>=0.12` (sample decoder/WAV writer; platform wheels
+  normally bundle libsndfile, source installs may need system libsndfile)
 - `ffmpeg` on `$PATH` (libx264; VAAPI/NVENC optional for hardware encoding)
-- A working EGL/GPU stack for the headless ModernGL context
+- A working OpenGL stack: EGL on Linux, platform standalone context on Windows/macOS
 - Optional: `rosu_pp_py` for PP / star-rating estimation (imported lazily; PP/SR fall
   back to 0 with a warning if absent — not listed in `pyproject.toml`)
-- Dev extras (`.[dev]`): `pytest`, `pytest-asyncio`, `pytest-mock`, `ruff`
+- Dev extras (`.[dev]`): `pytest`, `pytest-asyncio`, `pytest-mock`, `ruff`, `build`
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate
@@ -127,8 +148,8 @@ tree — recovery cruft, not part of the package. Verify before relying on eithe
 
 **AGPL-3.0-or-later** — see `LICENSE` and `COPYRIGHT` (© 2026 Cool Adults).
 
-Note: `pyproject.toml` still declares `license = "MIT"`, which contradicts
-`LICENSE`/`COPYRIGHT` — treat AGPL-3.0 as authoritative and fix the metadata (verify).
+Package metadata and bundled `LICENSE`/`COPYRIGHT` declare AGPL-3.0-or-later for
+the renderer code. Upstream resources retain their separately attributed licences.
 
 Attribution: gameplay/scoring/HUD logic ported from ppy's osu! / osu-framework (MIT);
 danser-go (GPL-3.0) was studied as a behavioural reference. Any osu! skin you supply
