@@ -116,6 +116,8 @@ class _SampleCache:
             _DEFAULT_HITSOUND_DIR, _DEFAULT_NC_DIR)))
         self._cache = OrderedDict()
         self._cache_bytes = 0
+        # Static failure identities live for this render; unlike PCM they must
+        # not be evicted and retried thousands of times on dense charts.
         self._missing = set()
         self._beatmap_sizes = {}
         # A valid zero-length BASS sample: resolved silence, distinct from None.
@@ -176,8 +178,6 @@ class _SampleCache:
         if key in self._missing:
             return None
         if not path.is_file():
-            if len(self._missing) >= 4096:
-                self._missing.clear()
             self._missing.add(key)
             return None
         try:
@@ -200,12 +200,11 @@ class _SampleCache:
                 data = data[idx]
         except ValueError as exc:
             log.warning("hitsound_sample_rejected", extra={"path": str(path), "err": str(exc)})
-            if len(self._missing) >= 4096:
-                self._missing.clear()
             self._missing.add(key)
             return None
         except (OSError, self.soundfile.SoundFileError) as exc:
             log.warning("hitsound_load_failed", extra={"path": str(path), "err": str(exc)})
+            self._missing.add(key)
             return None
         data = data.astype(np.float32, copy=False)
         while self._cache and self._cache_bytes + data.nbytes > self.max_cache_bytes:

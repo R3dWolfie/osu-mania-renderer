@@ -171,3 +171,20 @@ def test_tiny_valid_wave_obeys_beatmap_only_stable_rule(sources,lazer,tier,expec
     layers=resolve(sources,chart(sample_set=1,index=1 if tier=='map' else 0),lazer=lazer)
     assert layers[0].path.parent==sources[tier]
     assert bool(np.any(layers[0].samples)) is not expected_silent
+
+
+def test_corrupt_candidate_is_decoded_once_for_ten_thousand_resolutions(sources,monkeypatch,caplog):
+    bad=sources['map']/'normal-hitnormal.wav';bad.write_bytes(b'corrupt'*300)
+    beatmap=chart(sample_set=1)
+    cache=hs._SampleCache(44100,beatmap_dir=sources['map'],skin_dirs=(sources['skin'],))
+    attempts=0;original=cache.soundfile.info
+    def info(path,*a,**k):
+        nonlocal attempts
+        if Path(path)==bad:attempts+=1
+        return original(path,*a,**k)
+    monkeypatch.setattr(cache.soundfile,'info',info)
+    for _ in range(10000):
+        layers=resolve(sources,beatmap,cache=cache)
+        assert layers[0].path==sources['default']/'normal-hitnormal.wav'
+    assert attempts==1
+    assert sum(r.msg=='hitsound_load_failed' for r in caplog.records)==1
