@@ -269,10 +269,23 @@ def _general_sample_bank(value: str, *, is_lazer_replay: bool) -> int:
     return result
 
 
+def _sample_control_time(note, *, source_mode: int, is_lazer_replay: bool):
+    if not is_lazer_replay:
+        return note.time_ms + 2
+    if source_mode == 3:
+        # LegacyBeatmapDecoder applies samples before pass-through conversion.
+        # Native ConvertHold is not IHasRepeats: its head inherits end + 5.
+        return (note.end_time_ms if isinstance(note, HoldNote) else note.time_ms) + 5
+    # Converted carriers lack the original slider/repeat sample-node identity.
+    # Preserve that existing lookup rather than infer it from generated holds.
+    return note.time_ms
+
+
 def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
                               *, is_lazer_replay: bool = False) -> list[SampleLayer]:
     sample = note.hit_sample
-    tp = _active_timing_point(beatmap.timing_points, note.time_ms + (0 if is_lazer_replay else 2))
+    tp = _active_timing_point(beatmap.timing_points, _sample_control_time(
+        note, source_mode=beatmap.source_mode, is_lazer_replay=is_lazer_replay))
     if tp is None and not is_lazer_replay:
         # HitCircleMania.PlaySound only dispatches when ControlPointAtBin
         # returns a point. Stable itself rejects maps without timing points.
@@ -346,12 +359,19 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
                 layer = load([SampleCandidate(root / (name + suffix))
                               for suffix in ("", ".wav", ".mp3", ".ogg")], "custom")
                 if layer is not None:
-                    return [layer]
-        return []
-    layer = load(_candidate_paths(cache, set_name, "normal", bank_index(effective_set),
-                                 legacy_names=legacy_names), "normal")
-    if layer is not None:
-        layers.append(layer)
+                    layers.append(layer)
+                    break
+            if layers:
+                break
+        # FileHitSampleInfo replaces only the primary carrier in lazer;
+        # additions remain independent even if that primary cannot resolve.
+    elif beatmap.source_mode != 3 or note.hit_sound == 0 or note.hit_sound & 1:
+        # Native Mania never adds layered hitnormal to addition-only flags.
+        # Lazer converts allow that carrier; retain converted behavior here.
+        layer = load(_candidate_paths(cache, set_name, "normal", bank_index(effective_set),
+                                     legacy_names=legacy_names), "normal")
+        if layer is not None:
+            layers.append(layer)
     addition_set = bank_name(sample.addition_set) if sample.addition_set else set_name
     for bit, type_name in _ADDITIONS:
         if note.hit_sound & bit:
@@ -389,6 +409,8 @@ def _lazer_sound_events(facts, notes, audio_rate: float):
                              parent.tail_hit_sample) if parent is not None and not silent else None)
                 yield ReplaySoundEvent(fact.time_ms, "increment", node, silent)
             else:
+                # Keep the raw parent HoldNote so its end-time sample metadata
+                # survives display-time rounding/rate changes at the head.
                 yield ReplaySoundEvent(fact.time_ms, "increment", heads.get(key))
 
 

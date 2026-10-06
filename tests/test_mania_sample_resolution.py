@@ -53,10 +53,10 @@ def test_addition_set_has_same_source_tier_rules(banks,lazer):
         for suffix in ('','2'):
             wave(banks[root]/f'soft-hitclap{suffix}.wav')
     sample=HitSample(addition_set=2)
-    layer=resolve(banks,2,lazer=lazer,sample=sample,bits=8)[1]
+    layer,=resolve(banks,2,lazer=lazer,sample=sample,bits=8)
     assert layer.path==banks['map']/'soft-hitclap2.wav'
     (banks['map']/'soft-hitclap2.wav').unlink()
-    layer=resolve(banks,2,lazer=lazer,sample=sample,bits=8)[1]
+    layer,=resolve(banks,2,lazer=lazer,sample=sample,bits=8)
     assert layer.path==banks['skin']/'soft-hitclap.wav'
 
 
@@ -112,7 +112,7 @@ def test_lazer_explicit_stem_uses_resource_store_mp3_before_ogg(banks):
 
 
 def test_stable_complete_direct_miss_keeps_normal_and_additions(banks):
-    layers=resolve(banks,2,sample=HitSample(filename='missing.wav'),bits=14)
+    layers=resolve(banks,2,sample=HitSample(filename='missing.wav'),bits=15)
     assert [s.type_name for s in layers]==['normal','whistle','finish','clap']
     assert all(s.path.parent==banks['default'] for s in layers)
 

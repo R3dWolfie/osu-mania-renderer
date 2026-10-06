@@ -131,7 +131,7 @@ def test_stable_floor_layer_coefficients_and_integer_percentages(oracle, tmp_pat
     _, beatmap, _ = oracle
     beatmap = replace(beatmap, timing_points=(TimingPoint(0, 1, 0, volume),))
     cache = hs._SampleCache(44100, beatmap_dir=tmp_path)
-    layers = hs._resolve_samples_for_note(Note(0,100,14), beatmap, cache)
+    layers = hs._resolve_samples_for_note(Note(0,100,15), beatmap, cache)
     gains = {s.type_name: s.gain for s in layers}
     assert gains == {'normal': int(max(volume,8)*.8)/100,
                      'finish': max(volume,8)/100,
@@ -147,7 +147,9 @@ def test_exact_custom_sample_direct_stable_path_and_lazer_floor(oracle, tmp_path
     cache = hs._SampleCache(44100, beatmap_dir=tmp_path)
     note = Note(0, 100, 14, HitSample(filename='custom.wav'))
     stable, = hs._resolve_samples_for_note(note, beatmap, cache)
-    lazer, = hs._resolve_samples_for_note(note, beatmap, cache, is_lazer_replay=True)
+    lazer_layers = hs._resolve_samples_for_note(note, beatmap, cache, is_lazer_replay=True)
+    assert [layer.type_name for layer in lazer_layers] == ['custom', 'whistle', 'finish', 'clap']
+    lazer = lazer_layers[0]
     assert stable.path.name == 'custom.wav' and stable.gain == volume/100
     assert lazer.gain == max(volume,5)/100
 

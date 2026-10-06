@@ -25,7 +25,7 @@ def sources(tmp_path, monkeypatch):
 
 
 def chart(*,sample_set=0,index=1,general='Drum',sample=None):
-    note=Note(0,100,hit_sound=8,hit_sample=sample or HitSample())
+    note=Note(0,100,hit_sound=9,hit_sample=sample or HitSample())
     return replace(parse_beatmap(MAP),notes=(note,),default_sample_set=general,
                    timing_points=(TimingPoint(0,sample_set,index,100),))
 
