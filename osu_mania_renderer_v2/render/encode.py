@@ -10,6 +10,7 @@ CPU-encoded 4× real-time render into a hardware-encoded 1× one.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import queue
 import sys
@@ -17,6 +18,8 @@ import threading
 from pathlib import Path
 
 from osu_mania_renderer_v2.errors import EncoderError
+
+log = logging.getLogger(__name__)
 
 # Single-pass loudnorm applied to the MUSIC ALONE (the 2026-07-12 #17 duck
 # fix — normalising the song before hits are mixed on top). The SAME string is
@@ -50,49 +53,88 @@ def _ffmpeg_prefix() -> list[str]:
     return ["ffmpeg"]
 
 
+async def _run_probe(cmd: list[str], frame: bytes | None = None) -> tuple[int, bytes, bytes]:
+    """Bound encoder/driver startup, and reap probes on timeout or cancellation."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE if frame is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, stderr = await asyncio.wait_for(proc.communicate(frame), timeout=5)
+    except BaseException:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.communicate()
+        raise
+    return proc.returncode, out, stderr
+
+
+async def _encoder_usable(encoder: str, device: str | None) -> tuple[bool, str]:
+    """Encode one black frame to a null output; compiled support is insufficient."""
+    cmd = _ffmpeg_prefix() + ["-hide_banner", "-loglevel", "error", "-nostdin"]
+    if encoder == "h264_vaapi":
+        cmd += ["-vaapi_device", device]
+    cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "128x128", "-r", "1",
+            "-i", "pipe:0", "-frames:v", "1", "-an", "-vf",
+            "format=nv12,hwupload" if encoder == "h264_vaapi" else "format=yuv420p",
+            "-c:v", encoder, "-f", "null", "-"]
+    try:
+        code, _, stderr = await _run_probe(cmd, bytes(128 * 128 * 3))
+    except TimeoutError:
+        return False, "encoder startup probe timed out"
+    except OSError as exc:
+        return False, str(exc)
+    if code == 0:
+        return True, ""
+    reason = stderr.decode(errors="replace").strip().splitlines()
+    return False, (reason[0][:500] if reason else f"ffmpeg exit code {code}")
+
+
 async def probe_encoder(encoder: str, device: str | None) -> str:
-    """Resolve 'auto' → preferred encoder available on this system.
+    """Resolve auto to a working encoder: NVENC, platform hardware, then software.
 
-    Preference order: h264_vaapi (if device provided) → libx264 →
-    libopenh264 (Fedora ffmpeg-free) → libx264 as last-resort name.
-
-    Non-'auto' values pass through unchanged.
+    Explicit choices pass through unchanged. Probe the same ffmpeg executable
+    used for the render, including host ffmpeg when running inside a toolbox.
     """
     if encoder != "auto":
         return encoder
-    # Probe through the same prefix the encode will use (host ffmpeg when
-    # we're in a toolbox), so we don't pick an encoder the toolbox ffmpeg
-    # has but the host's doesn't (or vice versa).
-    probe_cmd = _ffmpeg_prefix() + ["-hide_banner", "-encoders"]
-    proc = await asyncio.create_subprocess_exec(
-        *probe_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    out, _ = await proc.communicate()
-    text = out.decode(errors="ignore")
-    # When no device was specified, try to auto-pick the standard VAAPI
-    # render node. Host AMD GPUs always expose /dev/dri/renderD128.
-    # nvenc FIRST: R3D is an NVIDIA box; the old order never tried nvenc, so a
-    # dropped R3D_ENCODER env silently fell to vaapi/libx264 (5-10x slower).
-    if "h264_nvenc" in text:
-        return "h264_nvenc"
+    try:
+        code, out, stderr = await _run_probe(_ffmpeg_prefix() + ["-hide_banner", "-encoders"])
+    except TimeoutError as exc:
+        raise EncoderError("ffmpeg encoder query timed out") from exc
+    except OSError as exc:
+        raise EncoderError(f"Unable to query ffmpeg encoders: {exc}") from exc
+    if code != 0:
+        raise EncoderError("Unable to query ffmpeg encoders: "
+                           + stderr.decode(errors="replace")[-1024:])
+    available = {parts[1] for line in out.decode(errors="replace").splitlines()
+                 if len(parts := line.split()) >= 2}
+    candidates = ["h264_nvenc"]
     if sys.platform == "win32":
-        # Windows has no VAAPI; offer AMD (AMF) then Intel (QSV) hardware
-        # H.264 before the libx264 software fallback.
-        if "h264_amf" in text:
-            return "h264_amf"
-        if "h264_qsv" in text:
-            return "h264_qsv"
-    if device is None and Path("/dev/dri/renderD128").exists():
-        device = "/dev/dri/renderD128"
-    if device is not None and "h264_vaapi" in text:
-        return "h264_vaapi"
-    if "libx264" in text:
-        return "libx264"
-    if "libopenh264" in text:
-        return "libopenh264"
-    return "libx264"  # let ffmpeg raise a clear error if nothing is available
+        candidates += ["h264_amf", "h264_qsv"]
+    else:
+        if device is None and Path("/dev/dri/renderD128").exists():
+            device = "/dev/dri/renderD128"
+        if device is not None:
+            candidates.append("h264_vaapi")
+    candidates += ["libx264", "libopenh264"]
+    failures = []
+    for name in candidates:
+        if name not in available:
+            continue
+        usable, reason = await _encoder_usable(name, device)
+        if usable:
+            log.info("encoder_selected encoder=%s", name)
+            return name
+        failures.append(f"{name}: {reason}")
+        log.warning("encoder_probe_failed encoder=%s reason=%s", name, reason)
+    reason = "; ".join(failures) or "ffmpeg reports none of the supported encoders"
+    raise EncoderError("No usable H.264 encoder: " + reason)
 
 
 def nvenc_target_bps(w: int, h: int, fps: float) -> int:
@@ -507,6 +549,7 @@ class FfmpegPipe:
         self._q: queue.Queue | None = None
         self._writer: threading.Thread | None = None
         self._werr: BaseException | None = None
+        self._finished = False
 
     async def start(self) -> None:
         if self.fifo_path is not None:
@@ -585,8 +628,8 @@ class FfmpegPipe:
         if self.proc is None:
             raise EncoderError("ffmpeg not started")
         if self._werr is not None:
-            raise EncoderError(
-                f"ffmpeg pipe write failed: {self._werr!r}") from self._werr
+            await self._finish()
+            raise self._write_error() from self._werr
         fd = self._fifo_fd if self._fifo_fd is not None else self._stdin_fd
         if fd is None:
             raise EncoderError("ffmpeg stdin closed")
@@ -606,13 +649,15 @@ class FfmpegPipe:
             self._writer = None
             self._q = None
 
-    async def close(self, output_path: Path) -> None:
-        if self.proc is None:
+    def _write_error(self) -> EncoderError:
+        return EncoderError(
+            f"ffmpeg pipe write failed: {self._werr!r}; exit code {self.proc.returncode}:\n"
+            f"{self._stderr_log.decode(errors='replace')[-4096:]}")
+
+    async def _finish(self) -> None:
+        if self._finished:
             return
         self._join_writer()
-        if self._werr is not None:
-            raise EncoderError(
-                f"ffmpeg pipe write failed: {self._werr!r}") from self._werr
         if self._fifo_fd is not None:
             os.close(self._fifo_fd)
             self._fifo_fd = None
@@ -626,10 +671,18 @@ class FfmpegPipe:
             self._stdin_fd = None
         _, stderr = await self.proc.communicate()
         self._stderr_log = stderr or b""
+        self._finished = True
+
+    async def close(self, output_path: Path) -> None:
+        if self.proc is None:
+            return
+        await self._finish()
+        if self._werr is not None:
+            raise self._write_error() from self._werr
         if self.proc.returncode != 0:
             raise EncoderError(
                 f"ffmpeg exit code {self.proc.returncode}: "
-                f"{self._stderr_log.decode(errors='ignore')[-1024:]}"
+                f"{self._stderr_log.decode(errors='replace')[-4096:]}"
             )
         if not output_path.exists() or output_path.stat().st_size == 0:
             raise EncoderError(f"output MP4 missing or empty: {output_path}")
