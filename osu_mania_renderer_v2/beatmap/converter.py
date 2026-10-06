@@ -38,11 +38,33 @@ from osu_mania_renderer_v2.beatmap.models import (
 from osu_mania_renderer_v2.beatmap import legacy_mania_convert as _legacy
 
 
-# Default key count when a converted chart doesn't specify one. osu!mania
-# itself picks the count based on the beatmap's CS + OD; we lock to 4K
-# unless the caller forces something else, which matches the lazer default
-# for "Convert to 4K" and is the most common community choice.
+# Retained for callers explicitly requesting the historical manual 4K target.
+# Automatic conversion uses source difficulty and object facts below.
 DEFAULT_CONVERTED_KEY_COUNT = 4
+
+
+def automatic_column_count(
+    objects: list[_legacy.StdObject], *, circle_size: float, overall_difficulty: float,
+) -> int:
+    """Non-Mania getColumnCount at lazer 8a942790906a37930a0f55c5d27e498159835885.
+
+    LegacyBeatmapConversionDifficultyInfo counts IHasDuration source objects.
+    The standard source model parsed here supports sliders and spinners;
+    even zero-length instances count, and generated Mania holds do not.
+    Python round, like Math.Round, rounds midpoints to even.
+    """
+    rounded_cs = round(circle_size)
+    rounded_od = round(overall_difficulty)
+    if objects:
+        duration_count = sum(o.kind in ("slider", "spinner") for o in objects)
+        percent_special = duration_count / len(objects)
+        if percent_special < 0.2:
+            return 7
+        if percent_special < 0.3 or rounded_cs >= 5:
+            return 7 if rounded_od > 5 else 6
+        if percent_special > 0.6:
+            return 5 if rounded_od > 4 else 4
+    return max(4, min(int(rounded_od) + 1, 7))
 
 
 @dataclass(frozen=True)
@@ -310,7 +332,7 @@ def _kiai_at(kiai_points: tuple[tuple[int, bool], ...], t_ms: int) -> bool:
 
 def _generate_lazer_notes(
     *,
-    hit_objects_block: str,
+    std_objects: list[_legacy.StdObject],
     timing_points: tuple[TimingPoint, ...],
     slider_multiplier: float,
     overall_difficulty: float,
@@ -318,7 +340,6 @@ def _generate_lazer_notes(
     circle_size: float | None,
     approach_rate: float | None,
     total_break_time_ms: float,
-    kiai_points: tuple[tuple[int, bool], ...],
     key_count: int,
 ) -> tuple[list[Note | HoldNote], int]:
     """Faithful lazer std→mania note generation. Returns (notes, max_time).
@@ -332,8 +353,6 @@ def _generate_lazer_notes(
     cs = circle_size if circle_size is not None else 4.0
     ar = approach_rate if approach_rate is not None else overall_difficulty
 
-    std_objects = _parse_std_objects_for_legacy(
-        hit_objects_block, timing_points, kiai_points)
     beat_length_at = _beat_length_for_legacy(timing_points)
 
     result = _legacy.convert_legacy(
@@ -379,7 +398,7 @@ def convert_standard_to_mania(
     default_sample_set: str,
     slider_multiplier: float = 1.4,
     overall_difficulty: float = 5.0,
-    key_count: int = DEFAULT_CONVERTED_KEY_COUNT,
+    key_count: int | None = None,
     seed_source: str = "",
     replay_key_events: tuple[KeyEvent, ...] | None = None,
     # --- New: faithful-lazer conversion inputs. All optional so existing
@@ -404,11 +423,19 @@ def convert_standard_to_mania(
     recovery then overwrites lazer's column choices wherever the player has
     a matching key-press, so the visual columns track the player's hand.
 
+    An omitted key_count uses the client's automatic source-derived count.
     When `replay_key_events` is provided we use them to recover the
     column assignments — see module docstring for the rationale."""
+    std_objects = _parse_std_objects_for_legacy(
+        hit_objects_block, timing_points, kiai_points)
+    if key_count is None:
+        key_count = automatic_column_count(
+            std_objects, circle_size=circle_size if circle_size is not None else 4.0,
+            overall_difficulty=overall_difficulty,
+        )
     # Faithful lazer note generation (count + times + hold-vs-tap).
     notes, max_time = _generate_lazer_notes(
-        hit_objects_block=hit_objects_block,
+        std_objects=std_objects,
         timing_points=timing_points,
         slider_multiplier=slider_multiplier,
         overall_difficulty=overall_difficulty,
@@ -416,7 +443,6 @@ def convert_standard_to_mania(
         circle_size=circle_size,
         approach_rate=approach_rate,
         total_break_time_ms=total_break_time_ms,
-        kiai_points=kiai_points,
         key_count=key_count,
     )
 

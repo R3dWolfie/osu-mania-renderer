@@ -1,4 +1,4 @@
-"""Parse osu!mania .osu files. Mania-only — std/taiko/ctb raise NotAManiaError."""
+"""Parse native Mania .osu files and opt-in standard→Mania conversion."""
 from __future__ import annotations
 
 from bisect import bisect_right as _bisect_right
@@ -25,15 +25,16 @@ def parse_beatmap(
     path: Path,
     *,
     allow_converted: bool = False,
-    convert_to_keys: int = 4,
+    convert_to_keys: int | None = None,
     replay_key_events: tuple | None = None,
 ) -> BeatmapInfo:
     """Parse a .osu file.
 
-    When the file declares Mode != 3 (i.e. it's a standard/taiko/ctb
-    beatmap) and `allow_converted=True`, route through the mania
-    converter — that's what produces the chart the player actually saw
-    when they hit the in-game "convert to mania" toggle.
+    When the file declares Mode 0 and `allow_converted=True`, run the
+    standard→Mania converter. Other non-Mania modes are unsupported.
+    Replay-driven rendering opts in after validating a Mania replay.
+    An omitted `convert_to_keys` selects the client's automatic column count
+    from source difficulty and hitobjects; a number explicitly overrides it.
 
     When `replay_key_events` is also provided, the converter uses the
     player's actual key presses to recover osu!stable's exact column
@@ -63,7 +64,7 @@ def parse_beatmap(
     except ValueError as e:
         raise BeatmapParseError(f"Invalid Mode={mode_str!r}") from e
     if mode != 3:
-        if not allow_converted:
+        if mode != 0 or not allow_converted:
             raise NotAManiaError(mode)
         # Converted path: turn the standard chart into a synthetic mania
         # chart and short-circuit the rest of this function. The renderer

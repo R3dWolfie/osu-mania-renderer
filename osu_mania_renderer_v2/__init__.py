@@ -48,7 +48,7 @@ async def render_mania(
     log_path: Path | None = None,
     skin_dir: Path | None = None,
     allow_converted: bool = False,
-    convert_to_keys: int = 4,
+    convert_to_keys: int | None = None,
 ) -> None:
     if USE_WIKI_RENDERER:
         import osu_mania_renderer_v2.wiki_elements  # noqa: F401 — populate registries

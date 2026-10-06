@@ -51,7 +51,7 @@ from osu_mania_renderer_v2.beatmap.judgments import (
     windows_for_od,
 )
 from osu_mania_renderer_v2.beatmap.models import HoldNote, KeyEvent, RenderOptions
-from osu_mania_renderer_v2.beatmap.mods import apply_mods, mod_acronyms
+from osu_mania_renderer_v2.beatmap.mods import apply_mods, legacy_conversion_key_count, mod_acronyms
 from osu_mania_renderer_v2.render.hitsounds import build_hitsound_track, require_hitsound_runtime
 from osu_mania_renderer_v2.beatmap.pp import compute_pp, compute_star_rating
 from osu_mania_renderer_v2.beatmap.replay import parse_replay
@@ -205,17 +205,24 @@ async def build_render_plan(
     options: RenderOptions,
     skin_dir: Path | None = None,
     allow_converted: bool = False,
-    convert_to_keys: int = 4,
+    convert_to_keys: int | None = None,
 ) -> RenderPlan:
     """Parse + mod + judge + build all per-render data and the ffmpeg command.
     Pure of live resources (no GL/pipe); side effects limited to probing the
-    encoder and building the optional hitsound WAV."""
+    encoder and building the optional hitsound WAV. `allow_converted` remains
+    a compatibility argument; validated Mania replays enable Mode 0 conversion
+    automatically regardless of that flag."""
     replay = parse_replay(osr_path)
     osu_file = _find_osu(beatmap_dir, replay.beatmap_md5)
+    # A validated Mania replay authorises standard conversion. The parser
+    # owns source-mode eligibility (only Mode 0) and automatic source facts.
+    # Keep manual override > replay key mod > source automatic count.
+    converted_keys = (convert_to_keys if convert_to_keys is not None
+                      else legacy_conversion_key_count(replay.mods))
     beatmap = parse_beatmap(
         osu_file,
-        allow_converted=allow_converted,
-        convert_to_keys=convert_to_keys,
+        allow_converted=True,
+        convert_to_keys=converted_keys,
         # The converter uses the player's key-press events to recover the
         # original ManiaBeatmapConverter's column assignments — see
         # converter.py for the matching algorithm.
@@ -1094,7 +1101,7 @@ async def render_mania(
     log_path: Path | None = None,
     skin_dir: Path | None = None,
     allow_converted: bool = False,
-    convert_to_keys: int = 4,
+    convert_to_keys: int | None = None,
 ) -> None:
     log.info("render_start", extra={"osr": str(osr_path), "out": str(output_path)})
 

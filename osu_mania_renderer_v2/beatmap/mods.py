@@ -38,6 +38,19 @@ class Mod(enum.IntFlag):
     MR = 1 << 30
 
 
+def legacy_conversion_key_count(mods: int) -> int | None:
+    """Legacy ManiaKeyMod's target columns for a non-Mania source.
+
+    Key mods are mutually exclusive in the client. KC has separate Dual
+    Stages semantics and is not a K1..K9 target-column override.
+    """
+    for count, flag in enumerate((Mod.K1, Mod.K2, Mod.K3, Mod.K4, Mod.K5,
+                                  Mod.K6, Mod.K7, Mod.K8, Mod.K9), start=1):
+        if mods & flag:
+            return count
+    return None
+
+
 @dataclass(frozen=True)
 class LegacyModIcon:
     """One stable-style gameplay mod icon derived from the replay bitfield."""
