@@ -118,12 +118,13 @@ def test_opened_metadata_is_rechecked_before_read(banks,monkeypatch):
 def test_general_sample_set_cannot_supply_a_path_into_another_tier(banks):
     from dataclasses import replace
     from osu_mania_renderer_v2.beatmap.beatmap import parse_beatmap
-    from osu_mania_renderer_v2.beatmap.models import Note
+    from osu_mania_renderer_v2.beatmap.models import Note, TimingPoint
     from osu_mania_renderer_v2.render import hitsounds as hs
     from tests.test_mania_hitsound_pipeline import MAP
     private=banks['skin']/'private-hitnormal.wav';wave(private)
     fallback=banks['default']/'soft-hitnormal.wav';wave(fallback)
-    beatmap=replace(parse_beatmap(MAP),default_sample_set=str(banks['skin']/'private'),timing_points=())
+    beatmap=replace(parse_beatmap(MAP),default_sample_set=str(banks['skin']/'private'),
+                    timing_points=(TimingPoint(0,0,0,100),))
     cache=hs._SampleCache(44100,beatmap_dir=banks['map'],skin_dirs=(banks['skin'],))
     layers=hs._resolve_samples_for_note(Note(0,100),beatmap,cache)
     assert layers and layers[0].path==fallback

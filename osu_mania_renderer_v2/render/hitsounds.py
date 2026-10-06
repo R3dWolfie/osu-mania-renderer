@@ -216,13 +216,15 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
                               *, is_lazer_replay: bool = False) -> list[SampleLayer]:
     sample = note.hit_sample
     tp = _active_timing_point(beatmap.timing_points, note.time_ms + (0 if is_lazer_replay else 2))
+    if tp is None and not is_lazer_replay:
+        # HitCircleMania.PlaySound only dispatches when ControlPointAtBin
+        # returns a point. Stable itself rejects maps without timing points.
+        return []
     effective_set = sample.normal_set or (tp.sample_set if tp else 0)
     effective_index = sample.index or (tp.custom_index if tp else 0)
-    default_set = beatmap.default_sample_set.lower()
-    if default_set not in _SET_NAMES.values():
-        # [General] SampleSet is a sample identity, never a filename. Keep
-        # malformed external values out of path construction across all tiers.
-        default_set = "soft"
+    # Stable ControlPoint maps None to Soft; lazer's timing decoder maps it
+    # to Normal. Neither inherits [General] SampleSet for an explicit zero.
+    default_set = "normal" if is_lazer_replay else "soft"
     set_name = _SET_NAMES.get(effective_set, default_set)
     # A note's zero means inherit; a control point's zero is a real volume.
     volume = sample.volume or (tp.volume if tp else 100)
