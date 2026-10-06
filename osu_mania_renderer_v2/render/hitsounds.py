@@ -1,13 +1,14 @@
 """Resolve replay samples and mix a stereo PCM track before ffmpeg's song mix.
 
-Samples fall back from beatmap to skin to bundled defaults. Production stable
-and lazer triggers come from their separate immutable gameplay facts.
+Eligible beatmap banks fall back to skin base names, then bundled defaults.
+Stable and lazer triggers come from their separate immutable gameplay facts.
 """
 from __future__ import annotations
 
 import importlib
 import logging
 import tempfile
+import math
 from collections import OrderedDict
 from heapq import merge
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ import numpy as np
 
 from osu_mania_renderer_v2.beatmap.models import HoldNote, Note
 from osu_mania_renderer_v2.errors import RendererError
+from osu_mania_renderer_v2.render.sample_paths import is_relative_sample_name, sample_file
 
 log = logging.getLogger("osu_mania_renderer_v2.render.hitsounds")
 
@@ -25,6 +27,31 @@ _SET_NAMES = {1: "normal", 2: "soft", 3: "drum"}
 _ADDITIONS = ((2, "whistle"), (4, "finish"), (8, "clap"))
 _DEFAULT_HITSOUND_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_hitsounds"
 _DEFAULT_NC_DIR = Path(__file__).resolve().parent.parent / "assets" / "default_nightcore"
+# Service safety bound per candidate, separate from the retained PCM LRU.
+# Includes source decode, mono expansion, finite checking and worst-case
+# nearest-neighbour index/conversion/output temporaries. Not a duration limit.
+MAX_SAMPLE_WORK_BYTES = 64 * 1024 * 1024
+
+
+def _sample_decode_geometry(info, target_rate):
+    values = (info.frames, info.samplerate, info.channels, target_rate)
+    if any(not isinstance(v, (int, float)) or v <= 0 or
+           (isinstance(v, float) and (not math.isfinite(v) or not v.is_integer()))
+           for v in values):
+        raise ValueError("invalid sample frame/rate/channel metadata")
+    frames, rate, channels, target = map(int, values)
+    if channels not in (1, 2) or not 1 <= rate <= 768000 or not 1 <= target <= 768000:
+        raise ValueError("only mono/stereo samples at 1..768000 Hz are supported")
+    output_frames = max(1, frames * target // rate)
+    work_bytes = frames * channels * 5  # float32 decode + finite mask
+    if channels == 1:
+        work_bytes += frames * 8  # stereo expansion, source still live
+    if rate != target:
+        work_bytes += output_frames * 48  # float/int index temporaries + stereo output
+    if work_bytes > MAX_SAMPLE_WORK_BYTES:
+        raise ValueError(f"estimated decode/resample work {work_bytes} bytes exceeds "
+                         f"{MAX_SAMPLE_WORK_BYTES}-byte safety limit; shorten or resample this hitsound")
+    return frames, rate, output_frames
 
 
 def require_hitsound_runtime():
@@ -70,32 +97,53 @@ class _SampleCache:
     """Bound decoded sample reuse; invalid files allow the next fallback."""
 
     def __init__(self, target_rate: int, *, beatmap_dir: Path = Path("."),
-                 skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True):
+                 skin_dirs: tuple[Path, ...] = (), beatmap_hitsounds: bool = True,
+                 overlay_skin_dirs: tuple[Path, ...] = ()):
         self.target_rate = target_rate
         self.soundfile = require_hitsound_runtime()
         self.beatmap_dir = beatmap_dir
         self.skin_dirs = skin_dirs
         self.use_beatmap = beatmap_hitsounds
+        self.roots = tuple(dict.fromkeys(p.absolute() for p in (
+            *((beatmap_dir,) if beatmap_hitsounds else ()), *skin_dirs, *overlay_skin_dirs,
+            _DEFAULT_HITSOUND_DIR, _DEFAULT_NC_DIR)))
         self._cache = OrderedDict()
         self._cache_bytes = 0
         self._missing = set()
         self._explicit_paths = {}  # Stable LoadBeatmapSample cache is keyed by stem.
         self.max_cache_bytes = 32 * 1024 * 1024
 
+    def resolve(self, path):
+        path = Path(path).absolute()
+        for root in self.roots:
+            try:
+                relative = str(path.relative_to(root if path.is_relative_to(root) else root.resolve()))
+            except ValueError:
+                continue
+            # Do not let an invalid path under one root become eligible under
+            # another broader root. Every candidate has one permitted tier.
+            return sample_file(root, relative)
+        return None
+
     def stable_file(self, filename):
+        if not is_relative_sample_name(filename):
+            return None, None
         filename = filename.replace("\\", "/")
         path = self.beatmap_dir / filename
         stem = str(Path(filename).with_suffix(""))
         key = stem.lower()
         if key not in self._explicit_paths:
             # An existing exact name is authoritative, even if decoding fails.
-            candidates = ([path] if Path(filename).suffix and path.is_file() else
+            candidates = ([path] if Path(filename).suffix and self.resolve(path) is not None else
                           [self.beatmap_dir / f"{stem}.{ext}" for ext in ("wav", "ogg", "mp3")])
-            self._explicit_paths[key] = next((p for p in candidates if self.get(p) is not None), None)
+            self._explicit_paths[key] = next((self.resolve(p) for p in candidates if self.get(p) is not None), None)
         resolved = self._explicit_paths[key]
         return (resolved, self.get(resolved)) if resolved is not None else (None, None)
 
     def get(self, path: Path) -> np.ndarray | None:
+        path = self.resolve(path)
+        if path is None:
+            return None
         key = str(path)
         if key in self._cache:
             self._cache.move_to_end(key)
@@ -108,7 +156,12 @@ class _SampleCache:
             self._missing.add(key)
             return None
         try:
-            data, rate = self.soundfile.read(str(path), dtype="float32", always_2d=True)
+            # Preflight before any PCM decode, then validate the opened file
+            # again so changed metadata cannot bypass the allocation bound.
+            _sample_decode_geometry(self.soundfile.info(str(path)), self.target_rate)
+            with self.soundfile.SoundFile(str(path)) as reader:
+                frames, rate, new_len = _sample_decode_geometry(reader, self.target_rate)
+                data = reader.read(frames=frames, dtype="float32", always_2d=True)
             if not len(data) or not np.isfinite(data).all():
                 raise ValueError("empty or non-finite sample")
             if data.shape[1] == 1:
@@ -117,10 +170,16 @@ class _SampleCache:
                 raise ValueError("hitsound sample must be mono or stereo")
             if rate != self.target_rate:
                 ratio = self.target_rate / rate
-                new_len = max(1, int(len(data) * ratio))
+                new_len = max(1, len(data) * self.target_rate // rate)
                 idx = np.clip((np.arange(new_len) / ratio).astype(np.int64), 0, len(data) - 1)
                 data = data[idx]
-        except (OSError, ValueError, self.soundfile.SoundFileError) as exc:
+        except ValueError as exc:
+            log.warning("hitsound_sample_rejected", extra={"path": str(path), "err": str(exc)})
+            if len(self._missing) >= 4096:
+                self._missing.clear()
+            self._missing.add(key)
+            return None
+        except (OSError, self.soundfile.SoundFileError) as exc:
             log.warning("hitsound_load_failed", extra={"path": str(path), "err": str(exc)})
             return None
         data = data.astype(np.float32, copy=False)
@@ -166,6 +225,9 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
 
     def load(candidates, type_name):
         for path in candidates:
+            path = cache.resolve(path)
+            if path is None:
+                continue
             data = cache.get(path)
             if data is not None:
                 return SampleLayer(data, _sample_gain(volume, type_name,
@@ -182,7 +244,9 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
         # Filename, extensionless stem, then its ordinary lookup names before
         # moving to the next skin. ResourceStore appends wav/mp3/ogg to each.
         filename = sample.filename.replace("\\", "/")
-        names = [filename, str(Path(filename).with_suffix("")), "Gameplay/normal-hitnormal", "hitnormal"]
+        names = ([filename, str(Path(filename).with_suffix(""))]
+                 if is_relative_sample_name(filename) else [])
+        names.extend(("Gameplay/normal-hitnormal", "hitnormal"))
         sources = ((cache.beatmap_dir,) if cache.use_beatmap else ()) + cache.skin_dirs + (_DEFAULT_HITSOUND_DIR,)
         for root in sources:
             for name in dict.fromkeys(part for n in names for part in (n, n.rsplit("/", 1)[-1])):
@@ -275,12 +339,12 @@ def _combo_break_times(facts, *, is_lazer_replay, threshold=20, mods=0):
                 yield fact.time_ms
 
 
-def _find_combobreak_sample(beatmap_dir: Path | None, skin_dirs: tuple[Path, ...]) -> Path | None:
+def _find_combobreak_sample(beatmap_dir: Path | None, skin_dirs: tuple[Path, ...], cache=None) -> Path | None:
     directories = ((beatmap_dir,) if beatmap_dir is not None else ()) + skin_dirs + (_DEFAULT_HITSOUND_DIR,)
     for directory in directories:
-        for ext in ("wav", "ogg", "mp3"):
-            path = directory / f"combobreak.{ext}"
-            if path.is_file():
+        for ext in ("wav", "mp3", "ogg"):
+            path = sample_file(directory, f"combobreak.{ext}")
+            if path is not None and (cache is None or cache.get(path) is not None):
                 return path
     return None
 
@@ -337,13 +401,15 @@ def build_hitsound_track(
 ) -> Path:
     """Stream gameplay and overlay samples into an atomic stereo PCM WAV.
 
-    PCM memory is bounded by chunk_frames, active tails and the 32 MiB decode
-    cache, independent of video duration. Source facts stay immutable.
+    PCM output uses chunk_frames, active tails and a 32 MiB retained cache.
+    Each candidate has a separate 64 MiB decode/resample work limit. Neither
+    ceiling caps total process RSS or simultaneous tails. Source facts stay immutable.
     """
     if chunk_frames <= 0:
         raise RendererError("Hitsound chunk size must be positive.")
     cache = _SampleCache(target_sample_rate, beatmap_dir=beatmap_dir,
-                         skin_dirs=skin_dirs, beatmap_hitsounds=beatmap_hitsounds)
+                         skin_dirs=skin_dirs, beatmap_hitsounds=beatmap_hitsounds,
+                         overlay_skin_dirs=overlay_skin_dirs or ())
     if is_lazer_replay and lazer_facts is None:
         raise RendererError("Lazer replay hitsounds require source-factual gameplay events.")
     notes = beatmap.notes if sample_notes is None else sample_notes
@@ -362,7 +428,7 @@ def build_hitsound_track(
     events = sorted(events, key=lambda event: event.time_ms)
     total_samples = int(duration_ms / 1000 * target_sample_rate)
     combo_events = (combo_facts if combo_facts is not None else lazer_facts if is_lazer_replay else events)
-    cb_path = (_find_combobreak_sample(beatmap_dir if beatmap_hitsounds else None, skin_dirs)
+    cb_path = (_find_combobreak_sample(beatmap_dir if beatmap_hitsounds else None, skin_dirs, cache)
                if miss_hitsound and combo_break_sound else None)
     cb_sample = cache.get(cb_path) if cb_path is not None else None
     counts = dict(eligible_hit_events=0, resolved_hit_events=0, resolved_sample_layers=0,
@@ -503,10 +569,9 @@ def _find_skin_sample(
     for skin_dir in skin_dirs:
         for name in filenames:
             p = skin_dir / name
-            if p.is_file():
-                arr = cache.get(p)
-                if arr is not None:
-                    return arr
+            arr = cache.get(p)
+            if arr is not None:
+                return arr
     return None
 
 

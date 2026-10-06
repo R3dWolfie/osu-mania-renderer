@@ -87,11 +87,21 @@ await render_mania(
 ## Replay audio
 
 Replay hitsounds are enabled by default and require the declared `soundfile`
-runtime dependency. Missing/broken audio dependencies fail clearly. Samples use
-beatmap files first, then the selected skin only with `--skin-hitsounds`, then
-bundled defaults. `--no-beatmap-hitsounds` removes beatmap files from this lookup.
+runtime dependency. Missing/broken audio dependencies fail clearly. Conventional sample bank 0 skips the beatmap; bank 1 uses its base filename;
+bank 2+ uses only its numbered filename. Eligible beatmap samples fall back to
+unnumbered selected-skin samples with `--skin-hitsounds`, then bundled defaults. `--no-beatmap-hitsounds` removes beatmap files from this lookup.
 `--hitsound-volume` applies the final user gain. WAV output streams in bounded
-chunks, including overlapping samples and NC drums.
+chunks, including overlapping samples and NC drums. Legacy audio names are
+case-insensitive, and custom paths stay within their permitted source folder.
+Before PCM decoding, each sample is checked against a 64 MiB estimate covering
+decoded frames, stereo expansion and resampling temporaries; oversized or invalid
+candidates fall back to the next source. This is separate from the 32 MiB retained
+sample cache and does not cap total process memory or overlapping sample tails.
+
+Known audio fidelity limits: client positional stereo balance and stable
+`SamplesMatchPlaybackRate` waveform changes are not implemented. Mismatched sample
+rates still use nearest-neighbour conversion without an anti-alias filter.
+Gameplay event timing and sample lookup tests do not imply exact client PCM parity.
 
 Both `--no-combo-break` and its compatibility control `--no-miss-hitsound` disable
 combo-break SFX. `--combo-break-threshold N` plays them when old combo is strictly
