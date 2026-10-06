@@ -437,6 +437,7 @@ def convert_standard_to_mania(
             time_signature=tp.time_signature,
             raw_beat_length_ms=tp.raw_beat_length_ms,
             raw_time_ms=tp.raw_time_ms,
+            field_count=tp.field_count,
         )
         for tp in timing_points if tp.uninherited
     )

@@ -188,3 +188,17 @@ def test_corrupt_candidate_is_decoded_once_for_ten_thousand_resolutions(sources,
         assert layers[0].path==sources['default']/'normal-hitnormal.wav'
     assert attempts==1
     assert sum(r.msg=='hitsound_load_failed' for r in caplog.records)==1
+
+
+def test_stable_dot_in_directory_counts_as_extension_for_exact_file(sources):
+    directory=sources['map']/'folder.withdot';directory.mkdir()
+    exact=directory/'custom';sf.write(exact,np.ones((441,2))*.5,44100,format='WAV')
+    layer=resolve(sources,chart(sample=HitSample(filename='folder.withdot/custom')))[0]
+    assert layer.path==exact
+
+
+def test_stable_leading_dot_is_not_an_extension(sources):
+    wave(sources['map']/'.custom.wav',.25)
+    wave(sources['map']/'.custom.wav.wav',.75)
+    layer=resolve(sources,chart(sample=HitSample(filename='.custom.wav')))[0]
+    assert layer.path.name=='.custom.wav.wav'

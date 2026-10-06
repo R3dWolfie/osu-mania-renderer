@@ -68,6 +68,8 @@ class TimingPoint:
     time_signature: int = 4
     raw_beat_length_ms: float | None = None
     raw_time_ms: float | None = None
+    # Preserve omitted legacy fields separately from an explicit numeric zero.
+    field_count: int = 8
 
 
 @dataclass(frozen=True)
@@ -105,7 +107,7 @@ class BeatmapInfo:
     # Hitsound-related metadata. ``default_sample_set`` is osu!'s sample-set
     # name from [General] (Normal/Soft/Drum); ``timing_points`` is sorted by
     # time_ms and used to look up the active sample state at any moment.
-    default_sample_set: str = "Soft"
+    default_sample_set: str = "Normal"
     timing_points: tuple = ()  # tuple[TimingPoint, ...]
     # OD from `[Difficulty] OverallDifficulty`. Drives lazer-style
     # OD-scaled hit windows in the local judgment classifier.
@@ -116,6 +118,9 @@ class BeatmapInfo:
     breaks: tuple = ()  # tuple[tuple[int, int], ...]
     # Original .osu mode controls stable skin-source eligibility on converts.
     source_mode: int = 3
+    format_version: int = 14
+    sample_volume: int = 100
+    custom_samples: int | None = None  # [General] override; None uses the stable version default
 
 
 @dataclass(frozen=True)

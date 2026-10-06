@@ -9,6 +9,7 @@ import importlib
 import logging
 import tempfile
 import math
+import re
 from collections import OrderedDict
 from heapq import merge
 from dataclasses import dataclass
@@ -88,15 +89,24 @@ class SampleCandidate:
     beatmap: bool = False
 
 
-def _candidate_paths(cache, set_name: str, type_name: str, index: int) -> list[SampleCandidate]:
+def _candidate_paths(cache, set_name: str, type_name: str, index: int,
+                     *, legacy_names: bool = False) -> list[SampleCandidate]:
     """Legacy beatmap banks differ from ordinary skin/default sample names."""
     base = f"{set_name}-hit{type_name}"
     sources = []
     if cache.use_beatmap and index >= 1:
         sources.append((cache.beatmap_dir, base + (str(index) if index >= 2 else ""), True))
     sources.extend((directory, base, False) for directory in (*cache.skin_dirs, _DEFAULT_HITSOUND_DIR))
-    out = [SampleCandidate(directory / f"{name}.{ext}", beatmap)
-           for directory, name, beatmap in sources for ext in ("wav", "mp3", "ogg")]
+    out = []
+    for directory, name, beatmap in sources:
+        for ext in ("wav", "mp3", "ogg"):
+            path = directory / f"{name}.{ext}"
+            # Stable's null-coalescing byte lookup happens within each codec,
+            # before decoding. A corrupt banked file cannot try the old name
+            # for that codec; a missing banked file can (only before v5).
+            if beatmap and legacy_names and cache.resolve(path) is None:
+                path = directory / f"hit{type_name}.{ext}"
+            out.append(SampleCandidate(path, beatmap))
     return out
 
 
@@ -138,17 +148,21 @@ class _SampleCache:
             return sample_file(root, relative)
         return None
 
-    def stable_file(self, filename):
+    def stable_file(self, filename, *, format_version=14):
         if not is_relative_sample_name(filename):
             return None, None
         filename = filename.replace("\\", "/")
         path = self.beatmap_dir / filename
-        stem = str(Path(filename).with_suffix(""))
-        key = stem.lower()
+        # Stable uses IndexOf/LastIndexOf over the whole filename string,
+        # including directory dots, and excludes a dot at position zero.
+        has_extension = filename.find(".") > 0
+        stem = filename[:filename.rfind(".")] if has_extension else filename
+        key = (stem.lower(), format_version)
         if key not in self._explicit_paths:
             # An existing exact name is authoritative, even if decoding fails.
-            candidates = ([path] if Path(filename).suffix and self.resolve(path) is not None else
-                          [self.beatmap_dir / f"{stem}.{ext}" for ext in ("wav", "ogg", "mp3")])
+            candidates = ([path] if has_extension and self.resolve(path) is not None else
+                          [self.beatmap_dir / f"{name}.{ext}" for ext in ("wav", "ogg", "mp3")
+                           for name in ((stem, filename) if format_version < 5 else (stem,))])
             # LoadBeatmapSample selects the first existing bytes, then calls
             # BASS once. A corrupt selected stem must not try another codec.
             resolved = next((p for candidate in candidates
@@ -236,6 +250,25 @@ def _sample_gain(volume: int, type_name: str, *, is_lazer_replay: bool) -> float
     return int(max(volume, 8) * coefficient) / 100.0
 
 
+def _general_sample_bank(value: str, *, is_lazer_replay: bool) -> int:
+    # Both loaders use case-sensitive Enum.Parse, including unnamed int32
+    # values. Normalize decimal numeric spellings; never turn arbitrary text into a
+    # path. Malformed input retains the defensive client zero-bank fallback.
+    names = {"None": 0, "Normal": 1, "Soft": 2, "Drum": 3}
+    if not is_lazer_replay:
+        names["All"] = -1
+    value = value.strip()
+    if value in names:
+        result = names[value]
+    elif re.fullmatch(r"[+-]?[0-9]{1,10}", value):
+        result = int(value)
+        if not -(2**31) <= result < 2**31:
+            return 0
+    else:
+        return 0
+    return result
+
+
 def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
                               *, is_lazer_replay: bool = False) -> list[SampleLayer]:
     sample = note.hit_sample
@@ -244,15 +277,44 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
         # HitCircleMania.PlaySound only dispatches when ControlPointAtBin
         # returns a point. Stable itself rejects maps without timing points.
         return []
-    effective_set = sample.normal_set or (tp.sample_set if tp else 0)
-    effective_index = sample.index or (tp.custom_index if tp else 0)
+    fields = tp.field_count if tp else 8
+    if fields == 3 and not is_lazer_replay:
+        return []  # stable ParseTimingPoint requires either two or >=4 fields
+    format_version = getattr(beatmap, "format_version", 14)
+    timing_set = tp.sample_set if tp else 0
+    if tp is not None and fields < 4:
+        timing_set = _general_sample_bank(beatmap.default_sample_set, is_lazer_replay=is_lazer_replay)
+    timing_index = tp.custom_index if tp else 0
+    if fields == 2 and not is_lazer_replay:
+        timing_index = getattr(beatmap, "custom_samples", None)
+        if timing_index is None:
+            timing_index = int(format_version < 4)
+    effective_set = sample.normal_set or timing_set
+    effective_index = sample.index or timing_index
     # Stable ControlPoint maps None to Soft; lazer's timing decoder maps it
     # to Normal. Neither inherits [General] SampleSet for an explicit zero.
     default_set = "normal" if is_lazer_replay else "soft"
-    set_name = _SET_NAMES.get(effective_set, default_set)
+    def bank_name(value):
+        if value == 0:
+            return default_set
+        return _SET_NAMES.get(value, str(value) if is_lazer_replay else "normal")
+
+    set_name = bank_name(effective_set)
     # A note's zero means inherit; a control point's zero is a real volume.
-    volume = sample.volume or (tp.volume if tp else 100)
+    timing_volume = tp.volume if tp else 100
+    if tp is not None and fields < 6:
+        timing_volume = (100 if fields == 2 and not is_lazer_replay
+                         else getattr(beatmap, "sample_volume", 100))
+    volume = sample.volume or timing_volume
+    legacy_names = not is_lazer_replay and format_version < 5
     layers = []
+
+    def bank_index(set_value):
+        # Stable's built-in cache switch maps All/unknown values to Normal,
+        # but its extra-bank preload only loads Normal/Soft/Drum identities.
+        if not is_lazer_replay and set_value not in (0, 1, 2, 3) and effective_index > 2:
+            return 0
+        return effective_index
 
     def load(candidates, type_name):
         for candidate in candidates:
@@ -267,7 +329,7 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
 
     if sample.filename and cache.use_beatmap:
         if not is_lazer_replay:
-            path, data = cache.stable_file(sample.filename)
+            path, data = cache.stable_file(sample.filename, format_version=format_version)
             if data is not None:
                 return [SampleLayer(data, _sample_gain(volume, "custom", is_lazer_replay=False), path, "custom")]
     if sample.filename and is_lazer_replay:
@@ -286,14 +348,16 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
                 if layer is not None:
                     return [layer]
         return []
-    layer = load(_candidate_paths(cache, set_name, "normal", effective_index), "normal")
+    layer = load(_candidate_paths(cache, set_name, "normal", bank_index(effective_set),
+                                 legacy_names=legacy_names), "normal")
     if layer is not None:
         layers.append(layer)
-    addition_set = _SET_NAMES.get(sample.addition_set, set_name)
+    addition_set = bank_name(sample.addition_set) if sample.addition_set else set_name
     for bit, type_name in _ADDITIONS:
         if note.hit_sound & bit:
             layer = load(_candidate_paths(cache, addition_set, type_name,
-                                           effective_index), type_name)
+                                           bank_index(sample.addition_set or effective_set),
+                                           legacy_names=legacy_names), type_name)
             if layer is not None:
                 layers.append(layer)
     return layers
@@ -454,7 +518,7 @@ def build_hitsound_track(
         for note in sorted(notes, key=lambda note: note.time_ms):
             for sample in (note.hit_sample, getattr(note, "tail_hit_sample", None)):
                 if sample is not None and sample.filename:
-                    cache.stable_file(sample.filename)
+                    cache.stable_file(sample.filename, format_version=getattr(beatmap, "format_version", 14))
     events = (_lazer_sound_events(lazer_facts, notes, audio_rate) if is_lazer_replay
               else _stable_source_sound_events(stable_sound_facts, notes, audio_rate)
               if stable_sound_facts is not None
