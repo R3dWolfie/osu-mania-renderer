@@ -218,7 +218,12 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
     tp = _active_timing_point(beatmap.timing_points, note.time_ms + (0 if is_lazer_replay else 2))
     effective_set = sample.normal_set or (tp.sample_set if tp else 0)
     effective_index = sample.index or (tp.custom_index if tp else 0)
-    set_name = _SET_NAMES.get(effective_set, beatmap.default_sample_set.lower())
+    default_set = beatmap.default_sample_set.lower()
+    if default_set not in _SET_NAMES.values():
+        # [General] SampleSet is a sample identity, never a filename. Keep
+        # malformed external values out of path construction across all tiers.
+        default_set = "soft"
+    set_name = _SET_NAMES.get(effective_set, default_set)
     # A note's zero means inherit; a control point's zero is a real volume.
     volume = sample.volume or (tp.volume if tp else 100)
     layers = []
