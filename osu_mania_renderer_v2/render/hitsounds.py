@@ -220,7 +220,7 @@ def _stable_source_sound_events(facts, notes, audio_rate):
     parents = {(n.column, n.time_ms / audio_rate): n for n in notes}
     for fact in facts:
         note = parents.get((fact.column, fact.object_time_ms))
-        if fact.source == "final" and isinstance(note, HoldNote):
+        if fact.source in ("final", "empty-final") and isinstance(note, HoldNote):
             # Converted stable long notes have an audible end by default;
             # this is independent of lazer's optional/empty tail node.
             note = Note(note.column, note.end_time_ms,

@@ -57,7 +57,7 @@ class StableSoundFact:
     time_ms: float
     column: int
     object_time_ms: float  # parent start, including final LN calls
-    source: str  # tap / head / final
+    source: str  # tap / head / final / empty-tap / empty-final
 
 
 @dataclass(frozen=True)
@@ -114,6 +114,7 @@ class _NoteLifecycle:
     missing: bool = False
     hold_break: bool = False
     last_score_time: float | None = None
+    sound_at_end: bool = True  # Native Hold.SoundStart turns this off permanently.
 
     def hit(self, now: float, windows: StableManiaWindows):
         note = self.note
@@ -170,6 +171,11 @@ def build_legacy_mania_presentation(
     input_rate = rate if timeline_rate is None else timeline_rate
     windows = StableManiaWindows.build(od, source_mode, mods, rate, timeline_rate)
     ordered = sorted(notes, key=lambda note: note.time_ms)  # stable tie order
+    lifecycles = [_NoteLifecycle(note) for note in ordered]
+    sound_columns = [[state for state in lifecycles if state.note.column == column]
+                     for column in range(key_count)] if include_audio else []
+    sound_starts = [[state.note.time_ms for state in column] for column in sound_columns]
+    next_sound = [None] * key_count
     ticks = {}
     for event in key_events:
         ticks.setdefault(event.time_ms, []).append(event.keys_held)
@@ -271,13 +277,14 @@ def build_legacy_mania_presentation(
                     continue
                 if isinstance(note, HoldNote) and state.pressed and held & (1 << column):
                     hitted[column] = True
+                    next_sound[column] = None
                     holding(state, now)
                 elif isinstance(note, HoldNote) and not (held & (1 << column)) and not state.missing:
                     hit(state, now)
             continue
         replay_masks = ticks[now]
         while next_note < len(ordered) and ordered[next_note].time_ms - windows.early <= now:
-            active.append(_NoteLifecycle(ordered[next_note]))
+            active.append(lifecycles[next_note])
             next_note += 1
         # At a gate coinciding with a real input frame, process that input in
         # the SAME update. The automatic Hit() branch still precedes input.
@@ -302,10 +309,14 @@ def build_legacy_mania_presentation(
                     if not isinstance(note, HoldNote):
                         state.pressed, state.time_press = True, now
                         hitted[column] = True
+                        next_sound[column] = None
                         hit(state, now)
                     elif not state.pressed:
                         state.pressed, state.time_press = True, now
                         state.last_score_time = now
+                        next_sound[column] = None
+                        if source_mode == 3:
+                            state.sound_at_end = False
                         if include_audio:
                             sound_facts.append(StableSoundFact(now, column, note.time_ms, 'head'))
                         hitted[column] = sliding = True
@@ -314,6 +325,7 @@ def build_legacy_mania_presentation(
                 elif held & (1 << column):
                     if isinstance(note, HoldNote) and state.pressed:
                         hitted[column] = sliding = True
+                        next_sound[column] = None
                         holding(state, now)
                         set_long_light(column, True, now)
                 else:
@@ -324,6 +336,25 @@ def build_legacy_mania_presentation(
                         elif not state.missing:
                             hit(state, now)
                     set_long_light(column, False, now)
+            if include_audio:
+                # Stable runs this AFTER the object loop. The cached reference
+                # survives automatic misses, releases and finalisation; only
+                # the three real press/holding branches above clear it.
+                for column in range(key_count):
+                    if hitted[column] or not rising & (1 << column):
+                        continue
+                    if next_sound[column] is None:
+                        index = bisect_right(sound_starts[column], now)
+                        if index < len(sound_columns[column]):
+                            next_sound[column] = sound_columns[column][index]
+                    cached = next_sound[column]
+                    if cached is None:
+                        continue
+                    long = isinstance(cached.note, HoldNote)
+                    if long and not cached.sound_at_end:
+                        continue
+                    sound_facts.append(StableSoundFact(now, column, cached.note.time_ms,
+                                                       'empty-final' if long else 'empty-tap'))
             if sliding and sliding_start is None:
                 sliding_start = now
             elif not sliding and sliding_start is not None:
