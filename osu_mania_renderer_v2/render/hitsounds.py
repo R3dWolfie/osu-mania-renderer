@@ -82,14 +82,21 @@ def _active_timing_point(timing_points: tuple, time_ms: float):
     return timing_points[lo]
 
 
-def _candidate_paths(cache, set_name: str, type_name: str, index: int) -> list[Path]:
+@dataclass(frozen=True)
+class SampleCandidate:
+    path: Path
+    beatmap: bool = False
+
+
+def _candidate_paths(cache, set_name: str, type_name: str, index: int) -> list[SampleCandidate]:
     """Legacy beatmap banks differ from ordinary skin/default sample names."""
     base = f"{set_name}-hit{type_name}"
     sources = []
     if cache.use_beatmap and index >= 1:
-        sources.append((cache.beatmap_dir, base + (str(index) if index >= 2 else "")))
-    sources.extend((directory, base) for directory in (*cache.skin_dirs, _DEFAULT_HITSOUND_DIR))
-    out = [directory / f"{name}.{ext}" for directory, name in sources for ext in ("wav", "mp3", "ogg")]
+        sources.append((cache.beatmap_dir, base + (str(index) if index >= 2 else ""), True))
+    sources.extend((directory, base, False) for directory in (*cache.skin_dirs, _DEFAULT_HITSOUND_DIR))
+    out = [SampleCandidate(directory / f"{name}.{ext}", beatmap)
+           for directory, name, beatmap in sources for ext in ("wav", "mp3", "ogg")]
     return out
 
 
@@ -110,6 +117,10 @@ class _SampleCache:
         self._cache = OrderedDict()
         self._cache_bytes = 0
         self._missing = set()
+        self._beatmap_sizes = {}
+        # A valid zero-length BASS sample: resolved silence, distinct from None.
+        self._silence = np.zeros((1, 2), dtype=np.float32)
+        self._silence.flags.writeable = False
         self._explicit_paths = {}  # Stable LoadBeatmapSample cache is keyed by stem.
         self.max_cache_bytes = 32 * 1024 * 1024
 
@@ -136,15 +147,29 @@ class _SampleCache:
             # An existing exact name is authoritative, even if decoding fails.
             candidates = ([path] if Path(filename).suffix and self.resolve(path) is not None else
                           [self.beatmap_dir / f"{stem}.{ext}" for ext in ("wav", "ogg", "mp3")])
-            self._explicit_paths[key] = next((self.resolve(p) for p in candidates if self.get(p) is not None), None)
+            # LoadBeatmapSample selects the first existing bytes, then calls
+            # BASS once. A corrupt selected stem must not try another codec.
+            resolved = next((p for candidate in candidates
+                             if (p := self.resolve(candidate)) is not None), None)
+            data = self.get(resolved, stable_beatmap=True) if resolved is not None else None
+            self._explicit_paths[key] = resolved if data is not None else None
+            return (resolved, data) if data is not None else (None, None)
         resolved = self._explicit_paths[key]
-        return (resolved, self.get(resolved)) if resolved is not None else (None, None)
+        return (resolved, self.get(resolved, stable_beatmap=True)) if resolved is not None else (None, None)
 
-    def get(self, path: Path) -> np.ndarray | None:
+    def get(self, path: Path, *, stable_beatmap: bool = False) -> np.ndarray | None:
         path = self.resolve(path)
         if path is None:
             return None
         key = str(path)
+        if stable_beatmap:
+            try:
+                if key not in self._beatmap_sizes:
+                    self._beatmap_sizes[key] = path.stat().st_size
+                if self._beatmap_sizes[key] < 1024:
+                    return self._silence
+            except OSError:
+                pass  # normal failure handling below
         if key in self._cache:
             self._cache.move_to_end(key)
             return self._cache[key]
@@ -231,11 +256,11 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
     layers = []
 
     def load(candidates, type_name):
-        for path in candidates:
-            path = cache.resolve(path)
+        for candidate in candidates:
+            path = cache.resolve(candidate.path)
             if path is None:
                 continue
-            data = cache.get(path)
+            data = cache.get(path, stable_beatmap=candidate.beatmap and not is_lazer_replay)
             if data is not None:
                 return SampleLayer(data, _sample_gain(volume, type_name,
                     is_lazer_replay=is_lazer_replay), path, type_name)
@@ -257,7 +282,8 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
         sources = ((cache.beatmap_dir,) if cache.use_beatmap else ()) + cache.skin_dirs + (_DEFAULT_HITSOUND_DIR,)
         for root in sources:
             for name in dict.fromkeys(part for n in names for part in (n, n.rsplit("/", 1)[-1])):
-                layer = load([root / (name + suffix) for suffix in ("", ".wav", ".mp3", ".ogg")], "custom")
+                layer = load([SampleCandidate(root / (name + suffix))
+                              for suffix in ("", ".wav", ".mp3", ".ogg")], "custom")
                 if layer is not None:
                     return [layer]
         return []
@@ -346,13 +372,16 @@ def _combo_break_times(facts, *, is_lazer_replay, threshold=20, mods=0):
                 yield fact.time_ms
 
 
-def _find_combobreak_sample(beatmap_dir: Path | None, skin_dirs: tuple[Path, ...], cache=None) -> Path | None:
-    directories = ((beatmap_dir,) if beatmap_dir is not None else ()) + skin_dirs + (_DEFAULT_HITSOUND_DIR,)
-    for directory in directories:
+def _find_combobreak_sample(beatmap_dir: Path | None, skin_dirs: tuple[Path, ...], cache=None,
+                           *, is_lazer_replay=False) -> SampleCandidate | None:
+    directories = ([(beatmap_dir, True)] if beatmap_dir is not None else [])
+    directories.extend((directory, False) for directory in (*skin_dirs, _DEFAULT_HITSOUND_DIR))
+    for directory, beatmap in directories:
         for ext in ("wav", "mp3", "ogg"):
             path = sample_file(directory, f"combobreak.{ext}")
-            if path is not None and (cache is None or cache.get(path) is not None):
-                return path
+            if path is not None and (cache is None or cache.get(
+                    path, stable_beatmap=beatmap and not is_lazer_replay) is not None):
+                return SampleCandidate(path, beatmap)
     return None
 
 
@@ -435,9 +464,11 @@ def build_hitsound_track(
     events = sorted(events, key=lambda event: event.time_ms)
     total_samples = int(duration_ms / 1000 * target_sample_rate)
     combo_events = (combo_facts if combo_facts is not None else lazer_facts if is_lazer_replay else events)
-    cb_path = (_find_combobreak_sample(beatmap_dir if beatmap_hitsounds else None, skin_dirs, cache)
+    cb_candidate = (_find_combobreak_sample(beatmap_dir if beatmap_hitsounds else None, skin_dirs, cache,
+                                           is_lazer_replay=is_lazer_replay)
                if miss_hitsound and combo_break_sound else None)
-    cb_sample = cache.get(cb_path) if cb_path is not None else None
+    cb_sample = (cache.get(cb_candidate.path, stable_beatmap=cb_candidate.beatmap and not is_lazer_replay)
+                 if cb_candidate is not None else None)
     counts = dict(eligible_hit_events=0, resolved_hit_events=0, resolved_sample_layers=0,
                   unresolved_hit_events=0, mixed_sample_layers=0, combo_break_layers=0,
                   silent_node_events=0, zero_gain_hit_events=0, nightcore_beats=0, nc_mod_beats=0)
@@ -507,11 +538,12 @@ def build_hitsound_track(
                 writer.write(block)
         rms = (sum_squares / (total_samples * 2)) ** .5 if total_samples else 0.0
         diagnostics = {"path": str(output_wav), **counts, "peak": peak, "rms": rms,
-                       "chunk_frames": chunk_frames}
-        expected_audible = counts["eligible_hit_events"] - counts["zero_gain_hit_events"]
-        if expected_audible and (not counts["resolved_sample_layers"] or gameplay_peak == 0 or peak == 0):
+                       "gameplay_peak": gameplay_peak, "chunk_frames": chunk_frames}
+        # Valid authored silence (including stable's tiny-file sentinel) is
+        # a resolved sample. Waveform energy cannot identify decoder failure.
+        if counts["eligible_hit_events"] and not counts["resolved_sample_layers"]:
             log.error("hitsound_track_unusable", extra=diagnostics)
-            raise RendererError("Replay hitsounds resolved no audible gameplay samples. Check the "
+            raise RendererError("Replay hitsounds resolved no valid gameplay samples. Check the "
                                 "bundled default_hitsounds assets and sample decoding; see hitsound diagnostics.")
         temporary.replace(output_wav)
     except (OSError, ValueError, cache.soundfile.SoundFileError) as exc:

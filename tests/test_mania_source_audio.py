@@ -112,6 +112,6 @@ def test_actual_plan_sample_path_source_combinations(tmp_path,oracle,monkeypatch
 
 
 def test_bundled_combo_break_is_available_without_host_skin():
-    path=hs._find_combobreak_sample(None,())
+    path=hs._find_combobreak_sample(None,()).path
     assert path==hs._DEFAULT_HITSOUND_DIR/'combobreak.mp3'
     assert np.max(np.abs(sf.read(path)[0]))>0

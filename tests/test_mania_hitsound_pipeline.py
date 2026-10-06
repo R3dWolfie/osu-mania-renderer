@@ -229,23 +229,28 @@ def test_body_reset_only_combo_break_audio_and_truthful_layer_count(tmp_path, or
 
 
 @pytest.mark.parametrize('failure', ['unresolved','silent'])
-def test_zero_layers_or_silent_gameplay_is_systemic_even_with_nc_overlay(tmp_path, oracle, caplog, monkeypatch, failure):
+def test_resolution_failure_is_distinct_from_authored_silence_with_nc_overlay(tmp_path, oracle, caplog, monkeypatch, failure):
     _, beatmap, _ = oracle
     beatmap = replace(beatmap, notes=(Note(0,100),), timing_points=tuple(replace(tp,custom_index=1) for tp in beatmap.timing_points))
     if failure == 'unresolved':
-        monkeypatch.setattr(hs._SampleCache,'get',lambda *_: None)
+        monkeypatch.setattr(hs._SampleCache,'get',lambda *_,**__: None)
     else:
         wave(tmp_path / 'normal-hitnormal.wav', 0)
     def overlay(*args,**kwargs):
         yield hs.SamplePlacement(0, np.full((10,2),.5,dtype=np.float32), 1, 'nightcore')
     monkeypatch.setattr(hs,'_nightcore_layers',overlay)
     caplog.set_level('INFO', logger=hs.log.name)
-    with pytest.raises(RendererError, match='no audible gameplay samples'):
-        build(tmp_path, beatmap, (fact(100,100),), nightcore=True)
+    if failure == 'unresolved':
+        with pytest.raises(RendererError, match='no valid gameplay samples'):
+            build(tmp_path, beatmap, (fact(100,100),), nightcore=True)
+    else:
+        output=build(tmp_path, beatmap, (fact(100,100),), nightcore=True)
+        data,_=sf.read(output)
+        assert np.max(data)==.5 and not np.any(data[10:])  # only the overlay sounds
     log = diagnostic(caplog)
     assert log.eligible_hit_events == log.resolved_hit_events + log.unresolved_hit_events == 1
     assert log.resolved_hit_events == (0 if failure == 'unresolved' else 1)
-    assert not (tmp_path/'hits.wav').exists()
+    assert (tmp_path/'hits.wav').exists() is (failure == 'silent')
 
 
 def test_stable_trigger_timing_and_gain_remain_separate(tmp_path, oracle):

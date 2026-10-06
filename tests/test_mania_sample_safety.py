@@ -45,7 +45,7 @@ def test_conventional_symlink_escape_is_rejected(banks):
 def test_case_insensitive_overlay_paths_and_in_root_symlink(banks):
     from osu_mania_renderer_v2.render import hitsounds as hs
     target=banks['skin']/'ComboBreak.WAV';wave(target)
-    assert hs._find_combobreak_sample(None,(banks['skin'],))==target
+    assert hs._find_combobreak_sample(None,(banks['skin'],)).path==target
     wave(banks['skin']/'Nightcore-Clap.WAV')
     cache=hs._SampleCache(44100,skin_dirs=(banks['skin'],))
     assert hs._find_skin_sample(('nightcore-clap.wav',),(banks['skin'],),cache) is not None
