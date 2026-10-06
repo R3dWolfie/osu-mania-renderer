@@ -76,7 +76,7 @@ def test_converted_stable_long_note_has_final_sound_and_end_control_point(tmp_pa
         4,od=8,source_mode=0,include_combo=True,include_audio=True)
     assert [(f.time_ms,f.source) for f in presentation.sound_facts]==[(1000,'head'),(1800,'final')]
     beatmap=replace(beatmap,notes=(hold,),source_mode=0,timing_points=(
-        TimingPoint(0,1,0,10),TimingPoint(1802,1,0,100)))
+        TimingPoint(0,1,1,10),TimingPoint(1802,1,1,100)))
     output=hs.build_hitsound_track(beatmap=beatmap,beatmap_dir=tmp_path,output_wav=tmp_path/'out.wav',
         duration_ms=2200,stable_sound_facts=presentation.sound_facts,combo_facts=presentation.stable_combo_facts)
     data,rate=sf.read(output)
@@ -92,7 +92,7 @@ def test_actual_plan_sample_path_source_combinations(tmp_path,oracle,monkeypatch
     wave(map_dir/'normal-hitnormal.wav',.5);wave(skin/'normal-hitnormal.wav',.25)
     async def encoder(*args): return 'libx264'
     monkeypatch.setattr(rendering,'probe_encoder',encoder)
-    monkeypatch.setattr(rendering,'parse_beatmap',lambda *args,**kwargs:replace(beatmap,audio_filename=str(SONG)))
+    monkeypatch.setattr(rendering,'parse_beatmap',lambda *args,**kwargs:replace(beatmap,audio_filename=str(SONG),timing_points=tuple(replace(tp,custom_index=1) for tp in beatmap.timing_points)))
     received={}
     def capture(**kwargs):
         cache=hs._SampleCache(44100,beatmap_dir=kwargs['beatmap_dir'],skin_dirs=kwargs['skin_dirs'],

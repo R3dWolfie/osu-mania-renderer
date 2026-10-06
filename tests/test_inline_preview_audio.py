@@ -50,7 +50,7 @@ def test_inline_preview_preserves_master_and_single_factual_hit(tmp_path, case, 
     sample = .2 * np.sin(2 * np.pi * (1500 * sample_t + 5000 * sample_t ** 2)) * np.exp(-sample_t * 20)
     sf.write(tmp_path / 'normal-hitnormal.wav', np.column_stack((sample, sample)), sr, subtype='FLOAT')
     beatmap = replace(parse_beatmap(MAP), notes=(Note(0, 750),),
-                      timing_points=(TimingPoint(0, 1, 0, 100),))
+                      timing_points=(TimingPoint(0, 1, 1, 100),))
     timeline = build_lazer_combo_timeline(beatmap.notes, (KeyEvent(760, 1), KeyEvent(800, 0)), 4, od=8, rate=rate)
     hits = build_hitsound_track(beatmap=beatmap, beatmap_dir=tmp_path,
         output_wav=tmp_path / 'hits.wav', duration_ms=2000, audio_rate=rate,

@@ -55,13 +55,14 @@ def _active_timing_point(timing_points: tuple, time_ms: float):
     return timing_points[lo]
 
 
-def _candidate_paths(dirs, set_name: str, type_name: str, index: int) -> list[Path]:
-    out = []
-    for directory in dirs:
-        if index > 0:
-            out.extend(directory / f"{set_name}-hit{type_name}{index}.{ext}"
-                       for ext in ("wav", "ogg"))
-        out.extend(directory / f"{set_name}-hit{type_name}.{ext}" for ext in ("wav", "ogg"))
+def _candidate_paths(cache, set_name: str, type_name: str, index: int) -> list[Path]:
+    """Legacy beatmap banks differ from ordinary skin/default sample names."""
+    base = f"{set_name}-hit{type_name}"
+    sources = []
+    if cache.use_beatmap and index >= 1:
+        sources.append((cache.beatmap_dir, base + (str(index) if index >= 2 else "")))
+    sources.extend((directory, base) for directory in (*cache.skin_dirs, _DEFAULT_HITSOUND_DIR))
+    out = [directory / f"{name}.{ext}" for directory, name in sources for ext in ("wav", "mp3", "ogg")]
     return out
 
 
@@ -73,13 +74,26 @@ class _SampleCache:
         self.target_rate = target_rate
         self.soundfile = require_hitsound_runtime()
         self.beatmap_dir = beatmap_dir
+        self.skin_dirs = skin_dirs
         self.use_beatmap = beatmap_hitsounds
-        self.sample_dirs = ((beatmap_dir,) if beatmap_hitsounds else ()) + skin_dirs + (
-            _DEFAULT_HITSOUND_DIR,)
         self._cache = OrderedDict()
         self._cache_bytes = 0
         self._missing = set()
+        self._explicit_paths = {}  # Stable LoadBeatmapSample cache is keyed by stem.
         self.max_cache_bytes = 32 * 1024 * 1024
+
+    def stable_file(self, filename):
+        filename = filename.replace("\\", "/")
+        path = self.beatmap_dir / filename
+        stem = str(Path(filename).with_suffix(""))
+        key = stem.lower()
+        if key not in self._explicit_paths:
+            # An existing exact name is authoritative, even if decoding fails.
+            candidates = ([path] if Path(filename).suffix and path.is_file() else
+                          [self.beatmap_dir / f"{stem}.{ext}" for ext in ("wav", "ogg", "mp3")])
+            self._explicit_paths[key] = next((p for p in candidates if self.get(p) is not None), None)
+        resolved = self._explicit_paths[key]
+        return (resolved, self.get(resolved)) if resolved is not None else (None, None)
 
     def get(self, path: Path) -> np.ndarray | None:
         key = str(path)
@@ -159,16 +173,30 @@ def _resolve_samples_for_note(note, beatmap, cache: _SampleCache,
         return None
 
     if sample.filename and cache.use_beatmap:
-        layer = load((cache.beatmap_dir / sample.filename,), "custom")
-        if layer is not None:
-            return [layer]
-    layer = load(_candidate_paths(cache.sample_dirs, set_name, "normal", effective_index), "normal")
+        if not is_lazer_replay:
+            path, data = cache.stable_file(sample.filename)
+            if data is not None:
+                return [SampleLayer(data, _sample_gain(volume, "custom", is_lazer_replay=False), path, "custom")]
+    if sample.filename and is_lazer_replay:
+        # FileHitSampleInfo forces bank Normal/CSS1. Each legacy skin tries
+        # Filename, extensionless stem, then its ordinary lookup names before
+        # moving to the next skin. ResourceStore appends wav/mp3/ogg to each.
+        filename = sample.filename.replace("\\", "/")
+        names = [filename, str(Path(filename).with_suffix("")), "Gameplay/normal-hitnormal", "hitnormal"]
+        sources = ((cache.beatmap_dir,) if cache.use_beatmap else ()) + cache.skin_dirs + (_DEFAULT_HITSOUND_DIR,)
+        for root in sources:
+            for name in dict.fromkeys(part for n in names for part in (n, n.rsplit("/", 1)[-1])):
+                layer = load([root / (name + suffix) for suffix in ("", ".wav", ".mp3", ".ogg")], "custom")
+                if layer is not None:
+                    return [layer]
+        return []
+    layer = load(_candidate_paths(cache, set_name, "normal", effective_index), "normal")
     if layer is not None:
         layers.append(layer)
     addition_set = _SET_NAMES.get(sample.addition_set, set_name)
     for bit, type_name in _ADDITIONS:
         if note.hit_sound & bit:
-            layer = load(_candidate_paths(cache.sample_dirs, addition_set, type_name,
+            layer = load(_candidate_paths(cache, addition_set, type_name,
                                            effective_index), type_name)
             if layer is not None:
                 layers.append(layer)
@@ -319,6 +347,13 @@ def build_hitsound_track(
     if is_lazer_replay and lazer_facts is None:
         raise RendererError("Lazer replay hitsounds require source-factual gameplay events.")
     notes = beatmap.notes if sample_notes is None else sample_notes
+    if not is_lazer_replay and cache.use_beatmap:
+        # Stable processes filenames while constructing objects, not in the
+        # order replay presses later happen to trigger their audio.
+        for note in sorted(notes, key=lambda note: note.time_ms):
+            for sample in (note.hit_sample, getattr(note, "tail_hit_sample", None)):
+                if sample is not None and sample.filename:
+                    cache.stable_file(sample.filename)
     events = (_lazer_sound_events(lazer_facts, notes, audio_rate) if is_lazer_replay
               else _stable_source_sound_events(stable_sound_facts, notes, audio_rate)
               if stable_sound_facts is not None

@@ -182,7 +182,7 @@ def test_lazer_head_and_intentional_tail_node_samples(tmp_path, oracle, caplog, 
     wave(tmp_path / 'normal-hitnormal.wav')
     wave(tmp_path / 'tail.wav', .25)
     hold = HoldNote(0,100,500, tail_hit_sample=HitSample(filename='tail.wav') if explicit else None)
-    beatmap = replace(beatmap, notes=(hold,), key_count=4, timing_points=(TimingPoint(0,1,0,10),))
+    beatmap = replace(beatmap, notes=(hold,), key_count=4, timing_points=(TimingPoint(0,1,1,10),))
     timeline = build_lazer_combo_timeline((hold,), (KeyEvent(100,1),KeyEvent(500,0)), 4, od=8)
     caplog.set_level('INFO', logger=hs.log.name)
     data, rate = sf.read(build(tmp_path, beatmap, timeline.facts), always_2d=True)
@@ -199,8 +199,8 @@ def test_rate_and_mirror_metadata_uses_raw_control_point_clock(tmp_path, oracle)
     _, beatmap, _ = oracle
     wave(tmp_path / 'normal-hitnormal.wav')
     raw = Note(3, 1001, hit_sample=HitSample(volume=37))
-    beatmap = replace(beatmap, notes=(Note(3,667),), timing_points=(TimingPoint(0,1,0,10),
-        TimingPoint(900,1,0,80)))
+    beatmap = replace(beatmap, notes=(Note(3,667),), timing_points=(TimingPoint(0,1,1,10),
+        TimingPoint(900,1,1,80)))
     output = build(tmp_path, beatmap, (fact(1002/1.5, 1001/1.5, column=3),),
                    sample_notes=(raw,), audio_rate=1.5)
     data, rate = sf.read(output, always_2d=True)
@@ -218,7 +218,7 @@ def test_body_reset_only_combo_break_audio_and_truthful_layer_count(tmp_path, or
     notes = tuple(Note(0,100+i*10) for i in range(20))
     facts = tuple(fact(n.time_ms,n.time_ms) for n in notes) + (
         fact(500,500,kind='reset',source='body',result='combo_break'),)
-    beatmap = replace(beatmap, notes=notes)
+    beatmap = replace(beatmap, notes=notes, timing_points=tuple(replace(tp,custom_index=1) for tp in beatmap.timing_points))
     caplog.set_level('INFO', logger=hs.log.name)
     output = hs.build_hitsound_track(beatmap=beatmap, beatmap_dir=tmp_path, lazer_facts=facts,
         is_lazer_replay=True, output_wav=tmp_path/'hits.wav',duration_ms=1000)
@@ -231,7 +231,7 @@ def test_body_reset_only_combo_break_audio_and_truthful_layer_count(tmp_path, or
 @pytest.mark.parametrize('failure', ['unresolved','silent'])
 def test_zero_layers_or_silent_gameplay_is_systemic_even_with_nc_overlay(tmp_path, oracle, caplog, monkeypatch, failure):
     _, beatmap, _ = oracle
-    beatmap = replace(beatmap, notes=(Note(0,100),))
+    beatmap = replace(beatmap, notes=(Note(0,100),), timing_points=tuple(replace(tp,custom_index=1) for tp in beatmap.timing_points))
     if failure == 'unresolved':
         monkeypatch.setattr(hs._SampleCache,'get',lambda *_: None)
     else:
@@ -252,7 +252,7 @@ def test_stable_trigger_timing_and_gain_remain_separate(tmp_path, oracle):
     _, beatmap, _ = oracle
     wave(tmp_path / 'normal-hitnormal.wav')
     hold = HoldNote(0,100,500,tail_hit_sample=HitSample(filename='tail.wav'))
-    beatmap = replace(beatmap,notes=(hold,))
+    beatmap = replace(beatmap,notes=(hold,), timing_points=tuple(replace(tp,custom_index=1) for tp in beatmap.timing_points))
     output = hs.build_hitsound_track(beatmap=beatmap,beatmap_dir=tmp_path,output_wav=tmp_path/'stable.wav',
         duration_ms=1000, judgments_events=(JudgmentEvent(100,0,'geki',11),
             JudgmentEvent(500,0,'geki',0,is_tail=True)),miss_hitsound=False)
