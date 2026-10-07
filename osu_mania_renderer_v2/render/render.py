@@ -23,7 +23,8 @@ from typing import Any
 
 from osu_mania_renderer_v2.beatmap.beatmap import build_sv_distance_table, parse_beatmap
 from osu_mania_renderer_v2.render import loudnorm_cache
-from osu_mania_renderer_v2.render.encode import FfmpegPipe, build_ffmpeg_cmd, probe_encoder
+from osu_mania_renderer_v2.render.encode import (
+    FfmpegPipe, build_ffmpeg_cmd, compact_wanted, probe_encoder)
 from osu_mania_renderer_v2.errors import (
     BeatmapParseError,
     MissingAudioError,
@@ -585,6 +586,27 @@ async def build_render_plan(
         preview_path = output_path.parent / (output_path.stem + ".embed.mp4")
         log.info("inline_preview", extra={"path": preview_path.name})
 
+    # STREAMABLE MASTER (R3D_STREAM_MASTER=1, default OFF): see build_ffmpeg_cmd.
+    # The marker file tells the contributor client this engine honoured the
+    # flag; without it the client keeps its post-render loudness pass.
+    # INLINE DISCORD COPY (R3D_COMPACT_INLINE=1, default OFF; needs the inline
+    # preview): a third output encoded to the compact plan the node/bot use
+    # for `-embed-sm.mp4`, so nothing is left to encode after the render.
+    compact_path: Path | None = None
+    if preview_path is not None and compact_wanted(
+            total_video_ms / 1000.0, options.resolution[0], options.resolution[1],
+            options.fps, 0.6):
+        compact_path = output_path.parent / (output_path.stem + ".embed-sm.mp4")
+        log.info("inline_discord_copy", extra={"path": compact_path.name})
+    stream_master = os.environ.get("R3D_STREAM_MASTER") == "1"
+    if stream_master:
+        import json as _json
+        (output_path.parent / (output_path.stem + ".stream.json")).write_text(
+            _json.dumps({"schema": 1, "faststart": False,
+                         "loudnorm": "loudnorm=I=-18:TP=-1.5:LRA=11",
+                         "compact": compact_path is not None}))
+        log.info("stream_master")
+
     cmd = build_ffmpeg_cmd(
         encoder=encoder,
         encoder_device=encoder_device,
@@ -605,6 +627,8 @@ async def build_render_plan(
         music_volume=options.music_volume,
         hitsound_volume=options.hitsound_volume,
         preview_path=preview_path,
+        stream_master=stream_master,
+        compact_path=compact_path,
     )
 
     bg_filename = modded.background_filename
