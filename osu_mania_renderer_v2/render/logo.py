@@ -69,10 +69,8 @@ def bake_logo_tile(size: int = 256) -> np.ndarray:
                           radius=int(size * 0.18), fill=LOGO_TILE_RED + (255,))
     try:
         from PIL import ImageFont
-        try:
-            f = ImageFont.truetype("DejaVuSans-Bold.ttf", int(size * 0.66))
-        except Exception:
-            f = ImageFont.load_default()
+        from ..gpu.text import _font_bold
+        f = _font_bold(int(size * 0.66))      # the bundled DejaVu first, on every platform
         box = f.getbbox("R")
         rw, rh = box[2] - box[0], box[3] - box[1]
         drw.text(((size - rw) / 2.0 - box[0], (size - rh) / 2.0 - box[1]),

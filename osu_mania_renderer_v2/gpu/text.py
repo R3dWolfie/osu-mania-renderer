@@ -17,7 +17,17 @@ from PIL import Image, ImageDraw, ImageFont
 # list lets us land on a real scalable TTF instead of PIL's bitmap default
 # (which silently ignores the requested size — caused every text bump to
 # render as ~10 pt regardless of what was passed).
+# The HUD's own font, DejaVu Sans Bold, ships with the engine and is used
+# ahead of any system font, so every platform draws the same glyphs. Before,
+# a Linux node drew DejaVu, a Mac drew Arial Bold (or, where no listed path
+# existed, Pillow's built-in font at about 10 px whatever size was asked for).
+# The file is the one Ubuntu 24.04 installs (2.37, sha256 5c1247ac...2ce895),
+# which is what the Linux nodes were already drawing with. Licence: assets/fonts/LICENSE_DEJAVU.txt.
+import os as _os
+BUNDLED_FONT = _os.path.normpath(_os.path.join(
+    _os.path.dirname(__file__), "..", "assets", "fonts", "DejaVuSans-Bold.ttf"))
 _FONT_CANDIDATES: tuple[str, ...] = (
+    BUNDLED_FONT,
     "DejaVuSans-Bold.ttf",
     "LiberationSans-Bold.ttf",
     "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
