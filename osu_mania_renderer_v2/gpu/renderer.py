@@ -9,7 +9,9 @@ This file is implemented incrementally:
 from __future__ import annotations
 
 import logging
+import os
 import struct
+import sys
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -65,6 +67,40 @@ log = logging.getLogger("osu_mania_renderer_v2")
 
 # 6 vertices x 9 float32 attrs for the ad-hoc external-texture quads.
 # Little-endian f32 == the np.array(dtype="f4").tobytes() it replaces.
+# ---- fresh storage for every small upload ("orphaning") ----------------------
+# The ad-hoc quad buffer and the sprite instance buffer are rewritten many times
+# a frame (about 29 on a 4K map), each time right after a draw from the same
+# buffer was queued. The driver then has to wait for that draw before it lets
+# the new bytes in. Measured on macOS (M1 Max, the bundle's mania self-test
+# replay, 720p60, 4,212 frames): 34 microseconds per write, the largest single
+# item of the frame. Asking for fresh storage first removes the wait:
+# draw 8.7 s -> 4.0 s, the whole job 12.0 -> 8.0 s with the encoder out of the
+# way, and the output file is byte-identical (same bytes uploaded, same draws).
+#
+# On by default on macOS, where that was measured. Anywhere else it is off
+# until it has been measured there; R3D_MANIA_ORPHAN=1 / =0 forces it.
+def _orphan_writes_default() -> bool:
+    return sys.platform == "darwin"
+
+
+def _orphan_writes() -> bool:
+    v = os.environ.get("R3D_MANIA_ORPHAN")
+    if v is None:
+        return _orphan_writes_default()
+    return v.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+_ORPHAN_WRITES = _orphan_writes()
+
+
+def _stream_write(buffer, data) -> None:
+    """Replace the contents of a small dynamic buffer that is drawn from right
+    after: fresh storage first when _ORPHAN_WRITES, then the bytes."""
+    if _ORPHAN_WRITES:
+        buffer.orphan()
+    buffer.write(data)
+
+
 _EXT_QUAD_PACK = struct.Struct("<54f").pack
 
 # Playfield dimensions, expressed as fractions of the screen.
@@ -1016,6 +1052,21 @@ class FrameRenderer:
         """True when NO user skin supplies mania content — the Argon default
         applies (matches wiki_elements._common._skin_provides_mania). Used to
         switch the playfield to lazer's Argon stage-unit geometry."""
+        # Asked ~28 times a frame, and each answer walks ~32 atlas lookups.
+        # It depends only on the [Mania] section, the atlas and the key count,
+        # and an atlas' source tables are written only while it is loaded
+        # (SpriteAtlas.load), so the answer is kept for as long as those three
+        # are the same objects. Replace any of them and it is worked out again.
+        atlas, section, keys = self.atlas, self.mania_section, self.rc.key_count
+        kept = getattr(self, "_argon_default_kept", None)
+        if (kept is not None and kept[0] is atlas and kept[1] is section
+                and kept[2] == keys):
+            return kept[3]
+        value = self._work_out_argon_default()
+        self._argon_default_kept = (atlas, section, keys, value)
+        return value
+
+    def _work_out_argon_default(self) -> bool:
         if self.mania_section is not None:
             return False
         a = self.atlas
@@ -3059,7 +3110,7 @@ class FrameRenderer:
             tl[0], tl[1], 0, 0, 0, tr_, tg_, tb_, alpha,
         )
         vbo, vao = self._ext_quad_buffers()
-        vbo.write(verts)
+        _stream_write(vbo, verts)
         vao.render(moderngl.TRIANGLES)
 
     def _direct_texture_array(
@@ -3181,7 +3232,7 @@ class FrameRenderer:
             top_left[0], top_left[1], 0, v_top, 0, r, g, b, a,
         )
         vbo, vao = self._ext_quad_buffers()
-        vbo.write(verts)
+        _stream_write(vbo, verts)
         vao.render(moderngl.TRIANGLES)
         if note_cover:
             prog["u_hd"].value = 0.0
@@ -4395,7 +4446,7 @@ class FrameRenderer:
         slab = self._instance_arr[:n]
         # ndarray implements the buffer protocol — write it directly instead
         # of paying a tobytes() copy per flush. Same bytes hit the GPU.
-        self._instance_vbo.write(slab)
+        _stream_write(self._instance_vbo, slab)
         prog = self.programs["sprite_instanced"]
         self.atlas.texture_array.use(0)
         # Uniform state persists on the program between draws, so only

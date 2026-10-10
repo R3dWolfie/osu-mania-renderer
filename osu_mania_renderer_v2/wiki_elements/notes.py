@@ -409,6 +409,10 @@ def _fx_draw(fr, kind, x, y, w, h, color, alpha, rotation=0.0):
         gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
 
 
+# (seed, travel) -> (cos, sin, distance) of one ring's throw; see below
+_RING_THROW: dict = {}
+
+
 def _argon_ring_explosion(ctx, j, cx, cy, col):
     """Draw the Argon ring explosion for judgement popup `j` centred at
     (cx, cy) in GL (Y-up) render px, tinted `col`. Stateless: every ring's
@@ -443,13 +447,24 @@ def _argon_ring_explosion(ctx, j, cx, cy, col):
     gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE)        # additive
     try:
         for i, size_px in enumerate(pieces):
-            rng = random.Random((seed_base * 1000003) ^ (i * 2654435761)
-                                ^ (hash(j.judgment) & 0xFFFF))
-            direction = rng.uniform(0.0, 360.0)  # lazer feeds this to cos/sin
-            distance = rng.uniform(travel / 2.0, travel)
+            seed = ((seed_base * 1000003) ^ (i * 2654435761)
+                    ^ (hash(j.judgment) & 0xFFFF))
+            # A ring's throw is the same on every frame of its popup's life
+            # (that is what the seed is for), so seed the generator once per
+            # ring instead of once per ring per frame.
+            throw = _RING_THROW.get((seed, travel))
+            if throw is None:
+                rng = random.Random(seed)
+                direction = rng.uniform(0.0, 360.0)  # lazer feeds this to cos/sin
+                distance = rng.uniform(travel / 2.0, travel)
+                if len(_RING_THROW) >= 4096:
+                    _RING_THROW.clear()
+                throw = _RING_THROW[(seed, travel)] = (
+                    math.cos(direction), math.sin(direction), distance)
+            cos_d, sin_d, distance = throw
             cur = distance * radius_frac
-            dx = math.cos(direction) * cur
-            dy = math.sin(direction) * cur
+            dx = cos_d * cur
+            dy = sin_d * cur
             tex, tw, th = _cached_ring_tex(fr, col, size_px, thick_px)
             fr._draw_external_texture(
                 tex, x=int(cx + dx - tw / 2.0), y=int(cy + dy - th / 2.0),

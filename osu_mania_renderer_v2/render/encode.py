@@ -143,6 +143,15 @@ async def probe_encoder(encoder: str, device: str | None) -> str:
 # taiko crf 20 / veryfast, catch crf 23 / veryfast, mania 2500k / medium), so
 # these make the choice settable per run without a code edit:
 #   R3D_X264_PRESET   R3D_X264_CRF   R3D_X264_THREADS   R3D_X264_PARAMS
+# and, for this engine only, R3D_MANIA_X264_PRESET, which wins over
+# R3D_X264_PRESET: the node-wide name moves all four engines at once, and they
+# start from four different presets. What it buys here, at the same bitrate
+# (so the same file size), on the self-test replay against a lossless copy of
+# the same frames, M1 Max, node settings with the inline preview:
+#               720p60                          1080p60
+#   medium      10.4 s  VMAF 97.93 (1%: 96.7)   16.9 s  VMAF 97.77 (1%: 96.5)
+#   faster       8.9 s       97.90 (1%: 96.2)   13.4 s       97.66 (1%: 94.3)
+#   veryfast     8.1 s       97.78 (1%: 95.9)   11.1 s       97.42 (1%: 93.6)
 # THE DEFAULTS REPRODUCE THIS ENGINE'S CURRENT COMMAND EXACTLY (a 2500k bitrate target on x264's default preset, medium):
 # with none of them set the ffmpeg argv is unchanged, argument for argument.
 #
@@ -153,8 +162,8 @@ async def probe_encoder(encoder: str, device: str | None) -> str:
 def _x264_knobs() -> "tuple[str, str, str, str]":
     """(preset, crf, threads, params) from the environment as it is NOW."""
     g = lambda k: os.environ.get(k, "").strip()
-    return (g("R3D_X264_PRESET"), g("R3D_X264_CRF"), g("R3D_X264_THREADS"),
-            g("R3D_X264_PARAMS"))
+    return (g("R3D_MANIA_X264_PRESET") or g("R3D_X264_PRESET"),
+            g("R3D_X264_CRF"), g("R3D_X264_THREADS"), g("R3D_X264_PARAMS"))
 
 
 def nvenc_target_bps(w: int, h: int, fps: float) -> int:
@@ -285,8 +294,15 @@ def build_ffmpeg_cmd(
     preview_path: Path | None = None,
     stream_master: bool = False,
     compact_path: Path | None = None,
+    frames_yuv420p: bool = False,
 ) -> list[str]:
     """Build the ffmpeg argv. Audio is optional.
+
+    ``frames_yuv420p`` (``R3D_MANIA_GPU_YUV``, see gpu/yuv.py): the engine
+    hands over frames it has already converted to limited-range BT.709
+    yuv420p on the GPU, still bottom-up. The input is declared as exactly
+    that, and the video chain keeps its ``vflip`` and drops the conversion.
+    False builds the command it always did. Not available with VAAPI.
 
     ``stream_master`` — STREAMABLE MASTER (``R3D_STREAM_MASTER=1``, default
     OFF): no ``+faststart`` on the master (which rewrites the whole file at
@@ -329,9 +345,18 @@ def build_ffmpeg_cmd(
     # when ffmpeg is being run on the host via flatpak-spawn (stdin would
     # go through D-Bus). Same `-f rawvideo -pix_fmt rgb24 -s WxH -r FPS`
     # input args either way.
+    if frames_yuv420p:
+        if encoder == "h264_vaapi":
+            raise ValueError("frames_yuv420p is not available with h264_vaapi")
+        # the colour declaration is not optional: without it ffmpeg treats
+        # the frames as unknown and converts them a second time
+        from osu_mania_renderer_v2.gpu.yuv import FFMPEG_INPUT_ARGS
+        frame_fmt = ["-pix_fmt", "yuv420p", *FFMPEG_INPUT_ARGS]
+    else:
+        frame_fmt = ["-pix_fmt", "rgb24"]
     cmd += [
         "-f", "rawvideo",
-        "-pix_fmt", "rgb24",
+        *frame_fmt,
         "-s", f"{w}x{h}",
         "-r", str(fps),
         "-i", str(frames_fifo_path) if frames_fifo_path is not None else "pipe:0",
@@ -467,7 +492,7 @@ def build_ffmpeg_cmd(
     vf_chain = ["vflip"]
     if encoder == "h264_vaapi":
         vf_chain += ["format=nv12", "hwupload"]
-    else:
+    elif not frames_yuv420p:
         vf_chain += ["scale=in_range=full:out_range=limited", "format=yuv420p"]
 
     # Video codec args (collected in `vc`; appended below).

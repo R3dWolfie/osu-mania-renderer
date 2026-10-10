@@ -210,31 +210,42 @@ class FrameContext:
         negative advance. Caps at 45% of the glyph's native width."""
         return min(overlap_px, gw * 0.45)
 
+    def _number_glyphs(self, glyph_h: float, overlap_px: int, font: str,
+                       wireframe: bool) -> dict:
+        """Per-character layout of a number font at one size: everything
+        `number_width` and `draw_number` need for a character that does not
+        depend on where the number is drawn. A number is drawn ~8 times a
+        frame and each character used to cost ~8 lookups; here it is worked
+        out once per (size, overlap, font, wireframe) and character, with the
+        same arithmetic in the same order, so every position is the same
+        float it was. Kept per atlas: another atlas starts a new table."""
+        atlas = self.atlas
+        tables = getattr(self, "_number_tables", None)
+        if tables is None or tables[0] is not atlas:
+            tables = self._number_tables = (atlas, {})
+        key = (glyph_h, overlap_px, font, wireframe)
+        table = tables[1].get(key)
+        if table is None:
+            # an animated number (the combo's pop) has a new size every frame:
+            # its tables are used once, so do not let them pile up
+            if len(tables[1]) >= 64:
+                tables[1].clear()
+            table = tables[1][key] = _NumberGlyphs(self, glyph_h, overlap_px, font, wireframe)
+        return table
+
     def number_width(self, text: str, glyph_h: float, overlap_px: int,
                      font: str = "score") -> float:
         """On-screen width of `text` drawn with the given number font at
         `glyph_h` digit height — for right/centre alignment."""
-        digit_h = self.atlas.global_native_size(f"{font}_0")[1] or 1
-        scale = glyph_h / digit_h
-        fixed_digit_width = (
-            self.atlas.global_native_size(f"{font}_5")[0]
-            if font in ("score", "combo")
-            else 0.0
-        )
+        glyphs = self._number_glyphs(glyph_h, overlap_px, font, False)
         total = 0.0
         prev_gap = 0.0
         for ch in text:
-            slot = self._glyph_slot(ch, font)
-            if slot is None:
+            g = glyphs[ch]
+            if g is None:
                 continue
-            gw, _gh = self.atlas.global_native_size(slot)
-            cell_width = (
-                fixed_digit_width * scale
-                if ch.isdigit() and fixed_digit_width > 0
-                else gw * scale
-            )
-            total += cell_width - prev_gap
-            prev_gap = self._eff_overlap(overlap_px, gw) * scale
+            total += g[0] - prev_gap
+            prev_gap = g[1]
         return total
 
     def draw_number(
@@ -255,13 +266,6 @@ class FrameContext:
         backing glyph for every digit (the dim segmented template behind the
         live counter), keeping the same advance so it aligns under the real
         digits. The dot keeps its own glyph (lazer's wireframesLookup)."""
-        digit_h = self.atlas.global_native_size(f"{font}_0")[1] or 1
-        scale = glyph_h / digit_h
-        fixed_digit_width = (
-            self.atlas.global_native_size(f"{font}_5")[0]
-            if font in ("score", "combo")
-            else 0.0
-        )
         total_w = self.number_width(text, glyph_h, overlap_px, font)
         if align == "right":
             pen_x = x - total_w
@@ -270,38 +274,83 @@ class FrameContext:
         else:
             pen_x = x
         rgba = (tint[0], tint[1], tint[2], alpha)
+        glyphs = self._number_glyphs(glyph_h, overlap_px, font, wireframe)
+        fr = self.fr
         for ch in text:
-            slot = self._glyph_slot(ch, font)
-            if slot is None:
+            g = glyphs[ch]
+            if g is None:
                 continue
-            gw, gh = self.atlas.global_native_size(slot)   # advance from real glyph
-            cell_width = (
-                fixed_digit_width * scale
-                if ch.isdigit() and fixed_digit_width > 0
-                else gw * scale
-            )
-            draw_slot = slot
-            if wireframe and font == "argon":
-                draw_slot = "argon_dot" if ch == "." else "argon_wireframes"
-            dw, dh = self.atlas.global_native_size(draw_slot)
-            cx = pen_x + cell_width / 2
-            if font in ("score", "combo") and not wireframe:
-                draw_width = dw * scale
-                draw_height = dh * scale
-                self.fr._draw_direct(
-                    draw_slot,
-                    int(round(cx - draw_width / 2)),
-                    int(round(center_y - draw_height / 2)),
-                    max(1, int(round(draw_width))),
-                    max(1, int(round(draw_height))),
+            # (cell_width, gap, advance, half_cell, direct, what, half_w, half_h, w, h)
+            cx = pen_x + g[3]
+            if g[4]:
+                fr._draw_direct(
+                    g[5],
+                    int(round(cx - g[6])),
+                    int(round(center_y - g[7])),
+                    g[8],
+                    g[9],
                     rgba,
                 )
             else:
-                q = max(dw, dh) * scale
-                idx = self.atlas.index_of(draw_slot)
-                self.fr._draw_sprite_idx(
-                    idx, int(round(cx - q / 2)), int(round(center_y - q / 2)),
-                    int(round(q)), int(round(q)), rgba,
+                fr._draw_sprite_idx(
+                    g[5], int(round(cx - g[6])), int(round(center_y - g[7])),
+                    g[8], g[9], rgba,
                 )
-            pen_x += cell_width - self._eff_overlap(overlap_px, gw) * scale
+            pen_x += g[2]
         return total_w
+
+
+
+class _NumberGlyphs(dict):
+    """character -> layout tuple for one number font at one size (see
+    FrameContext._number_glyphs), or None for a character the font does not
+    draw. Filled on first use of each character.
+
+    The tuple is (cell_width, gap, advance, half_cell, direct, what, half_w,
+    half_h, w, h): `what` is the direct-texture slot name when `direct`, the
+    atlas layer index otherwise. Every value is the expression the per-glyph
+    code computed, so sums and rounded positions come out the same."""
+
+    def __init__(self, ctx, glyph_h, overlap_px, font, wireframe):
+        super().__init__()
+        self._ctx = ctx
+        self._overlap_px, self._font, self._wireframe = overlap_px, font, wireframe
+        atlas = ctx.atlas
+        digit_h = atlas.global_native_size(f"{font}_0")[1] or 1
+        self._scale = glyph_h / digit_h
+        self._fixed_digit_width = (
+            atlas.global_native_size(f"{font}_5")[0]
+            if font in ("score", "combo")
+            else 0.0
+        )
+
+    def __missing__(self, ch):
+        ctx, font, scale = self._ctx, self._font, self._scale
+        atlas = ctx.atlas
+        slot = ctx._glyph_slot(ch, font)
+        if slot is None:
+            self[ch] = None
+            return None
+        gw, _gh = atlas.global_native_size(slot)   # advance from real glyph
+        cell_width = (
+            self._fixed_digit_width * scale
+            if ch.isdigit() and self._fixed_digit_width > 0
+            else gw * scale
+        )
+        gap = ctx._eff_overlap(self._overlap_px, gw) * scale
+        draw_slot = slot
+        if self._wireframe and font == "argon":
+            draw_slot = "argon_dot" if ch == "." else "argon_wireframes"
+        dw, dh = atlas.global_native_size(draw_slot)
+        if font in ("score", "combo") and not self._wireframe:
+            draw_width = dw * scale
+            draw_height = dh * scale
+            g = (cell_width, gap, cell_width - gap, cell_width / 2, True, draw_slot,
+                 draw_width / 2, draw_height / 2,
+                 max(1, int(round(draw_width))), max(1, int(round(draw_height))))
+        else:
+            q = max(dw, dh) * scale
+            g = (cell_width, gap, cell_width - gap, cell_width / 2, False,
+                 atlas.index_of(draw_slot), q / 2, q / 2, int(round(q)), int(round(q)))
+        self[ch] = g
+        return g
