@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, replace
+from functools import lru_cache
 
 from osu_mania_renderer_v2.beatmap.models import BeatmapInfo, HoldNote, Note, ReplayInfo, VisualMods
 
@@ -97,6 +98,9 @@ LEGACY_MOD_SKIN_ASSET_NAMES: tuple[str, ...] = tuple(
 )
 
 
+# asked every frame by the HUD with the same replay mods; the answer is a
+# tuple of frozen records, so it can be kept
+@lru_cache(maxsize=256)
 def legacy_mod_icons(mods_bitfield: int) -> tuple[LegacyModIcon, ...]:
     """Return only ACTUAL replay mods in stable gameplay display order.
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import sys
 import threading
 from collections import deque
 
@@ -49,6 +50,32 @@ _LAG = 2
 # declaring the render wedged. Generous — the writer normally completes a
 # frame in ~2 ms.
 _LEASE_TIMEOUT_S = 30.0
+
+
+# What the pool's buffers are declared to be for. ctx.buffer(dynamic=True)
+# asks for GL_DYNAMIC_DRAW ("the application writes it, the GPU draws from
+# it"). A readback buffer is the opposite: the GPU writes it and the
+# application reads it once, which is GL_STREAM_READ.
+#
+# On macOS the hint decides what a map costs. With DYNAMIC_DRAW every
+# glMapBufferRange took 0.6 ms a frame at 1280x720 on the draw thread (2.6 s
+# of a 70 s replay), with the GPU already finished (a fence on the read was
+# signalled every time). With STREAM_READ the map returns at once, and
+# reading the mapped bytes afterwards is cheap as well (0.03 ms a frame): the
+# time was the map call itself, not the bytes. Same bytes either way; only
+# the usage hint of the pool changes.
+#
+# On by default on macOS, where that was measured. Anywhere else it is off
+# until it has been measured there; R3D_MANIA_STREAM_READ=1 / =0 forces it.
+def _stream_read_default() -> bool:
+    return sys.platform == "darwin"
+
+
+def _stream_read() -> bool:
+    v = os.environ.get("R3D_MANIA_STREAM_READ")
+    if v is None:
+        return _stream_read_default()
+    return v.strip().lower() not in ("", "0", "false", "no", "off")
 
 
 class MappedFrame:
@@ -81,19 +108,31 @@ class FrameReader:
         fbo: moderngl.Framebuffer,
         components: int = 3,
         ring: int = 3,
+        yuv=None,
     ) -> None:
         self.ctx = ctx
         self.fbo = fbo
         self.components = components
+        # `yuv` (a gpu.yuv.YuvConverter, R3D_MANIA_GPU_YUV): every frame is
+        # converted to yuv420p on the GPU before it is read back, so a frame
+        # is 1.5 bytes a pixel instead of 3. Same pool, same lag, same leases.
+        self.yuv = yuv
         # `ring` kept for API compatibility; the pool is sized to cover the
         # 2-frame lag + every lease the ffmpeg writer can hold in flight
         # (2 queued + 1 writing) + slack.
         self.pool_size = max(6, ring + 3)
         self.w, self.h = fbo.size
-        self.frame_size = self.w * self.h * components
         self._frame_idx = 0
-        self._warmup_blank = bytes(self.frame_size)
+        if yuv is not None:
+            from osu_mania_renderer_v2.gpu.yuv import black_frame
+            self.frame_size = self.w * self.h * 3 // 2
+            # black in yuv is Y 16, U/V 128; zeros would be a green frame
+            self._warmup_blank = black_frame(self.w, self.h)
+        else:
+            self.frame_size = self.w * self.h * components
+            self._warmup_blank = bytes(self.frame_size)
         self._mapped_mode = False
+        self.stream_read = False
         self._free: deque[_Slot] = deque()
         self._pending: deque[_Slot] = deque()   # issued reads, oldest first
         self._leased: deque[_Slot] = deque()    # mapped + handed out, oldest first
@@ -111,9 +150,18 @@ class FrameReader:
                 self._mapped_mode = (
                     os.environ.get("R3D_MANIA_NO_MAPPED_READBACK") != "1"
                 )
+                self.stream_read = _stream_read()
+                if self.stream_read:
+                    try:
+                        self._declare_stream_read()
+                    except Exception as e:  # noqa: BLE001 — a hint, never the pool
+                        log.warning("pbo_stream_read_failed",
+                                    extra={"err": str(e)})
+                        self.stream_read = False
                 log.info("pbo_readback_enabled",
                          extra={"pool": self.pool_size,
-                                "mapped": self._mapped_mode})
+                                "mapped": self._mapped_mode,
+                                "stream_read": self.stream_read})
             except Exception as e:  # noqa: BLE001
                 log.warning("pbo_alloc_failed_fallback_sync",
                             extra={"err": str(e)})
@@ -127,7 +175,22 @@ class FrameReader:
 
     # ---- GL helpers (GL thread only) ----
 
+    def _declare_stream_read(self) -> None:
+        """Give every pool buffer storage of the same size declared
+        GL_STREAM_READ (see _stream_read). Nothing has been read into the
+        pool yet, so there are no contents to keep."""
+        for slot in self._slots:
+            _GL.glBindBuffer(_GL.GL_PIXEL_PACK_BUFFER, slot.pbo.glo)
+            _GL.glBufferData(_GL.GL_PIXEL_PACK_BUFFER, self.frame_size, None,
+                             _GL.GL_STREAM_READ)
+        _GL.glBindBuffer(_GL.GL_PIXEL_PACK_BUFFER, 0)
+
     def _issue_read(self, slot: _Slot) -> None:
+        if self.yuv is not None:
+            self.yuv.run(self.fbo.color_attachments[0])
+            self.yuv.read_into(slot.pbo)
+            self.fbo.use()          # the renderer expects its own target bound
+            return
         self.fbo.use()
         _GL.glBindBuffer(_GL.GL_PIXEL_PACK_BUFFER, slot.pbo.glo)
         # offset=0 (use bound PBO instead of CPU pointer)
@@ -181,6 +244,11 @@ class FrameReader:
         independent rawvideo, but it does introduce a 2-frame latency at
         the start (filled with black) and end (flushed by drain())."""
         if not self._slots:
+            if self.yuv is not None:
+                self.yuv.run(self.fbo.color_attachments[0])
+                frame = self.yuv.read_bytes()
+                self.fbo.use()
+                return frame
             return self.fbo.read(components=self.components)
 
         if self._mapped_mode:
@@ -253,3 +321,27 @@ class FrameReader:
             if self._mapped_mode and slot not in self._free:
                 self._free.append(slot)
         return out
+
+
+def reader_for_plan(ctx: moderngl.Context, fbo: moderngl.Framebuffer, *,
+                    gpu_yuv: bool):
+    """The frame reader that matches the ffmpeg command a render plan was
+    built with. EVERY render loop must take its reader from here: the plan
+    decides whether ffmpeg expects yuv420p frames (``plan.gpu_yuv``), and a
+    loop that hands it RGB instead sends frames of the wrong size.
+
+    With ``gpu_yuv`` the frames are converted on the GPU (gpu/yuv.py). If
+    those passes cannot be built on this machine, ffmpeg is already waiting
+    for yuv420p, so the frames are read the stock way and converted on the
+    CPU with the same arithmetic: late, not lost."""
+    if not gpu_yuv:
+        return FrameReader(ctx, fbo, components=3)
+    from osu_mania_renderer_v2.gpu import yuv as _yuv
+    CpuTwinReader = _yuv.CpuTwinReader
+    w, h = fbo.size
+    try:
+        return FrameReader(ctx, fbo, components=3, yuv=_yuv.make_converter(ctx, w, h))
+    except Exception as e:  # noqa: BLE001
+        log.warning("gpu_yuv_unavailable_cpu_twin", extra={"err": str(e)})
+        return CpuTwinReader(FrameReader(ctx, fbo, components=3), w, h)
+

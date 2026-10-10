@@ -91,3 +91,20 @@ def test_other_encoders_are_untouched():
     assert _video_args(encoder="libopenh264", _X264_CRF="20",
                        _X264_PRESET="veryfast", _X264_THREADS="6") == [
         "-c:v", "libopenh264", "-b:v", "2500k"]
+
+
+def test_the_engines_own_preset_name_wins_over_the_node_wide_one(monkeypatch):
+    for e in _ENV.values():
+        monkeypatch.delenv(e, raising=False)
+    monkeypatch.delenv("R3D_MANIA_X264_PRESET", raising=False)
+    assert _build() == ["-c:v", "libx264", "-b:v", "2500k"]                 # nothing set: as it always was
+    monkeypatch.setenv("R3D_MANIA_X264_PRESET", "veryfast")
+    assert _build() == ["-c:v", "libx264", "-b:v", "2500k", "-preset", "veryfast"]
+    monkeypatch.setenv("R3D_X264_PRESET", "faster")                          # the node-wide name is set too
+    assert _build() == ["-c:v", "libx264", "-b:v", "2500k", "-preset", "veryfast"]
+    monkeypatch.delenv("R3D_MANIA_X264_PRESET")
+    assert _build() == ["-c:v", "libx264", "-b:v", "2500k", "-preset", "faster"]
+    monkeypatch.setenv("R3D_MANIA_X264_PRESET", "  ")                        # blank is not a preset
+    assert _build() == ["-c:v", "libx264", "-b:v", "2500k", "-preset", "faster"]
+    monkeypatch.setenv("R3D_MANIA_X264_PRESET", "veryfast")
+    assert _build("h264_nvenc")[:2] == ["-c:v", "h264_nvenc"] and "-preset" not in _build("h264_nvenc")
