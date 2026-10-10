@@ -318,7 +318,7 @@ async def render(
     from osu_mania_renderer_v2.render.encode import FfmpegPipe
     from osu_mania_renderer_v2.errors import RenderTimeoutError
     from osu_mania_renderer_v2.gpu.context import HeadlessGl
-    from osu_mania_renderer_v2.gpu.readback import FrameReader
+    from osu_mania_renderer_v2.gpu.readback import reader_for_plan
     from osu_mania_renderer_v2.gpu.renderer import FrameRenderer, RenderContext
     from osu_mania_renderer_v2.render.render import build_frame_state, build_render_plan
     from osu_mania_renderer_v2.wiki_elements.context import FrameContext
@@ -369,7 +369,7 @@ async def render(
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
             fr.set_banner_text(plan.banner_text)
-            reader = FrameReader(gl.ctx, gl.fbo, components=3)
+            reader = reader_for_plan(gl.ctx, gl.fbo, gpu_yuv=plan.gpu_yuv)
             fctx = FrameContext(
                 fr=fr, skin=skin, gl=gl.ctx, fbo=gl.fbo,
                 width=options.resolution[0], height=options.resolution[1],
