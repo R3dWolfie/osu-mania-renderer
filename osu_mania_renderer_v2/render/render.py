@@ -31,7 +31,7 @@ from osu_mania_renderer_v2.errors import (
     RenderTimeoutError,
 )
 from osu_mania_renderer_v2.gpu.context import HeadlessGl
-from osu_mania_renderer_v2.gpu.readback import FrameReader
+from osu_mania_renderer_v2.gpu.readback import reader_for_plan
 from osu_mania_renderer_v2.gpu.renderer import (
     FrameRenderer,
     RenderContext,
@@ -196,6 +196,9 @@ class RenderPlan:
     legacy_presentation: LegacyManiaPresentation = field(default_factory=LegacyManiaPresentation)
     stable_combo_timeline: StableComboTimeline | None = None
     lazer_combo_timeline: LazerComboTimeline | None = None
+    # frames leave the engine as yuv420p converted on the GPU (gpu/yuv.py);
+    # decided when the command is planned, because its input format follows
+    gpu_yuv: bool = False
 
 
 async def build_render_plan(
@@ -607,7 +610,17 @@ async def build_render_plan(
                          "compact": compact_path is not None}))
         log.info("stream_master")
 
+    # COLOUR CONVERSION ON THE GPU (R3D_MANIA_GPU_YUV; on by default on macOS
+    # when this machine's ffmpeg agrees with the conversion): see gpu/yuv.py.
+    from osu_mania_renderer_v2.gpu import yuv as _yuv
+    from osu_mania_renderer_v2.render.encode import _ffmpeg_prefix
+    gpu_yuv = _yuv.wanted(options.resolution[0], options.resolution[1], encoder,
+                          _ffmpeg_prefix())
+    if gpu_yuv:
+        log.info("gpu_yuv")
+
     cmd = build_ffmpeg_cmd(
+        frames_yuv420p=gpu_yuv,
         encoder=encoder,
         encoder_device=encoder_device,
         resolution=options.resolution,
@@ -683,7 +696,7 @@ async def build_render_plan(
         encoder=encoder, encoder_device=encoder_device,
         audio_path=audio_path, audio_rate=mod_res.audio_rate,
         hitsound_wav=hitsound_wav, effective_lead_in_ms=effective_lead_in_ms,
-        ffmpeg_cmd=cmd, fifo_path=fifo_path, bg_path=bg_path,
+        ffmpeg_cmd=cmd, fifo_path=fifo_path, gpu_yuv=gpu_yuv, bg_path=bg_path,
         first_note_ms=first_note_ms, banner_text=banner_text,
         n_scoring=_n_scoring, max_combo_portion=_max_combo_portion,
         mod_mult=_mod_mult, mania_mw=_mania_mw,
@@ -1164,7 +1177,7 @@ async def render_mania(
             if plan.bg_path and plan.bg_path.exists():
                 fr.set_background(plan.bg_path)
             fr.set_banner_text(plan.banner_text)
-            reader = FrameReader(gl.ctx, gl.fbo, components=3)
+            reader = reader_for_plan(gl.ctx, gl.fbo, gpu_yuv=plan.gpu_yuv)
 
             last_progress_t = 0.0
             score_smoothed = 0.0

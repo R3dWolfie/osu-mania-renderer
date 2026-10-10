@@ -285,8 +285,15 @@ def build_ffmpeg_cmd(
     preview_path: Path | None = None,
     stream_master: bool = False,
     compact_path: Path | None = None,
+    frames_yuv420p: bool = False,
 ) -> list[str]:
     """Build the ffmpeg argv. Audio is optional.
+
+    ``frames_yuv420p`` (``R3D_MANIA_GPU_YUV``, see gpu/yuv.py): the engine
+    hands over frames it has already converted to limited-range BT.709
+    yuv420p on the GPU, still bottom-up. The input is declared as exactly
+    that, and the video chain keeps its ``vflip`` and drops the conversion.
+    False builds the command it always did. Not available with VAAPI.
 
     ``stream_master`` — STREAMABLE MASTER (``R3D_STREAM_MASTER=1``, default
     OFF): no ``+faststart`` on the master (which rewrites the whole file at
@@ -329,9 +336,18 @@ def build_ffmpeg_cmd(
     # when ffmpeg is being run on the host via flatpak-spawn (stdin would
     # go through D-Bus). Same `-f rawvideo -pix_fmt rgb24 -s WxH -r FPS`
     # input args either way.
+    if frames_yuv420p:
+        if encoder == "h264_vaapi":
+            raise ValueError("frames_yuv420p is not available with h264_vaapi")
+        # the colour declaration is not optional: without it ffmpeg treats
+        # the frames as unknown and converts them a second time
+        from osu_mania_renderer_v2.gpu.yuv import FFMPEG_INPUT_ARGS
+        frame_fmt = ["-pix_fmt", "yuv420p", *FFMPEG_INPUT_ARGS]
+    else:
+        frame_fmt = ["-pix_fmt", "rgb24"]
     cmd += [
         "-f", "rawvideo",
-        "-pix_fmt", "rgb24",
+        *frame_fmt,
         "-s", f"{w}x{h}",
         "-r", str(fps),
         "-i", str(frames_fifo_path) if frames_fifo_path is not None else "pipe:0",
@@ -467,7 +483,7 @@ def build_ffmpeg_cmd(
     vf_chain = ["vflip"]
     if encoder == "h264_vaapi":
         vf_chain += ["format=nv12", "hwupload"]
-    else:
+    elif not frames_yuv420p:
         vf_chain += ["scale=in_range=full:out_range=limited", "format=yuv420p"]
 
     # Video codec args (collected in `vc`; appended below).
