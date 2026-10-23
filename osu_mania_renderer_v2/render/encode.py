@@ -53,7 +53,83 @@ def _ffmpeg_prefix() -> list[str]:
     return ["ffmpeg"]
 
 
-async def _run_probe(cmd: list[str], frame: bytes | None = None) -> tuple[int, bytes, bytes]:
+# ---- AV1 master migration (Leon's 2026-10-23 design) ------------------------
+# The MASTER video (and the site stream the site serves from it) moves to AV1;
+# the small Discord inline-embed / compact copies STAY H.264 because Red found
+# Discord cannot play inline AV1 (so the preview/compact branches below are
+# deliberately left on libx264). An AV1 master requires a HARDWARE encoder
+# PROVEN to emit an actual av1 bitstream on the SELECTED device — compiled-in
+# support and GPU marketing names are not enough. There is NO libsvtav1 /
+# libaom / librav1e / libx264 fallback for the master: a failed AV1 encode
+# fails the render so the coordinator requeues it to an eligible node.
+_AV1_ENCODERS = ("av1_vaapi", "av1_nvenc", "av1_amf", "av1_qsv")
+_VAAPI_ENCODERS = ("h264_vaapi", "av1_vaapi")
+
+
+def _is_av1(encoder: str) -> bool:
+    return encoder in _AV1_ENCODERS
+
+
+def _is_vaapi(encoder: str) -> bool:
+    return encoder in _VAAPI_ENCODERS
+
+
+def _ffprobe_prefix() -> list[str]:
+    """ffprobe counterpart of :func:`_ffmpeg_prefix` — host escape inside a
+    toolbox/distrobox, explicit ``ffprobe.exe`` resolution on Windows."""
+    if Path("/run/host/etc/os-release").exists() and Path("/usr/bin/flatpak-spawn").exists():
+        return ["/usr/bin/flatpak-spawn", "--host", "/usr/bin/ffprobe"]
+    if sys.platform == "win32":
+        import shutil
+        return [shutil.which("ffprobe") or "ffprobe"]
+    return ["ffprobe"]
+
+
+def _av1_gop(fps) -> int:
+    """~2 s key-frame interval (Leon's first-pass used ``-g 120`` at 60 fps)."""
+    try:
+        return max(1, int(round(float(fps))) * 2)
+    except (TypeError, ValueError):
+        return 120
+
+
+def _av1_codec_args(encoder: str, w, h, fps,
+                    video_bitrate_override: int | None) -> list[str]:
+    """Backend-specific AV1 video-codec args for the MASTER. 8-bit 4:2:0 — nv12
+    on VAAPI, yuv420p elsewhere (set by the filtergraph) — Main profile, ~2 s
+    GOP.
+
+    VAAPI is QUALITY-controlled with ``-rc_mode CQP -global_quality N``: its
+    ``-qp`` is IGNORED by the AMD driver (Leon 2026-10-23: -qp 40/90/160 gave
+    byte-identical output; -global_quality changed it correctly), so it is NOT
+    used. NVENC/AMF/QSV are candidate bitrate-VBR paths (the shared H.264 ladder
+    scaled down for AV1's efficiency) and each must pass its OWN hardware proof
+    before being enabled; only av1_vaapi is qualified so far. The final
+    production recipe (quality/bitrate) is Red's hardware-sweep decision, NOT a
+    universal number set here — these are provisional, env-tunable defaults
+    (R3D_AV1_VAAPI_GQ, R3D_AV1_BPS_FACTOR)."""
+    gop = _av1_gop(fps)
+    if encoder == "av1_vaapi":
+        gq = (os.environ.get("R3D_AV1_VAAPI_GQ", "") or "").strip() or "90"
+        return ["-c:v", "av1_vaapi", "-rc_mode", "CQP", "-global_quality", gq,
+                "-profile:v", "main", "-g", str(gop)]
+    try:
+        factor = float((os.environ.get("R3D_AV1_BPS_FACTOR", "") or "").strip() or 0.5)
+    except ValueError:
+        factor = 0.5
+    if video_bitrate_override:
+        tgt = int(video_bitrate_override)
+    else:
+        tgt = max(500_000, int(nvenc_target_bps(int(w), int(h), float(fps)) * factor))
+    # NVENC / AMF / QSV (and any future AV1 hw encoder): bitrate-VBR. 8-bit
+    # 4:2:0 == AV1 Main by construction via the yuv420p filtergraph branch, so
+    # no explicit -profile is forced (AMF/QSV reject the named constant).
+    return ["-c:v", encoder, "-b:v", str(tgt), "-maxrate", str(int(tgt * 1.5)),
+            "-bufsize", str(tgt * 2), "-g", str(gop)]
+
+
+async def _run_probe(cmd: list[str], frame: bytes | None = None,
+                     timeout: float = 5) -> tuple[int, bytes, bytes]:
     """Bound encoder/driver startup, and reap probes on timeout or cancellation."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -62,7 +138,7 @@ async def _run_probe(cmd: list[str], frame: bytes | None = None) -> tuple[int, b
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        out, stderr = await asyncio.wait_for(proc.communicate(frame), timeout=5)
+        out, stderr = await asyncio.wait_for(proc.communicate(frame), timeout=timeout)
     except BaseException:
         if proc.returncode is None:
             try:
@@ -74,8 +150,66 @@ async def _run_probe(cmd: list[str], frame: bytes | None = None) -> tuple[int, b
     return proc.returncode, out, stderr
 
 
+async def _probed_codec_name(path: str) -> str | None:
+    """ffprobe the first video stream's codec_name (lower-cased), or None."""
+    cmd = _ffprobe_prefix() + ["-v", "error", "-select_streams", "v:0",
+                               "-show_entries", "stream=codec_name",
+                               "-of", "csv=p=0", str(path)]
+    try:
+        code, out, _ = await _run_probe(cmd)
+    except (TimeoutError, OSError):
+        return None
+    if code != 0:
+        return None
+    return out.decode(errors="replace").strip().lower() or None
+
+
+async def _av1_encoder_usable(encoder: str, device: str | None) -> tuple[bool, str]:
+    """Prove a HARDWARE AV1 encoder: encode a short clip through the production
+    AV1 recipe on the SELECTED device, then ffprobe the output and require
+    ``codec_name=av1``. Compiled-in support / GPU names are NOT sufficient
+    (Leon 2026-10-23). Bounded by a strict timeout; cleans up its temp file."""
+    import tempfile
+    w, h, n, r = 320, 240, 5, 5  # small-but-safe (avoids hw AV1 min-dimension rejects)
+    vf = "format=nv12,hwupload" if encoder == "av1_vaapi" else "format=yuv420p"
+    fh = tempfile.NamedTemporaryFile(prefix="r3d-av1-probe-", suffix=".mp4", delete=False)
+    fh.close()
+    out = fh.name
+    cmd = _ffmpeg_prefix() + ["-hide_banner", "-loglevel", "error", "-nostdin"]
+    if encoder == "av1_vaapi":
+        cmd += ["-vaapi_device", device or "/dev/dri/renderD128"]
+    cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(r),
+            "-i", "pipe:0", "-frames:v", str(n), "-an", "-vf", vf]
+    cmd += _av1_codec_args(encoder, w, h, r, None)
+    cmd += ["-y", out]
+    try:
+        try:
+            code, _, stderr = await _run_probe(cmd, bytes(w * h * 3 * n), timeout=20)
+        except TimeoutError:
+            return False, "AV1 encoder startup probe timed out"
+        except OSError as exc:
+            return False, str(exc)
+        if code != 0:
+            reason = stderr.decode(errors="replace").strip().splitlines()
+            return False, (reason[0][:500] if reason else f"ffmpeg exit code {code}")
+        codec = await _probed_codec_name(out)
+        if codec != "av1":
+            return False, f"output codec is {codec!r}, not av1"
+        return True, ""
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+
+
 async def _encoder_usable(encoder: str, device: str | None) -> tuple[bool, str]:
-    """Encode one black frame to a null output; compiled support is insufficient."""
+    """Encode one black frame to a null output; compiled support is insufficient.
+
+    AV1 encoders are proven more strictly (:func:`_av1_encoder_usable`): a real
+    short encode whose output ffprobes as ``codec_name=av1``."""
+    if _is_av1(encoder):
+        return await _av1_encoder_usable(encoder, device)
     cmd = _ffmpeg_prefix() + ["-hide_banner", "-loglevel", "error", "-nostdin"]
     if encoder == "h264_vaapi":
         cmd += ["-vaapi_device", device]
@@ -95,13 +229,46 @@ async def _encoder_usable(encoder: str, device: str | None) -> tuple[bool, str]:
     return False, (reason[0][:500] if reason else f"ffmpeg exit code {code}")
 
 
+async def _probe_av1_encoder(available: set[str], device: str | None) -> str:
+    """auto AV1 (``--encoder av1``): pick a HARDWARE AV1 encoder proven to emit
+    an av1 bitstream on this device. FAIL CLOSED — AV1 masters do NOT fall back
+    to libsvtav1/libaom/librav1e or H.264/CPU; an unusable node raises so the
+    coordinator leaves the job pending / requeues it to an eligible node."""
+    candidates = ["av1_nvenc"]
+    if sys.platform == "win32":
+        candidates += ["av1_amf", "av1_qsv"]
+    else:
+        if device is None and Path("/dev/dri/renderD128").exists():
+            device = "/dev/dri/renderD128"
+        if device is not None:
+            candidates.append("av1_vaapi")
+        candidates.append("av1_qsv")
+    failures = []
+    for name in candidates:
+        if name not in available:
+            continue
+        usable, reason = await _encoder_usable(name, device)
+        if usable:
+            log.info("encoder_selected encoder=%s", name)
+            return name
+        failures.append(f"{name}: {reason}")
+        log.warning("encoder_probe_failed encoder=%s reason=%s", name, reason)
+    reason = "; ".join(failures) or "ffmpeg reports no hardware AV1 encoder"
+    raise EncoderError(
+        "No usable hardware AV1 encoder; AV1 masters do not fall back to "
+        "H.264/CPU: " + reason)
+
+
 async def probe_encoder(encoder: str, device: str | None) -> str:
     """Resolve auto to a working encoder: NVENC, platform hardware, then software.
 
-    Explicit choices pass through unchanged. Probe the same ffmpeg executable
-    used for the render, including host ffmpeg when running inside a toolbox.
+    ``"auto"`` resolves an H.264 encoder (unchanged). ``"av1"`` resolves a
+    hardware AV1 encoder, failing closed if none is proven. Explicit choices
+    (incl. ``av1_vaapi``/``av1_nvenc``/``av1_amf``/``av1_qsv``) pass through
+    unchanged. Probe the same ffmpeg executable used for the render, including
+    host ffmpeg when running inside a toolbox.
     """
-    if encoder != "auto":
+    if encoder not in ("auto", "av1"):
         return encoder
     try:
         code, out, stderr = await _run_probe(_ffmpeg_prefix() + ["-hide_banner", "-encoders"])
@@ -114,6 +281,8 @@ async def probe_encoder(encoder: str, device: str | None) -> str:
                            + stderr.decode(errors="replace")[-1024:])
     available = {parts[1] for line in out.decode(errors="replace").splitlines()
                  if len(parts := line.split()) >= 2}
+    if encoder == "av1":
+        return await _probe_av1_encoder(available, device)
     candidates = ["h264_nvenc"]
     if sys.platform == "win32":
         candidates += ["h264_amf", "h264_qsv"]
@@ -316,11 +485,13 @@ def build_ffmpeg_cmd(
     w, h = resolution
     cmd: list[str] = [*_ffmpeg_prefix(), "-y", "-hide_banner", "-loglevel", "error"]
 
-    if encoder == "h264_vaapi":
+    if _is_vaapi(encoder):
         # `-vaapi_device` initialises the device for the FILTER graph
         # (hwupload). `-hwaccel`/`-hwaccel_device` would only affect decode
         # acceleration on inputs — without `-vaapi_device`, hwupload errors
         # out with "A hardware device reference is required to upload".
+        # Same device setup for h264_vaapi and av1_vaapi (both upload nv12
+        # surfaces); only the -c:v codec args below differ.
         if encoder_device:
             cmd += ["-vaapi_device", encoder_device]
         cmd += ["-hwaccel", "vaapi"]
@@ -465,14 +636,20 @@ def build_ffmpeg_cmd(
     # colors / shifting them green. Limited-range here means the same
     # bits land as the same Y'CbCr levels on every player.
     vf_chain = ["vflip"]
-    if encoder == "h264_vaapi":
+    if _is_vaapi(encoder):
+        # nv12 == 8-bit 4:2:0 on a GPU surface; the same upload the H.264 VAAPI
+        # path uses, so av1_vaapi inherits its exact colour handling.
         vf_chain += ["format=nv12", "hwupload"]
     else:
         vf_chain += ["scale=in_range=full:out_range=limited", "format=yuv420p"]
 
     # Video codec args (collected in `vc`; appended below).
     vc: list[str] = []
-    if encoder in ("h264_nvenc", "hevc_nvenc"):
+    if _is_av1(encoder):
+        # AV1 MASTER (Leon's 2026-10-23 migration). Backend-specific controls —
+        # VAAPI CQP/global_quality, NVENC/AMF/QSV bitrate-VBR; see _av1_codec_args.
+        vc += _av1_codec_args(encoder, w, h, fps, video_bitrate_override)
+    elif encoder in ("h264_nvenc", "hevc_nvenc"):
         # Resolution-scaled NVENC bitrate ladder (R3D cross-engine policy,
         # 2026-07): the flat video_bitrate (2500k default) starved 1080p60+;
         # NVENC now targets nvenc_target_bps(w, h, fps) with maxrate=1.5x /
@@ -510,7 +687,12 @@ def build_ffmpeg_cmd(
     # conversion above; both must agree or you get a brightness shift.)
     color_tags: list[str] = []
     if encoder in ("h264_nvenc", "hevc_nvenc", "h264_amf", "h264_qsv",
-                   "libx264", "libx265", "libopenh264"):
+                   "libx264", "libx265", "libopenh264",
+                   # AV1 via the range-converted yuv420p branch carries the same
+                   # (limited-range) pixels, so it is tagged like the software
+                   # H.264 path. av1_vaapi is excluded, mirroring h264_vaapi
+                   # (its nv12/hwupload branch sets range on the surface).
+                   "av1_nvenc", "av1_amf", "av1_qsv"):
         color_tags = [
             "-color_range", "tv",
             "-colorspace", "bt709",
@@ -580,11 +762,12 @@ def build_ffmpeg_cmd(
     # needs no post-processing at all.
     has_audio = audio_path is not None and audio_out_label is not None
     pfps = min(30, int(round(float(fps))))
-    if encoder == "h264_vaapi":
+    if _is_vaapi(encoder):
         # `format=nv12,hwupload` must stay on the MASTER branch only: the
-        # preview is software-encoded and cannot take VAAPI surfaces. The
-        # preview branch does the same full->limited conversion the software
-        # master path does.
+        # preview is software-encoded (libx264 — a Discord H.264 copy, kept as
+        # H.264) and cannot take VAAPI surfaces. The preview branch does the
+        # same full->limited conversion the software master path does. Applies
+        # to both h264_vaapi and av1_vaapi masters.
         v_pre = "vflip"
         vm_tail = "format=nv12,hwupload"
         vp_tail = (f"fps={pfps},scale=-2:720:in_range=full:out_range=limited,"
@@ -602,7 +785,7 @@ def build_ffmpeg_cmd(
             total_duration_ms / 1000.0 if total_duration_ms else None)
         c_h = min(c_h, int(h))
         c_fps = min(c_fps, int(round(float(fps))))
-        if encoder == "h264_vaapi":
+        if _is_vaapi(encoder):
             vc_tail = (f"fps={c_fps},scale=-2:{c_h}:in_range=full:out_range=limited,"
                        f"format=yuv420p")
         else:

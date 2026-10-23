@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -30,8 +31,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--fps", type=int, default=60)
     p.add_argument(
-        "--encoder", default="auto",
-        choices=["auto", "h264_vaapi", "h264_nvenc", "libx264"],
+        # "av1" = auto-pick a hardware AV1 encoder for the master (fail closed,
+        # no CPU/H.264 fallback — Leon's 2026-10-23 migration). "auto" keeps the
+        # H.264 auto behaviour. Explicit av1_* select that backend directly.
+        # R3D_ENCODER env sets the default so a long-lived worker can be told
+        # the codec without a code edit (the coordinator carries
+        # required_video_codec=av1 for AV1 jobs).
+        "--encoder", default=os.environ.get("R3D_ENCODER", "auto"),
+        choices=["auto", "av1", "h264_vaapi", "h264_nvenc", "libx264",
+                 "av1_vaapi", "av1_nvenc", "av1_amf", "av1_qsv"],
     )
     p.add_argument(
         "--encoder-device", default=None,

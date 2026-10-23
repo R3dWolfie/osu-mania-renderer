@@ -163,7 +163,7 @@ class ReplayInfo:
 class RenderOptions:
     resolution: tuple[int, int]
     fps: int
-    encoder: str = "auto"  # "auto" | "h264_vaapi" | "libx264"
+    encoder: str = "auto"  # "auto"(H.264) | "av1"(auto-HW-AV1) | h264_*/av1_* | "libx264"
     encoder_device: str | None = None
     timeout_seconds: int = 600
     audio_required: bool = False
