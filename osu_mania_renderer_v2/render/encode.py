@@ -1036,15 +1036,29 @@ class FfmpegPipe:
         if self.proc is None:
             return
         await self._finish()
-        if self._werr is not None:
-            raise self._write_error() from self._werr
+        # ffmpeg's exit status and the output file are the source of truth for
+        # success, NOT the write side. A write-side error only means a real
+        # failure when ffmpeg itself failed. When ffmpeg exits 0 with a valid
+        # output, a BrokenPipeError here is the benign tail race: ffmpeg received
+        # every frame it needed and closed stdin just before our final write
+        # landed (seen on the av1_vaapi path -- the file is complete and decodes
+        # clean). Failing a good render over it was the bug.
         if self.proc.returncode != 0:
+            if self._werr is not None:
+                raise self._write_error() from self._werr
             raise EncoderError(
                 f"ffmpeg exit code {self.proc.returncode}: "
                 f"{self._stderr_log.decode(errors='replace')[-4096:]}"
             )
         if not output_path.exists() or output_path.stat().st_size == 0:
             raise EncoderError(f"output MP4 missing or empty: {output_path}")
+        if self._werr is not None:
+            if isinstance(self._werr, BrokenPipeError):
+                logging.getLogger(__name__).warning(
+                    "ignoring benign tail BrokenPipe after ffmpeg exit 0 (%s)",
+                    output_path.name)
+            else:
+                raise self._write_error() from self._werr
 
 
 def _grow_pipe(fd: int) -> None:
