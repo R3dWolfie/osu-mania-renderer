@@ -77,11 +77,11 @@ async def _run_probe(cmd: list[str], frame: bytes | None = None) -> tuple[int, b
 async def _encoder_usable(encoder: str, device: str | None) -> tuple[bool, str]:
     """Encode one black frame to a null output; compiled support is insufficient."""
     cmd = _ffmpeg_prefix() + ["-hide_banner", "-loglevel", "error", "-nostdin"]
-    if encoder == "h264_vaapi":
+    if encoder.endswith("_vaapi"):
         cmd += ["-vaapi_device", device]
     cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "128x128", "-r", "1",
             "-i", "pipe:0", "-frames:v", "1", "-an", "-vf",
-            "format=nv12,hwupload" if encoder == "h264_vaapi" else "format=yuv420p",
+            "format=nv12,hwupload" if encoder.endswith("_vaapi") else "format=yuv420p",
             "-c:v", encoder, "-f", "null", "-"]
     try:
         code, _, stderr = await _run_probe(cmd, bytes(128 * 128 * 3))
@@ -316,7 +316,7 @@ def build_ffmpeg_cmd(
     w, h = resolution
     cmd: list[str] = [*_ffmpeg_prefix(), "-y", "-hide_banner", "-loglevel", "error"]
 
-    if encoder == "h264_vaapi":
+    if encoder.endswith("_vaapi"):
         # `-vaapi_device` initialises the device for the FILTER graph
         # (hwupload). `-hwaccel`/`-hwaccel_device` would only affect decode
         # acceleration on inputs — without `-vaapi_device`, hwupload errors
@@ -465,7 +465,7 @@ def build_ffmpeg_cmd(
     # colors / shifting them green. Limited-range here means the same
     # bits land as the same Y'CbCr levels on every player.
     vf_chain = ["vflip"]
-    if encoder == "h264_vaapi":
+    if encoder.endswith("_vaapi"):
         vf_chain += ["format=nv12", "hwupload"]
     else:
         vf_chain += ["scale=in_range=full:out_range=limited", "format=yuv420p"]
@@ -580,7 +580,7 @@ def build_ffmpeg_cmd(
     # needs no post-processing at all.
     has_audio = audio_path is not None and audio_out_label is not None
     pfps = min(30, int(round(float(fps))))
-    if encoder == "h264_vaapi":
+    if encoder.endswith("_vaapi"):
         # `format=nv12,hwupload` must stay on the MASTER branch only: the
         # preview is software-encoded and cannot take VAAPI surfaces. The
         # preview branch does the same full->limited conversion the software
@@ -602,7 +602,7 @@ def build_ffmpeg_cmd(
             total_duration_ms / 1000.0 if total_duration_ms else None)
         c_h = min(c_h, int(h))
         c_fps = min(c_fps, int(round(float(fps))))
-        if encoder == "h264_vaapi":
+        if encoder.endswith("_vaapi"):
             vc_tail = (f"fps={c_fps},scale=-2:{c_h}:in_range=full:out_range=limited,"
                        f"format=yuv420p")
         else:
