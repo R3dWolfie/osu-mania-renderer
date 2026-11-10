@@ -99,17 +99,25 @@ def _av1_codec_args(encoder: str, w, h, fps,
     on VAAPI, yuv420p elsewhere (set by the filtergraph) — Main profile, ~2 s
     GOP.
 
-    VAAPI is QUALITY-controlled with ``-rc_mode CQP -global_quality N``: its
+    VAAPI defaults to ``-rc_mode CQP -global_quality N``; an explicit bitrate
+    selects VBR, matching the published sibling engines. Its
     ``-qp`` is IGNORED by the AMD driver (Leon 2026-10-23: -qp 40/90/160 gave
     byte-identical output; -global_quality changed it correctly), so it is NOT
     used. NVENC/AMF/QSV are candidate bitrate-VBR paths (the shared H.264 ladder
     scaled down for AV1's efficiency) and each must pass its OWN hardware proof
-    before being enabled; only av1_vaapi is qualified so far. The final
+    before being enabled. Argument construction alone does not qualify a
+    backend's quality. The final
     production recipe (quality/bitrate) is Red's hardware-sweep decision, NOT a
     universal number set here — these are provisional, env-tunable defaults
     (R3D_AV1_VAAPI_GQ, R3D_AV1_BPS_FACTOR)."""
     gop = _av1_gop(fps)
     if encoder == "av1_vaapi":
+        if video_bitrate_override:
+            # Honor the caller's explicit target on the master only. The
+            # no-override CQP/GQ recipe and H.264 companions stay unchanged.
+            vb = int(video_bitrate_override)
+            return ["-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", str(vb),
+                    "-maxrate", str(int(vb * 1.5)), "-profile:v", "main", "-g", str(gop)]
         gq = (os.environ.get("R3D_AV1_VAAPI_GQ", "") or "").strip() or "90"
         return ["-c:v", "av1_vaapi", "-rc_mode", "CQP", "-global_quality", gq,
                 "-profile:v", "main", "-g", str(gop)]

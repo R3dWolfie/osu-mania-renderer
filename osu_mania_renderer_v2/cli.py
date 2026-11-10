@@ -11,6 +11,23 @@ from pathlib import Path
 from osu_mania_renderer_v2 import RenderOptions, render_mania
 
 
+def _video_bitrate(value: str) -> int:
+    """Positive bits/second, accepting the other engines' k/M CLI suffixes."""
+    raw = value.strip().lower()
+    multiplier = 1
+    if raw.endswith(("k", "m")):
+        multiplier = 1_000 if raw[-1] == "k" else 1_000_000
+        raw = raw[:-1]
+    error = "bitrate must be positive finite bps, e.g. 3000k or 3M"
+    try:
+        bps = int(float(raw) * multiplier)
+    except (ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError(error) from exc
+    if bps <= 0:
+        raise argparse.ArgumentTypeError(error)
+    return bps
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="osu-renderer",
@@ -44,6 +61,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--encoder-device", default=None,
         help="VAAPI device (e.g. /dev/dri/renderD128)",
+    )
+    p.add_argument(
+        "--video-bitrate", type=_video_bitrate, default=None,
+        help="explicit video bitrate in bps, e.g. 3000k or 3M; omitted keeps encoder defaults",
     )
     p.add_argument(
         "--timeout", type=int, default=600,
@@ -151,6 +172,8 @@ def _render_options_from_args(args: argparse.Namespace) -> RenderOptions:
         "encoder_device":  args.encoder_device,
         "timeout_seconds": args.timeout,
     }
+    if args.video_bitrate is not None:
+        opts_kwargs["video_bitrate_override"] = args.video_bitrate
     if args.bg_dim is not None:
         opts_kwargs["background_dim"] = max(0.0, min(1.0, args.bg_dim))
     if args.bg_dim_intro is not None:
