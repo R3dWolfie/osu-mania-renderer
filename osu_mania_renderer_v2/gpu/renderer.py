@@ -1876,7 +1876,7 @@ class FrameRenderer:
         cx = rc.width / 2.0
         # std/catch centre the splash 0.44 of the screen from the TOP;
         # this renderer's draw rects are bottom-left origin.
-        cy = rc.height * (1.0 - 0.44)
+        cy = rc.height * (1.0 - 0.5)
         # Flush queued sprites (e.g. the fade-to-black wash) under the
         # CURRENT blend mode before switching to additive for the glow.
         self._flush_sprite_batch()

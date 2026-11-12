@@ -110,7 +110,7 @@ def _av1_codec_args(encoder: str, w, h, fps,
     (R3D_AV1_VAAPI_GQ, R3D_AV1_BPS_FACTOR)."""
     gop = _av1_gop(fps)
     if encoder == "av1_vaapi":
-        gq = (os.environ.get("R3D_AV1_VAAPI_GQ", "") or "").strip() or "90"
+        gq = (os.environ.get("R3D_AV1_VAAPI_GQ", "") or "").strip() or "30"
         return ["-c:v", "av1_vaapi", "-rc_mode", "CQP", "-global_quality", gq,
                 "-profile:v", "main", "-g", str(gop)]
     try:
